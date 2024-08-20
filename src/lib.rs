@@ -1,6 +1,7 @@
 mod topic;
 
-pub fn create_topic(name: &str)-> topic::Topic{
-
-    return topic::Topic::new(name)
+#[no_mangle]
+pub extern "C" fn create_topic(name: &str, addr: &str)-> Box<topic::Topic>{
+    
+    Box::new(topic::Topic::new(name, addr))
 }  
