@@ -5,3 +5,4 @@ edition = "2021"
 crate-type = ["cdylib"]      # Creates dynamic lib
 
 [dependencies]
+redis = "0.26.1"
