@@ -1,53 +1,75 @@
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
+use std::os::raw::c_void;
 use std::thread;
-use redis::Commands;
+use crate::redis;
 
 pub struct Topic{
     pub name: String,
     pub addr: String,
-  //  m_thread: thread::JoinHandle<()>,
+    m_thread: thread::JoinHandle<()>,
 }
 
 impl Topic {
     pub fn new(name: &str, addr: &str) -> Option<Topic> {
-        let o_listener = TcpListener::bind(addr);
-        match o_listener {
-            Ok(listr) => {
+
+        match redis::regist_topic(name, addr){
+            Err(err)=> {
+                eprintln!("Error {}:{}: {}", file!(), line!(), err);
+                return None
+            }
+            _ =>()
+        }
+       
+        let listener = TcpListener::bind(addr);
+        match listener {
+            Ok(listener) => {
                 let thr = thread::spawn(move|| {
-                    for stream in listr.incoming(){
+                    for stream in listener.incoming(){
                         handle_connection(stream.unwrap());
-                    }
+                    }                    
                 });
                 Some(Self {
                     name : name.to_string(),
                     addr: addr.to_string(),
-                    //m_thread: ()
+                    m_thread: thr,
                 })
             }
-            Err(err) => None
+            Err(err) => {
+                eprintln!("Error {}:{}: {}", file!(), line!(), err);
+                return None
+            }
         }
+    }
 
-    
-        // let r = fetch_an_integer();
-        // match r {
-        //     Ok(v)=> print!("v = {v}"),
-        //     Err(err)=>  print!("err = {err}"),
-        // }                
-    }    
-    
+    pub fn send_to(name: &str, data: &[u8]) -> bool {
+
+        let addr = redis::get_topic_addr(name);
+        match addr{
+            Err(err)=> {
+                eprintln!("Error {}:{}: {}", file!(), line!(), err);
+                return false
+            }
+            _ =>()
+        }
+        let addr = addr.unwrap();
+        if addr.len() == 0{
+            eprintln!("Error not found addr for topic {}", name);
+            return false
+        }
+        match TcpStream::connect(&addr[0]) {
+            Ok(mut stream) => {                                
+                stream.write(data).unwrap();
+                return true
+            },
+            Err(err) => {
+                eprintln!("Error {}:{}: {}", file!(), line!(), err);
+            }
+        }  
+        return false
+    }
 }
 
-fn fetch_an_integer() -> redis::RedisResult<isize> {
-    // connect to redis
-    let client = redis::Client::open("redis://127.0.0.1/")?;
-    let mut con = client.get_connection()?;
-    // throw away the result, just make sure it does not fail
-    let _: () = con.set("my_key", 42)?;
-    // read back the key and return it.  Because the return value
-    // from the function is a result for integer this will automatically
-    // convert into one.
-    con.get("my_key")
-}
 
 fn handle_connection(mut stream: TcpStream) {
     // --snip--
