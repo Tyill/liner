@@ -2,20 +2,16 @@ use crate::redis;
 use crate::topic::Topic;
 use crate::message::Message;
 
-use std::net::{TcpListener, TcpStream};
-use std::{thread, sync::{Arc, Mutex, mpsc::{self, Receiver}}};
-use std::collections::HashMap;
+use std::net::TcpListener;
+use std::{thread, sync::mpsc};
 
 pub struct Client{
     name: String,
     db: redis::Connect,
-    topics_receive: Arc<Mutex<Vec<Topic>>>,
-    topics_send: Arc<Mutex<HashMap<String, Topic>>>,
-    rx: Receiver<Message>,
 }
 
 impl Client {
-    pub fn new(name: &str, localhost: &str, redis_path: &str) -> Option<Client> {
+    pub fn new(name: &str, localhost: &str, redis_path: &str, cb: extern "C" fn(*const u8, usize)) -> Option<Client> {
         let mut db = redis::Connect::new(redis_path).ok()?;
         match db.regist_topic(name, localhost){
             Err(err)=> {
@@ -24,26 +20,27 @@ impl Client {
             }
             _ =>()
         }       
-        let listener = TcpListener::bind(localhost);
-        match listener {
+        match TcpListener::bind(localhost) {
             Ok(listener) => {
                 let (tx, rx) = mpsc::channel();
-                let topics = Arc::new(Mutex::new(Vec::new()));
-                let topics_receive = topics.clone();
                 thread::spawn(move|| {
+                    let mut topics = Vec::new();
                     for stream in listener.incoming(){
                         match stream {
-                            Ok(stream)=>topics.lock().unwrap().push(Topic::new_for_read(stream, tx.clone())),
+                            Ok(stream)=>topics.push(Topic::new_for_read(stream, tx.clone())),
                             Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
                         }
                     }
-                });                
+                });
+                thread::spawn(move|| loop{ 
+                    match rx.recv() {
+                        Ok(r)=>(),//cb(&[0;1], 123),
+                        Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
+                    }
+                });              
                 Some(Self{
                     name: name.to_string(),
                     db,
-                    topics_receive,
-                    topics_send: Arc::new(Mutex::new(HashMap::new())),
-                    rx,
                 })
             }
             Err(err) => {

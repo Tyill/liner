@@ -2,37 +2,27 @@ mod topic;
 mod redis;
 mod client;
 mod message;
-use std::sync::{Mutex, OnceLock};
 use crate::client::Client;
 
-static mut CLIENT: OnceLock<Mutex<Client>> = OnceLock::new();
-    
-fn client()-> &'static Mutex<Client> {
-    unsafe {
-        CLIENT.get_mut().unwrap()
-    }
-}
+use std::ffi::CStr;
 
 #[no_mangle]
-pub extern "C" fn init(topic_name: &str, localhost: &str, redis_path: &str)->bool{
-    unsafe {
-        if let Some(_) = CLIENT.get_mut(){
-            assert!(false)
-        }
+pub extern "C" fn init(topic: *const u8, 
+                       localhost: *const u8,
+                       redis_path: *const u8,
+                       cb: extern "C" fn(*const u8, usize))->Box<Option<Client>>{
+    unsafe{
+        let topic_ = String::from_raw_parts(topic as *mut u8, topic_length, 256);
+        let localhost_ = String::from_raw_parts(localhost as *mut u8, localhost_length, 256);
+        let redis_path_ = String::from_raw_parts(redis_path as *mut u8, redis_path_length, 256);
+        
+        Box::new(Client::new(&topic_, &localhost_, &redis_path_, cb))
     }
-    match Client::new(topic_name, localhost, redis_path) {
-        Some(c)=>{ 
-            unsafe {
-                CLIENT.get_or_init(|| Mutex::new(c));
-            }
-            return true;
-        },
-        None=>return false
-    }
+    
 }  
 
 #[no_mangle]
-pub extern "C" fn send_to(topic_name: &str, data: *const::std::os::raw::c_uchar, data_size: usize)->bool{
+pub extern "C" fn send_to(client: &mut Box<Option<Client>>, topic_name: &str, data: *const::std::os::raw::c_uchar, data_size: usize)->bool{
     unsafe {
         let data = std::slice::from_raw_parts(data, data_size);
     true 

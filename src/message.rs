@@ -4,7 +4,7 @@ use crate::redis;
 
 
 pub struct Message{
-    data: Vec<u8>,
+   // data: Vec<u8>,
 }
 
 

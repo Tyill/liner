@@ -5,21 +5,18 @@ use std::net::TcpStream;
 use std::{thread, sync::mpsc::Sender};
 
 pub struct Topic{
-    pub name: String,
-    rx: Sender<Message>,
 }
 
 impl Topic {
-    pub fn new_for_read(mut stream: TcpStream, rx: Sender<Message>) -> Topic {
+    pub fn new_for_read(mut stream: TcpStream, tx: Sender<Message>) -> Topic {
         thread::spawn(move|| {
             let mut buff = [0; 4096];
             loop {
                 stream.read(&mut buff);
+                tx.send(Message{});
             }            
         });
         Self{
-            name: "".to_string(),
-            rx
         }        
     }
 
