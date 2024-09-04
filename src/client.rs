@@ -1,17 +1,17 @@
 use crate::redis;
 use crate::topic::Topic;
+use crate::message::Message;
 
-use std::io::Write;
 use std::net::{TcpListener, TcpStream};
-use std::os::raw::c_void;
-use std::thread;
+use std::{thread, sync::{Arc, Mutex, mpsc::{self, Receiver}}};
 use std::collections::HashMap;
 
 pub struct Client{
     name: String,
     db: redis::Connect,
-    thr: Option<thread::JoinHandle<()>>,
-    topics: HashMap<String, Topic>,
+    topics_receive: Arc<Mutex<Vec<Topic>>>,
+    topics_send: Arc<Mutex<HashMap<String, Topic>>>,
+    rx: Receiver<Message>,
 }
 
 impl Client {
@@ -27,18 +27,24 @@ impl Client {
         let listener = TcpListener::bind(localhost);
         match listener {
             Ok(listener) => {
-                let mut slf = Self {
-                    name : name.to_string(),
-                    db,
-                    thr: None,
-                    topics: HashMap::new()
-                };
-                let thr = thread::spawn(move|| {
+                let (tx, rx) = mpsc::channel();
+                let topics = Arc::new(Mutex::new(Vec::new()));
+                let topics_receive = topics.clone();
+                thread::spawn(move|| {
                     for stream in listener.incoming(){
-                        slf.handle_connection(stream.unwrap());
-                    }                    
-                });
-                Some(slf)
+                        match stream {
+                            Ok(stream)=>topics.lock().unwrap().push(Topic::new_for_read(stream, tx.clone())),
+                            Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
+                        }
+                    }
+                });                
+                Some(Self{
+                    name: name.to_string(),
+                    db,
+                    topics_receive,
+                    topics_send: Arc::new(Mutex::new(HashMap::new())),
+                    rx,
+                })
             }
             Err(err) => {
                 eprintln!("Error {}:{}: {}", file!(), line!(), err);
@@ -64,10 +70,6 @@ impl Client {
         }
         
         return false
-    }
-
-    fn handle_connection(&mut self, mut stream: TcpStream) {
-        
     }
 }
 

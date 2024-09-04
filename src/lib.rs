@@ -1,6 +1,7 @@
 mod topic;
 mod redis;
 mod client;
+mod message;
 use std::sync::{Mutex, OnceLock};
 use crate::client::Client;
 
