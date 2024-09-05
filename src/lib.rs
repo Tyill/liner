@@ -7,16 +7,16 @@ use crate::client::Client;
 use std::ffi::CStr;
 
 #[no_mangle]
-pub extern "C" fn init(topic: *const u8, 
-                       localhost: *const u8,
-                       redis_path: *const u8,
+pub extern "C" fn init(topic: *const i8, 
+                       localhost: *const i8,
+                       redis_path: *const i8,
                        cb: extern "C" fn(*const u8, usize))->Box<Option<Client>>{
     unsafe{
-        let topic_ = String::from_raw_parts(topic as *mut u8, topic_length, 256);
-        let localhost_ = String::from_raw_parts(localhost as *mut u8, localhost_length, 256);
-        let redis_path_ = String::from_raw_parts(redis_path as *mut u8, redis_path_length, 256);
+        let topic_ = CStr::from_ptr(topic).to_str().unwrap();
+        let localhost_ = CStr::from_ptr(localhost).to_str().unwrap();
+        let redis_path_ = CStr::from_ptr(redis_path).to_str().unwrap();
         
-        Box::new(Client::new(&topic_, &localhost_, &redis_path_, cb))
+        Box::new(Client::new(topic_, localhost_, redis_path_, cb))
     }
     
 }  

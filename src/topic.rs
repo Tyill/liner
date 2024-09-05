@@ -11,15 +11,42 @@ impl Topic {
     pub fn new_for_read(mut stream: TcpStream, tx: Sender<Message>) -> Topic {
         thread::spawn(move|| {
             let mut buff = [0; 4096];
+            let mut msz: i32 = 0;
+            let mut indata: Vec<u8> = Vec::new();
             loop {
-                stream.read(&mut buff);
-                tx.send(Message{});
+                match stream.read(&mut buff){
+                    Ok(n)=>{
+                        if n >= 4 && msz == 0{
+                            msz = i32::from_be_bytes(u8_arr(&buff[0..4]));
+                            indata.clear();
+                            indata.reserve(msz as usize);
+                            indata.extend_from_slice(&buff[4..n - 4]);
+                            continue;
+                        }else if n > 0 && msz > 0{
+                            indata.extend_from_slice(&buff[0..n]);
+                        }
+                        if indata.len() == msz as usize{
+                            let mess = Message::new(indata.clone());
+                            match tx.send(mess){
+                                Err(e)=>{
+
+                                },
+                                Ok(_) => ()
+                            }
+                            msz == 0;
+                        }
+                    },
+                    Err(e)=>{
+
+                    }
+                } 
+                
             }            
         });
         Self{
-        }        
+        }
     }
-
+    
     // pub fn send_to(data: &[u8]) -> bool {
        
     //     match TcpStream::connect(&addr[0]) {
@@ -40,4 +67,8 @@ impl Topic {
     //         Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
     //     }
     // }
+}
+
+fn u8_arr(b: &[u8]) -> [u8; 4] {
+    b.try_into().unwrap()
 }
