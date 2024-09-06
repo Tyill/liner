@@ -6,27 +6,46 @@ use crate::client::Client;
 
 use std::ffi::CStr;
 
-#[no_mangle]
-pub extern "C" fn init(topic: *const i8, 
-                       localhost: *const i8,
-                       redis_path: *const i8,
-                       cb: extern "C" fn(*const u8, usize))->Box<Option<Client>>{
-    unsafe{
-        let topic_ = CStr::from_ptr(topic).to_str().unwrap();
-        let localhost_ = CStr::from_ptr(localhost).to_str().unwrap();
-        let redis_path_ = CStr::from_ptr(redis_path).to_str().unwrap();
-        
-        Box::new(Client::new(topic_, localhost_, redis_path_, cb))
-    }
-    
-}  
 
 #[no_mangle]
-pub extern "C" fn send_to(client: &mut Box<Option<Client>>, topic_name: &str, data: *const::std::os::raw::c_uchar, data_size: usize)->bool{
+pub extern "C" fn init(topic: *const i8, 
+                       redis_path: *const i8,
+                       )->Box<Option<Client>>{
+    unsafe{
+        let topic_ = CStr::from_ptr(topic).to_str().unwrap();
+        let redis_path_ = CStr::from_ptr(redis_path).to_str().unwrap();
+        
+        Box::new(Client::new(topic_, redis_path_))
+    }    
+}
+
+type UCback = extern "C" fn(from: *const i8, uuid: *const i8, timestamp: u64, data: *const u8, dsize: usize);
+
+#[no_mangle]
+pub extern "C" fn on_receive(client: &mut Box<Option<Client>>, 
+                             localhost: *const i8,
+                             receive_cb: UCback)->bool{
+    unsafe{
+        let localhost_ = CStr::from_ptr(localhost).to_str().unwrap();
+            
+        let c = client.as_mut();
+        c.as_mut().unwrap().on_receive(localhost_, receive_cb)
+    }
+}
+
+
+#[no_mangle]
+pub extern "C" fn send_to(client: &mut Box<Option<Client>>,
+                          to: *const i8, // topic_name
+                          uuid: *const i8,
+                          data: *const u8, data_size: usize)->bool{
     unsafe {
+        let to_ = CStr::from_ptr(to).to_str().unwrap();
+        let uuid_ = CStr::from_ptr(uuid).to_str().unwrap();       
         let data = std::slice::from_raw_parts(data, data_size);
-    true 
-   //     return topic::Topic::send_to(topic_name, data);
+
+        let c = client.as_mut();
+        c.as_mut().unwrap().send_to(to_, uuid_, data)
     }    
 }  
 

@@ -1,72 +1,108 @@
 use crate::redis;
 use crate::topic::Topic;
-use crate::message::Message;
+use crate::UCback;
 
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::{thread, sync::mpsc};
+use std::collections::HashMap;
+
+const MAX_TOPIC_CONN_COUNT: usize = 128;
 
 pub struct Client{
     name: String,
     db: redis::Connect,
+    producers: HashMap<String, Topic>,
+    is_on_receive: bool
 }
 
 impl Client {
-    pub fn new(name: &str, localhost: &str, redis_path: &str, cb: extern "C" fn(*const u8, usize)) -> Option<Client> {
-        let mut db = redis::Connect::new(redis_path).ok()?;
-        match db.regist_topic(name, localhost){
-            Err(err)=> {
-                eprintln!("Error {}:{}: {}", file!(), line!(), err);
-                return None
+    pub fn new(name: &str, redis_path: &str) -> Option<Client> {
+        let db = redis::Connect::new(redis_path).ok()?;
+        Some(
+            Self{
+                name: name.to_string(),
+                db,
+                producers: HashMap::new(),
+                is_on_receive: false
             }
-            _ =>()
-        }       
-        match TcpListener::bind(localhost) {
-            Ok(listener) => {
-                let (tx, rx) = mpsc::channel();
-                thread::spawn(move|| {
-                    let mut topics = Vec::new();
-                    for stream in listener.incoming(){
-                        match stream {
-                            Ok(stream)=>topics.push(Topic::new_for_read(stream, tx.clone())),
-                            Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
-                        }
-                    }
-                });
-                thread::spawn(move|| loop{ 
-                    match rx.recv() {
-                        Ok(r)=>(),//cb(&[0;1], 123),
-                        Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
-                    }
-                });              
-                Some(Self{
-                    name: name.to_string(),
-                    db,
-                })
-            }
-            Err(err) => {
-                eprintln!("Error {}:{}: {}", file!(), line!(), err);
-                None
-            }
-        }
+        )
     }
 
-    pub fn send_to(&mut self, name: &str, data: &[u8]) -> bool {
+    pub fn on_receive(&mut self, localhost: &str, cb: UCback) -> bool {
+        if self.is_on_receive{
+            return true;
+        }
+        let listener = TcpListener::bind(localhost);
+        match listener {
+            Err(err) => {
+                eprintln!("Error {}:{}: {}", file!(), line!(), err);
+                return false;
+            }
+            Ok(_)=>()
+        }
+        match self.db.regist_topic(&self.name, localhost){
+            Err(err)=> {
+                eprintln!("Error {}:{}: {}", file!(), line!(), err);
+                return false;
+            }
+            Ok(_)=>()
+        }
+        let listener = listener.unwrap();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move|| {
+            let mut topics = Vec::new();
+            for stream in listener.incoming(){
+                if topics.len() < MAX_TOPIC_CONN_COUNT{
+                    match stream {
+                        Ok(stream)=>topics.push(Topic::new_for_read(stream, tx.clone())),
+                        Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
+                    }
+                }else{
+                    eprintln!("Error {}:{}: {}", file!(), line!(), "limit of available connections has been exceeded");
+                }
+            }
+        });
+        thread::spawn(move|| loop{ 
+            match rx.recv() {
+                Ok(r)=>(),//cb(&[0;1], 123),
+                Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
+            }
+        });
+        self.is_on_receive = true;
+        return true;
+    }
 
-        let addr = self.db.get_topic_addr(name);
-        match addr{
+    pub fn send_to(&mut self, to: &str, uuid: &str, data: &[u8]) -> bool {
+        let addrs = self.db.get_topic_addr(to);
+        match addrs{
             Err(err)=> {
                 eprintln!("Error {}:{}: {}", file!(), line!(), err);
                 return false
             }
-            _ =>()
+            Ok(_)=>()
         }
-        let addr = addr.unwrap();
-        if addr.len() == 0{
-            eprintln!("Error not found addr for topic {}", name);
-            return false
+        let addrs = addrs.unwrap();
+        if addrs.len() == 0{
+            eprintln!("Error not found addr for topic {}", to);
+            return false;
         }
-        
-        return false
+        for addr in addrs{
+            if !self.producers.contains_key(addr){
+                match TcpStream::connect(addr){
+                    Ok(stream)=>{
+                        self.producers.insert(to.to_string(), Topic::new_for_write(stream));
+                        self.producers.get_mut(addr).unwrap().is_last_sender = true;
+                        break;
+                    },
+                    Err(err)=>{
+                        eprintln!("Error {}:{}: {}", file!(), line!(), err);
+                    }
+                }
+            }else if !self.producers[addr].is_last_sender{
+                
+            }
+        }        
+        return true;
     }
 }
 
