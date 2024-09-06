@@ -1,22 +1,27 @@
 use crate::message::Message;
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::{thread, sync::mpsc::Sender};
+use std::sync::{Arc, Mutex};
+
+use rayon::prelude::*;
 
 pub struct Topic{
     pub is_last_sender: bool,
-    send_stream: Option<TcpStream>,
+    stream: Arc<Mutex<TcpStream>>,
 }
 
 impl Topic {
     pub fn new_for_read(mut stream: TcpStream, tx: Sender<Message>) -> Topic {
+        let stream = Arc::new(Mutex::new(stream));
+        let stream_ = stream.clone();
         thread::spawn(move|| {
             let mut buff = [0; 4096];
             let mut msz: i32 = 0;
             let mut indata: Vec<u8> = Vec::new();
             loop {
-                match stream.read(&mut buff){
+                match stream_.lock().unwrap().read(&mut buff){
                     Ok(n)=>{
                         let mut cbuff = &buff[..n];
                         if n > 0 && msz == 0{
@@ -51,32 +56,38 @@ impl Topic {
         });
         Self{
             is_last_sender: false,
-            send_stream: None
+            stream
         }
     }
 
     pub fn new_for_write(stream: TcpStream) -> Topic {
-        thread::spawn(move|| {
-                  
-        });
         Self{
             is_last_sender: false,
-            send_stream: Some(stream)
+            stream: Arc::new(Mutex::new(stream))
         }
-    }
-    
+    }    
     pub fn send_to(&mut self, to: &str, uuid: &str, data: &[u8]) -> bool {
-       
-        // match TcpStream::connect(&addr[0]) {
-        //     Ok(mut stream) => {                                
-        //         stream.write(data).unwrap();
-        //         return true
-        //     },
-        //     Err(err) => {
-        //         eprintln!("Error {}:{}: {}", file!(), line!(), err);
-        //     }
-        // }  
-        return false
+        let stream = self.stream.clone();
+        let to_ = to.to_string();
+        let uuid_ = uuid.to_string();
+        let data_ = data.to_owned();
+        rayon::spawn(move || {
+            write_stream(&stream, to_.as_bytes());
+            write_stream(&stream, uuid_.as_bytes());
+            write_stream(&stream, &data_);
+           // stream.lock().unwrap().write_all(uuid.as_bytes());        
+           // stream.lock().unwrap().write_all(data);
+        });
+        true
+    }
+}
+
+fn write_stream(stream: &Arc<Mutex<TcpStream>>, data: &[u8]){
+    loop {
+        match stream.lock().unwrap().write_all(data){
+            Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err),
+            Ok(_)=>break
+        }
     }
 }
 
