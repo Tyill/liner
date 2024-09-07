@@ -6,8 +6,6 @@ use std::net::{TcpListener, TcpStream};
 use std::{thread, sync::mpsc};
 use std::collections::HashMap;
 
-const MAX_TOPIC_CONN_COUNT: usize = 128;
-
 pub struct Client{
     name: String,
     db: redis::Connect,
@@ -28,37 +26,27 @@ impl Client {
         )
     }
 
-    pub fn on_receive(&mut self, localhost: &str, cb: UCback) -> bool {
+    pub fn run(&mut self, localhost: &str, cb: UCback) -> bool {
         if self.is_on_receive{
             return true;
         }
         let listener = TcpListener::bind(localhost);
-        match listener {
-            Err(err) => {
-                eprintln!("Error {}:{}: {}", file!(), line!(), err);
-                return false;
-            }
-            Ok(_)=>()
+        if let Err(err) = listener {
+            eprintln!("Error {}:{}: {}", file!(), line!(), err);
+            return false;        
         }
-        match self.db.regist_topic(&self.name, localhost){
-            Err(err)=> {
-                eprintln!("Error {}:{}: {}", file!(), line!(), err);
-                return false;
-            }
-            Ok(_)=>()
+        if let Err(err) = self.db.regist_topic(&self.name, localhost){
+            eprintln!("Error {}:{}: {}", file!(), line!(), err);
+            return false;
         }
         let listener = listener.unwrap();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move|| {
             let mut topics = Vec::new();
             for stream in listener.incoming(){
-                if topics.len() < MAX_TOPIC_CONN_COUNT{
-                    match stream {
-                        Ok(stream)=>topics.push(Topic::new_for_read(stream, tx.clone())),
-                        Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
-                    }
-                }else{
-                    eprintln!("Error {}:{}: {}", file!(), line!(), "limit of available connections has been exceeded");
+                match stream {
+                    Ok(stream)=>topics.push(Topic::new_for_read(stream, tx.clone())),
+                    Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
                 }
             }
         });
@@ -74,12 +62,9 @@ impl Client {
 
     pub fn send_to(&mut self, to: &str, uuid: &str, data: &[u8]) -> bool {
         let addrs = self.db.get_topic_addr(to);
-        match addrs{
-            Err(err)=> {
-                eprintln!("Error {}:{}: {}", file!(), line!(), err);
-                return false
-            }
-            Ok(_)=>()
+        if let Err(err) = addrs{
+            eprintln!("Error {}:{}: {}", file!(), line!(), err);
+            return false           
         }
         let addrs = addrs.unwrap();
         if addrs.len() == 0{
@@ -91,6 +76,7 @@ impl Client {
                 match TcpStream::connect(addr){
                     Ok(stream)=>{
                         self.producers.insert(to.to_string(), Topic::new_for_write(stream));
+                        self.producers.get(addr).unwrap().send_to(to, uuid, data)
                         self.producers.get_mut(addr).unwrap().is_last_sender = true;
                         break;
                     },

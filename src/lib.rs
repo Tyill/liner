@@ -22,14 +22,14 @@ pub extern "C" fn init(topic: *const i8,
 type UCback = extern "C" fn(from: *const i8, uuid: *const i8, timestamp: u64, data: *const u8, dsize: usize);
 
 #[no_mangle]
-pub extern "C" fn on_receive(client: &mut Box<Option<Client>>, 
+pub extern "C" fn run(client: &mut Box<Option<Client>>, 
                              localhost: *const i8,
                              receive_cb: UCback)->bool{
     unsafe{
         let localhost_ = CStr::from_ptr(localhost).to_str().unwrap();
             
         let c = client.as_mut();
-        c.as_mut().unwrap().on_receive(localhost_, receive_cb)
+        c.as_mut().unwrap().run(localhost_, receive_cb)
     }
 }
 
