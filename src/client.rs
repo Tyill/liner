@@ -1,3 +1,4 @@
+use crate::message::Message;
 use crate::redis;
 use crate::topic::Topic;
 use crate::UCback;
@@ -5,12 +6,14 @@ use crate::UCback;
 use std::net::{TcpListener, TcpStream};
 use std::{thread, sync::mpsc};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 pub struct Client{
     name: String,
     db: redis::Connect,
     producers: HashMap<String, Topic>,
-    is_on_receive: bool
+    consumers: Arc<Mutex<Vec<Topic>>>,
+    is_run: bool,
 }
 
 impl Client {
@@ -21,13 +24,14 @@ impl Client {
                 name: name.to_string(),
                 db,
                 producers: HashMap::new(),
-                is_on_receive: false
+                consumers: Arc::new(Mutex::new(Vec::new())),
+                is_run: false
             }
         )
     }
 
     pub fn run(&mut self, localhost: &str, cb: UCback) -> bool {
-        if self.is_on_receive{
+        if self.is_run{
             return true;
         }
         let listener = TcpListener::bind(localhost);
@@ -40,12 +44,12 @@ impl Client {
             return false;
         }
         let listener = listener.unwrap();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel::<Message>();
+        let consumers = self.consumers.clone();
         thread::spawn(move|| {
-            let mut topics = Vec::new();
             for stream in listener.incoming(){
                 match stream {
-                    Ok(stream)=>topics.push(Topic::new_for_read(stream, tx.clone())),
+                    Ok(stream)=>consumers.lock().unwrap().push(Topic::new(stream)),
                     Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
                 }
             }
@@ -56,39 +60,57 @@ impl Client {
                 Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
             }
         });
-        self.is_on_receive = true;
+        self.is_run = true;
         return true;
     }
 
     pub fn send_to(&mut self, to: &str, uuid: &str, data: &[u8]) -> bool {
-        let addrs = self.db.get_topic_addr(to);
-        if let Err(err) = addrs{
+        let addresses = self.db.get_topic_addresses(to);
+        if let Err(err) = addresses{
             eprintln!("Error {}:{}: {}", file!(), line!(), err);
             return false           
         }
-        let addrs = addrs.unwrap();
-        if addrs.len() == 0{
+        let addresses = addresses.unwrap();
+        if addresses.len() == 0{
             eprintln!("Error not found addr for topic {}", to);
             return false;
         }
-        for addr in addrs{
+        let mut is_send = false;
+        for addr in addresses{
             if !self.producers.contains_key(addr){
                 match TcpStream::connect(addr){
                     Ok(stream)=>{
-                        self.producers.insert(to.to_string(), Topic::new_for_write(stream));
-                        self.producers.get(addr).unwrap().send_to(to, uuid, data)
-                        self.producers.get_mut(addr).unwrap().is_last_sender = true;
+                        let mut topic = Topic::new(stream);
+                        topic.send_to(to, &self.name, uuid, data);
+                        topic.was_send = true;
+                        self.producers.insert(to.to_string(), topic);
+                        is_send = true;
                         break;
                     },
                     Err(err)=>{
-                        eprintln!("Error {}:{}: {}", file!(), line!(), err);
+                        eprintln!("Error {}:{}: {} {}", file!(), line!(), err, addr);
                     }
                 }
-            }else if !self.producers[addr].is_last_sender{
-                
+            }else if !self.producers[addr].was_send{
+                self.producers.get(addr).unwrap().send_to(to, &self.name, uuid, data);
+                self.producers.get_mut(addr).unwrap().was_send = true;
+                is_send = true;
+                break;
             }
-        }        
-        return true;
+        }
+        if !is_send{
+            for addr in addresses{
+                if self.producers.contains_key(addr){
+                    self.producers.get_mut(addr).unwrap().was_send = false;
+                    if !is_send{
+                        self.producers.get(addr).unwrap().send_to(to, &self.name, uuid, data);
+                        self.producers.get_mut(addr).unwrap().was_send = true;
+                        is_send = true;
+                    }
+                }
+            }
+        }  
+        return is_send;
     }
 }
 

@@ -21,7 +21,7 @@ impl Connect {
         conn.hset(format!("topic:{}:addr", name), addr, "")?;
         Ok(())
     }
-    pub fn get_topic_addr(&mut self, name: &str)->RedisResult<&Vec<String>>{
+    pub fn get_topic_addresses(&mut self, name: &str)->RedisResult<&Vec<String>>{
         if !self.topic_addr_cache.contains_key(name){
             let conn = self.get_conn()?; 
             let res = conn.hkeys(format!("topic:{}:addr", name))?;

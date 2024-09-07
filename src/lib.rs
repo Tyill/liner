@@ -2,6 +2,7 @@ mod topic;
 mod redis;
 mod client;
 mod message;
+mod bytestream;
 use crate::client::Client;
 
 use std::ffi::CStr;
@@ -23,8 +24,8 @@ type UCback = extern "C" fn(from: *const i8, uuid: *const i8, timestamp: u64, da
 
 #[no_mangle]
 pub extern "C" fn run(client: &mut Box<Option<Client>>, 
-                             localhost: *const i8,
-                             receive_cb: UCback)->bool{
+                      localhost: *const i8,
+                      receive_cb: UCback)->bool{
     unsafe{
         let localhost_ = CStr::from_ptr(localhost).to_str().unwrap();
             
