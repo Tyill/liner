@@ -20,7 +20,7 @@ pub extern "C" fn init(topic: *const i8,
     }    
 }
 
-type UCback = extern "C" fn(from: *const i8, uuid: *const i8, timestamp: u64, data: *const u8, dsize: usize);
+type UCback = extern "C" fn(to: *const i8, from: *const i8, uuid: *const i8, timestamp: u64, data: *const u8, dsize: usize);
 
 #[no_mangle]
 pub extern "C" fn run(client: &mut Box<Option<Client>>, 

@@ -1,6 +1,22 @@
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
+pub fn get_string(indata: &[u8])->(String, &[u8])
+{
+    let mut offs = 0;
+    let sz: usize = i32::from_be_bytes(u8_4(&indata[0..4])) as usize;               offs += 4;
+    let to = String::from_utf8_lossy(&indata[offs..offs + sz]).to_string(); offs += sz;
+    return (to, &indata[offs..]);
+}
+
+pub fn get_u64(indata: &[u8])->(u64, &[u8])
+{
+    let mut offs = 0;
+    let sz: usize = i32::from_be_bytes(u8_4(&indata[0..4])) as usize; offs += 4;
+    let to = u64::from_be_bytes(u8_8(&indata[offs..offs + sz])); offs += sz;
+    return (to, &indata[offs..]);
+}
+
 
 pub fn read_stream<T>(stream: &Arc<Mutex<T>>)->Vec<u8>
 where 
@@ -49,6 +65,9 @@ where
 }
 
 fn u8_4(b: &[u8]) -> [u8; 4] {
+    b.try_into().unwrap()
+}
+fn u8_8(b: &[u8]) -> [u8; 8] {
     b.try_into().unwrap()
 }
 

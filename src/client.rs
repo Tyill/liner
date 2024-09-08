@@ -29,7 +29,6 @@ impl Client {
             }
         )
     }
-
     pub fn run(&mut self, localhost: &str, cb: UCback) -> bool {
         if self.is_run{
             return true;
