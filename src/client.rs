@@ -2,17 +2,17 @@ use crate::message::Message;
 use crate::redis;
 use crate::topic::Topic;
 use crate::UCback;
+use crate::epool::EPool;
 
 use std::net::{TcpListener, TcpStream};
 use std::{thread, sync::mpsc};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+//use std::sync::{Arc, Mutex};
 
 pub struct Client{
     name: String,
     db: redis::Connect,
     producers: HashMap<String, Topic>,
-    consumers: Arc<Mutex<Vec<Topic>>>,
     is_run: bool,
 }
 
@@ -24,7 +24,6 @@ impl Client {
                 name: name.to_string(),
                 db,
                 producers: HashMap::new(),
-                consumers: Arc::new(Mutex::new(Vec::new())),
                 is_run: false
             }
         )
@@ -44,12 +43,12 @@ impl Client {
         }
         let listener = listener.unwrap();
         let (tx, rx) = mpsc::channel::<Message>();
-        let consumers = self.consumers.clone();
         thread::spawn(move|| {
+            let mut epool = EPool::new(tx);
             for stream in listener.incoming(){
                 match stream {
-                    Ok(stream)=>consumers.lock().unwrap().push(Topic::new(stream)),
-                    Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
+                    Ok(stream)=>{epool.add_read_stream(stream);},
+                    Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err),
                 }
             }
         });

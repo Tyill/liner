@@ -29,7 +29,6 @@ impl Message {
         }
     }    
     pub fn from_stream(stream: &Arc<Mutex<TcpStream>>) -> Option<Message> {
-        
         let indata = read_stream(&stream);
         if indata.len() == 0{
             return None;
@@ -39,10 +38,10 @@ impl Message {
         let (uuid, indata) = get_string(indata);
         let (timestamp, indata) = get_u64(indata);
         
-        Some(Self { to, from, uuid, timestamp, data: indata.to_owned() })
+        Some(Self { to, from, uuid, timestamp, data: indata.to_vec()})
     }
     pub fn to_stream(&self, stream: &Arc<Mutex<TcpStream>>) {
-        let all_size = self.to.len() + self.from.len() + self.uuid.len() + 8 + self.data.len();
+        let all_size = self.to.len() + self.from.len() + self.uuid.len() + std::mem::size_of::<u64>() + self.data.len();
         let _ = write_number(&stream, all_size as i32) &&
                 write_string(&stream, &self.to) &&
                 write_string(&stream, &self.from) &&
