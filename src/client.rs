@@ -2,7 +2,7 @@ use crate::message::Message;
 use crate::redis;
 use crate::topic::Topic;
 use crate::UCback;
-use crate::epool::EPool;
+use crate::epoll::EPoll;
 
 use std::net::{TcpListener, TcpStream};
 use std::{thread, sync::mpsc};
@@ -12,6 +12,7 @@ use std::collections::HashMap;
 pub struct Client{
     name: String,
     db: redis::Connect,
+    epoll: Option<EPoll>,
     producers: HashMap<String, Topic>,
     is_run: bool,
 }
@@ -23,6 +24,7 @@ impl Client {
             Self{
                 name: name.to_string(),
                 db,
+                epoll: None,
                 producers: HashMap::new(),
                 is_run: false
             }
@@ -41,17 +43,9 @@ impl Client {
             eprintln!("Error {}:{}: {}", file!(), line!(), err);
             return false;
         }
-        let listener = listener.unwrap();
         let (tx, rx) = mpsc::channel::<Message>();
-        thread::spawn(move|| {
-            let mut epool = EPool::new(tx);
-            for stream in listener.incoming(){
-                match stream {
-                    Ok(stream)=>{epool.add_read_stream(stream);},
-                    Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err),
-                }
-            }
-        });
+        let mut epoll = EPoll::new(listener.unwrap(), tx);
+                
         thread::spawn(move|| loop{ 
             match rx.recv() {
                 Ok(r)=>(),//cb(&[0;1], 123),

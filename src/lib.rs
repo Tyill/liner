@@ -3,7 +3,7 @@ mod redis;
 mod client;
 mod message;
 mod bytestream;
-mod epool;
+mod epoll;
 use crate::client::Client;
 
 use std::ffi::CStr;

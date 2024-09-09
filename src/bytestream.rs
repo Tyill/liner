@@ -36,7 +36,6 @@ where
                 if msz == 0 && offs >= 4 {
                     msz = i32::from_be_bytes(u8_4(&buff[0..4]));                        
                     assert!(msz > 0);
-                    indata.clear();
                     indata.reserve(msz as usize);
                     cbuff = &buff[4..offs];
                     offs = 0;
