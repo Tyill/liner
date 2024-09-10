@@ -7,11 +7,11 @@ use std::time::SystemTime;
 
 
 pub struct Message {
-    to: String,
-    from: String,
-    uuid: String,
-    timestamp: u64,
-    data: Vec<u8>,
+    pub to: String,
+    pub from: String,
+    pub uuid: String,
+    pub timestamp: u64,
+    pub data: Vec<u8>,
 }
 
 impl Message {
@@ -40,14 +40,15 @@ impl Message {
         
         Some(Self { to, from, uuid, timestamp, data: indata.to_vec()})
     }
-    pub fn to_stream(&self, stream: &Arc<Mutex<TcpStream>>) {
+    pub fn to_stream(&self, stream: &Arc<Mutex<TcpStream>>)->bool {
         let all_size = self.to.len() + self.from.len() + self.uuid.len() + std::mem::size_of::<u64>() + self.data.len();
-        let _ = write_number(&stream, all_size as i32) &&
+        let ret = write_number(&stream, all_size as i32) &&
                 write_string(&stream, &self.to) &&
                 write_string(&stream, &self.from) &&
                 write_string(&stream, &self.uuid) &&
                 write_number(&stream, self.timestamp) && 
-                write_bytes(&stream, &self.data);        
+                write_bytes(&stream, &self.data);
+        return ret;
     }
 }
 

@@ -45,8 +45,7 @@ impl EPoll {
                         if err.kind() == std::io::ErrorKind::Interrupted{
                             continue;
                         }else{
-                            eprintln!("couldn't epoll_wait: {}", err);
-                            break;
+                            panic!("couldn't epoll_wait: {}", err); //? eprintln
                         }
                     }
                 }  

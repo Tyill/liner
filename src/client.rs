@@ -30,7 +30,7 @@ impl Client {
             }
         )
     }
-    pub fn run(&mut self, localhost: &str, cb: UCback) -> bool {
+    pub fn run(&mut self, localhost: &str, receive_cb: UCback) -> bool {
         if self.is_run{
             return true;
         }
@@ -44,15 +44,19 @@ impl Client {
             return false;
         }
         let (tx, rx) = mpsc::channel::<Message>();
-        let mut epoll = EPoll::new(listener.unwrap(), tx);
-                
         thread::spawn(move|| loop{ 
             match rx.recv() {
-                Ok(r)=>(),//cb(&[0;1], 123),
+                Ok(m)=>{
+                    receive_cb(m.to.as_ptr() as *const i8,
+                               m.from.as_ptr() as *const i8, 
+                               m.uuid.as_ptr() as *const i8, m.timestamp, 
+                               m.data.as_ptr(), m.data.len());
+                },
                 Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
             }
-        });
+        });        
         self.is_run = true;
+        self.epoll = Some(EPoll::new(listener.unwrap(), tx));
         return true;
     }
 
@@ -67,41 +71,40 @@ impl Client {
             eprintln!("Error not found addr for topic {}", to);
             return false;
         }
-        let mut is_send = false;
         for addr in addresses{
             if !self.producers.contains_key(addr){
                 match TcpStream::connect(addr){
                     Ok(stream)=>{
-                        let mut topic = Topic::new(stream);
-                        topic.send_to(to, &self.name, uuid, data);
-                        topic.was_send = true;
-                        self.producers.insert(to.to_string(), topic);
-                        is_send = true;
-                        break;
+                        self.producers.insert(to.to_string(), Topic::new(stream));
                     },
                     Err(err)=>{
                         eprintln!("Error {}:{}: {} {}", file!(), line!(), err, addr);
                     }
                 }
-            }else if !self.producers[addr].was_send{
-                self.producers.get(addr).unwrap().send_to(to, &self.name, uuid, data);
-                self.producers.get_mut(addr).unwrap().was_send = true;
+            }            
+        }
+        if self.producers.is_empty(){
+            return false;
+        }
+        let mut is_send = false;
+        for p in &mut self.producers{
+            if !p.1.was_send{
+                p.1.send_to(to, &self.name, uuid, data);
+                p.1.was_send = true;
                 is_send = true;
                 break;
             }
-        }
+        }  
         if !is_send{
-            for addr in addresses{
-                if self.producers.contains_key(addr){
-                    self.producers.get_mut(addr).unwrap().was_send = false;
-                    if !is_send{
-                        self.producers.get(addr).unwrap().send_to(to, &self.name, uuid, data);
-                        self.producers.get_mut(addr).unwrap().was_send = true;
-                        is_send = true;
-                    }
+            for p in &mut self.producers{
+                p.1.was_send = false;
+                if !is_send{
+                    p.1.send_to(to, &self.name, uuid, data);
+                    p.1.was_send = true;
+                    is_send = true;
                 }
             }
-        }  
+        }
         return is_send;
     }
 }

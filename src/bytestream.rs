@@ -46,16 +46,14 @@ where
                         break;
                     }
                 }
-                if n == 0{
+                if n == 0{ // close stream on other side
                     indata.clear();
                     break; 
                 }
             }
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::Interrupted{
-                    eprintln!("Error {}:{}: {}", file!(), line!(), e);
-                    indata.clear();
-                    break;
+                    eprintln!("Error {}:{}: {}", file!(), line!(), e);                    
                 }
             }
         }
@@ -89,7 +87,7 @@ where
     let ok = write_stream(&stream, v.to_be_bytes().as_ref());
     return ok;
 }
-trait ToBeBytes {
+pub trait ToBeBytes {
     type ByteArray: AsRef<[u8]>;
     fn to_be_bytes(&self) -> Self::ByteArray;
 }
@@ -123,6 +121,10 @@ where
     let mut is = false;
     loop {
         match stream.lock().unwrap().write_all(data) {
+            Ok(_) => { 
+                is = true;
+                break;
+            },
             Err(err) => {
                 if err.kind() == std::io::ErrorKind::Interrupted {
                     continue;
@@ -130,11 +132,7 @@ where
                     eprintln!("Error {}:{}: {}", file!(), line!(), err);
                     break;
                 }
-            },
-            Ok(_) => { 
-                is = true;
-                break;
-            },
+            },            
         }
     }
     return is;
