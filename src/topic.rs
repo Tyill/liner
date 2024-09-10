@@ -1,4 +1,5 @@
 use crate::message::Message;
+use crate::redis;
 
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
@@ -16,12 +17,13 @@ impl Topic {
             stream: Arc::new(Mutex::new(stream)),
         }
     }
-    pub fn send_to(&self, to: &str, from: &str, uuid: &str, data: &[u8])->bool {
+    pub fn send_to(&self, to: &str, from: &str, uuid: &str, data: &[u8]) {
         let stream = self.stream.clone();
         let mess = Message::new(to, from, uuid, data);
         rayon::spawn(move || {
-            mess.to_stream(&stream);           
+            if !mess.to_stream(&stream){
+                
+            }           
         });
-        return true;
     }
 }

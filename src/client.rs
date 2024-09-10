@@ -5,15 +5,17 @@ use crate::UCback;
 use crate::epoll::EPoll;
 
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::{thread, sync::mpsc};
 use std::collections::HashMap;
 //use std::sync::{Arc, Mutex};
 
 pub struct Client{
     name: String,
-    db: redis::Connect,
+    db: Arc<Mutex<redis::Connect>>,
     epoll: Option<EPoll>,
-    producers: HashMap<String, Topic>,
+    consumers: HashMap<String, Topic>,
+    tx_consumer: Option<mpsc::Sender<Message>>,
     is_run: bool,
 }
 
@@ -23,9 +25,10 @@ impl Client {
         Some(
             Self{
                 name: name.to_string(),
-                db,
+                db: Arc::new(Mutex::new(db)),
                 epoll: None,
-                producers: HashMap::new(),
+                consumers: HashMap::new(),
+                tx_consumer: None,        
                 is_run: false
             }
         )
@@ -39,7 +42,7 @@ impl Client {
             eprintln!("Error {}:{}: {}", file!(), line!(), err);
             return false;        
         }
-        if let Err(err) = self.db.regist_topic(&self.name, localhost){
+        if let Err(err) = self.db.lock().unwrap().regist_topic(&self.name, localhost){
             eprintln!("Error {}:{}: {}", file!(), line!(), err);
             return false;
         }
@@ -54,14 +57,27 @@ impl Client {
                 },
                 Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
             }
+        });
+        let (tx_consr, rx_consr) = mpsc::channel::<Message>();
+        let db = self.db.clone();
+        thread::spawn(move|| loop{ 
+            match rx_consr.recv() {
+                Ok(m)=>{
+                    db.lock().unwrap().regist_topic("d", "d");                    
+                },
+                Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
+            }
         });        
         self.is_run = true;
         self.epoll = Some(EPoll::new(listener.unwrap(), tx));
+        self.tx_consumer = Some(tx_consr);
+
         return true;
     }
 
     pub fn send_to(&mut self, to: &str, uuid: &str, data: &[u8]) -> bool {
-        let addresses = self.db.get_topic_addresses(to);
+       
+        let addresses = self.db.lock().unwrap().get_topic_addresses(to);
         if let Err(err) = addresses{
             eprintln!("Error {}:{}: {}", file!(), line!(), err);
             return false           
@@ -71,11 +87,11 @@ impl Client {
             eprintln!("Error not found addr for topic {}", to);
             return false;
         }
-        for addr in addresses{
-            if !self.producers.contains_key(addr){
+        for addr in &addresses{
+            if !self.consumers.contains_key(addr){
                 match TcpStream::connect(addr){
                     Ok(stream)=>{
-                        self.producers.insert(to.to_string(), Topic::new(stream));
+                        self.consumers.insert(to.to_string(), Topic::new(stream));
                     },
                     Err(err)=>{
                         eprintln!("Error {}:{}: {} {}", file!(), line!(), err, addr);
@@ -83,11 +99,11 @@ impl Client {
                 }
             }            
         }
-        if self.producers.is_empty(){
+        if self.consumers.is_empty(){
             return false;
         }
         let mut is_send = false;
-        for p in &mut self.producers{
+        for p in &mut self.consumers{
             if !p.1.was_send{
                 p.1.send_to(to, &self.name, uuid, data);
                 p.1.was_send = true;
@@ -96,7 +112,7 @@ impl Client {
             }
         }  
         if !is_send{
-            for p in &mut self.producers{
+            for p in &mut self.consumers{
                 p.1.was_send = false;
                 if !is_send{
                     p.1.send_to(to, &self.name, uuid, data);
