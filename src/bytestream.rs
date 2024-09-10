@@ -39,16 +39,16 @@ where
                     indata.reserve(msz as usize);
                     cbuff = &buff[4..offs];
                     offs = 0;
-                }                    
+                }
                 if n > 0 && msz > 0 {
                     indata.extend_from_slice(cbuff);
                     if indata.len() == msz as usize {
                         break;
                     }
                 }
-                if n == 0 {
+                if n == 0{
                     indata.clear();
-                    break;
+                    break; 
                 }
             }
             Err(e) => {
