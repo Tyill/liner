@@ -1,3 +1,6 @@
+use crate::message::Message;
+use crate::redis;
+
 use std::collections::HashMap;
 use std::{thread, sync::mpsc};
 use std::net::{TcpStream, TcpListener};
@@ -5,7 +8,6 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex};
 use std::io;
 
-use crate::message::Message;
 
 #[allow(unused_macros)]
 macro_rules! syscall {
@@ -19,13 +21,14 @@ macro_rules! syscall {
     }};
 }
 
-pub struct EPoll{
+pub struct EPollListener{
     epoll_fd: i32,
 }
 
-impl EPoll {
-    pub fn new(listener: TcpListener, tx: mpsc::Sender<Message>)->EPoll{
+impl EPollListener {
+    pub fn new(listener: TcpListener, tx: mpsc::Sender<Message>, db: &Arc<Mutex<redis::Connect>>)->EPollListener{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
+        let db = db.clone();
         thread::spawn(move|| {
             listener.set_nonblocking(true).expect("couldn't listener set_nonblocking");
             let listener_fd = listener.as_raw_fd();
@@ -45,7 +48,8 @@ impl EPoll {
                         if err.kind() == std::io::ErrorKind::Interrupted{
                             continue;
                         }else{
-                            panic!("couldn't epoll_wait: {}", err); //? eprintln
+                            eprintln!("couldn't epoll_wait: {}", err);
+                            break;
                         }
                     }
                 }  
@@ -59,6 +63,8 @@ impl EPoll {
                                 let stream_fd = stream.as_raw_fd();
                                 add_read_stream(epoll_fd, stream_fd).expect("couldn't add_read_stream");
                                 streams.insert(stream_fd, Arc::new(Mutex::new(stream)));
+
+                                read_last_from_db(&db);
                             }
                             Err(err) => eprintln!("couldn't accept: {}", err),
                         };
@@ -95,6 +101,13 @@ impl EPoll {
     }
 }
 
+fn read_last_from_db(db: &Arc<Mutex<redis::Connect>>){
+    rayon::spawn(move || {
+        // while let Some(m) = Message::from_stream(&stream){
+        //     let _ = tx.send(m);
+        // }
+    });
+}
 fn add_read_stream(epoll_fd: i32, fd: RawFd)->io::Result<i32>{
     regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD)
 }    

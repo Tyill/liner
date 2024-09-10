@@ -6,13 +6,20 @@ use std::sync::{Arc, Mutex};
 //use std::{sync::mpsc::Sender, thread};
 
 pub struct Topic {
-    pub was_send: bool,
     stream: Arc<Mutex<TcpStream>>,
 }
 
 impl Topic {
-    pub fn new(stream: TcpStream) -> Topic {
+    pub fn new(addr: &String, db: &Arc<Mutex<redis::Connect>>) -> Topic {
         Self {
+            // match TcpStream::connect(addr){
+            //     Ok(stream)=>{
+            //         self.consumers.insert(to.to_string(), Topic::new(stream));
+            //     },
+            //     Err(err)=>{
+            //         eprintln!("Error {}:{}: {} {}", file!(), line!(), err, addr);
+            //     }
+            // }
             was_send: false,
             stream: Arc::new(Mutex::new(stream)),
         }

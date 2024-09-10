@@ -2,7 +2,7 @@ use crate::message::Message;
 use crate::redis;
 use crate::topic::Topic;
 use crate::UCback;
-use crate::epoll::EPoll;
+use crate::epoll_listener::EPollListener;
 
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -13,10 +13,11 @@ use std::collections::HashMap;
 pub struct Client{
     name: String,
     db: Arc<Mutex<redis::Connect>>,
-    epoll: Option<EPoll>,
+    epoll_listener: Option<EPollListener>,
     consumers: HashMap<String, Topic>,
-    tx_consumer: Option<mpsc::Sender<Message>>,
+    last_send_index: HashMap<String, usize>,
     is_run: bool,
+    mtx: Mutex<()>,
 }
 
 impl Client {
@@ -26,14 +27,17 @@ impl Client {
             Self{
                 name: name.to_string(),
                 db: Arc::new(Mutex::new(db)),
-                epoll: None,
+                epoll_listener: None,
                 consumers: HashMap::new(),
-                tx_consumer: None,        
-                is_run: false
+                last_send_index: HashMap::new(),
+                is_run: false,
+                mtx: Mutex::new(()),
             }
         )
     }
     pub fn run(&mut self, localhost: &str, receive_cb: UCback) -> bool {
+        let _lock = self.mtx.lock();
+
         if self.is_run{
             return true;
         }
@@ -46,37 +50,24 @@ impl Client {
             eprintln!("Error {}:{}: {}", file!(), line!(), err);
             return false;
         }
-        let (tx, rx) = mpsc::channel::<Message>();
-        thread::spawn(move|| loop{ 
-            match rx.recv() {
-                Ok(m)=>{
-                    receive_cb(m.to.as_ptr() as *const i8,
-                               m.from.as_ptr() as *const i8, 
-                               m.uuid.as_ptr() as *const i8, m.timestamp, 
-                               m.data.as_ptr(), m.data.len());
-                },
-                Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
+        let (tx_prodr, rx_prodr) = mpsc::channel::<Message>();
+        thread::spawn(move||{ 
+            for m in rx_prodr.iter(){
+                receive_cb(m.to.as_ptr() as *const i8,
+                            m.from.as_ptr() as *const i8, 
+                            m.uuid.as_ptr() as *const i8, m.timestamp, 
+                            m.data.as_ptr(), m.data.len());
             }
         });
-        let (tx_consr, rx_consr) = mpsc::channel::<Message>();
-        let db = self.db.clone();
-        thread::spawn(move|| loop{ 
-            match rx_consr.recv() {
-                Ok(m)=>{
-                    db.lock().unwrap().regist_topic("d", "d");                    
-                },
-                Err(err)=>eprintln!("Error {}:{}: {}", file!(), line!(), err)
-            }
-        });        
+        self.epoll_listener = Some(EPollListener::new(listener.unwrap(), tx_prodr, &self.db));
         self.is_run = true;
-        self.epoll = Some(EPoll::new(listener.unwrap(), tx));
-        self.tx_consumer = Some(tx_consr);
 
         return true;
     }
 
     pub fn send_to(&mut self, to: &str, uuid: &str, data: &[u8]) -> bool {
-       
+        let _lock = self.mtx.lock();
+
         let addresses = self.db.lock().unwrap().get_topic_addresses(to);
         if let Err(err) = addresses{
             eprintln!("Error {}:{}: {}", file!(), line!(), err);
@@ -86,42 +77,24 @@ impl Client {
         if addresses.len() == 0{
             eprintln!("Error not found addr for topic {}", to);
             return false;
-        }
+        }       
         for addr in &addresses{
             if !self.consumers.contains_key(addr){
-                match TcpStream::connect(addr){
-                    Ok(stream)=>{
-                        self.consumers.insert(to.to_string(), Topic::new(stream));
-                    },
-                    Err(err)=>{
-                        eprintln!("Error {}:{}: {} {}", file!(), line!(), err, addr);
-                    }
-                }
+                self.consumers.insert(addr.clone(), Topic::new(addr, &self.db));
             }            
         }
-        if self.consumers.is_empty(){
-            return false;
+        if !self.last_send_index.contains_key(to){
+            self.last_send_index.insert(to.to_string(), 0);
         }
-        let mut is_send = false;
-        for p in &mut self.consumers{
-            if !p.1.was_send{
-                p.1.send_to(to, &self.name, uuid, data);
-                p.1.was_send = true;
-                is_send = true;
-                break;
-            }
-        }  
-        if !is_send{
-            for p in &mut self.consumers{
-                p.1.was_send = false;
-                if !is_send{
-                    p.1.send_to(to, &self.name, uuid, data);
-                    p.1.was_send = true;
-                    is_send = true;
-                }
-            }
+        let mut index = self.last_send_index[to];
+        if index >= addresses.len(){
+            index = 0;
         }
-        return is_send;
+        let addr = &addresses[index];
+        self.consumers[addr].send_to(to, &self.name, uuid, data);
+
+        *self.last_send_index.get_mut(to).unwrap() = index + 1;
+        return true;
     }
 }
 
