@@ -4,11 +4,10 @@ use crate::topic::Topic;
 use crate::UCback;
 use crate::epoll_listener::EPollListener;
 
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::{thread, sync::mpsc};
 use std::collections::HashMap;
-//use std::sync::{Arc, Mutex};
 
 pub struct Client{
     name: String,
@@ -54,9 +53,9 @@ impl Client {
         thread::spawn(move||{ 
             for m in rx_prodr.iter(){
                 receive_cb(m.to.as_ptr() as *const i8,
-                            m.from.as_ptr() as *const i8, 
-                            m.uuid.as_ptr() as *const i8, m.timestamp, 
-                            m.data.as_ptr(), m.data.len());
+                           m.from.as_ptr() as *const i8, 
+                           m.uuid.as_ptr() as *const i8, m.timestamp, 
+                           m.data.as_ptr(), m.data.len());
             }
         });
         self.epoll_listener = Some(EPollListener::new(listener.unwrap(), tx_prodr, &self.db));
