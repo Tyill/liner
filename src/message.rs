@@ -2,9 +2,7 @@ use crate::bytestream::{read_stream, get_string, get_u64,
                         write_string, write_number, write_bytes};
 
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-
 
 pub struct Message {
     pub to: String,
@@ -28,8 +26,8 @@ impl Message {
             data: data.to_owned(),
         }
     }    
-    pub fn from_stream(stream: &Arc<Mutex<TcpStream>>) -> Option<Message> {
-        let indata = read_stream(&stream);
+    pub fn from_stream(stream: &mut TcpStream) -> Option<Message> {
+        let indata = read_stream(stream);
         if indata.len() == 0{
             return None;
         }
@@ -40,14 +38,14 @@ impl Message {
         
         Some(Self { to, from, uuid, timestamp, data: indata.to_vec()})
     }
-    pub fn to_stream(&self, stream: &Arc<Mutex<TcpStream>>)->bool {
+    pub fn to_stream(&self, stream: &mut TcpStream)->bool {
         let all_size = self.to.len() + self.from.len() + self.uuid.len() + std::mem::size_of::<u64>() + self.data.len();
-        let ret = write_number(&stream, all_size as i32) &&
-                write_string(&stream, &self.to) &&
-                write_string(&stream, &self.from) &&
-                write_string(&stream, &self.uuid) &&
-                write_number(&stream, self.timestamp) && 
-                write_bytes(&stream, &self.data);
+        let ret = write_number(stream, all_size as i32) &&
+                write_string(stream, &self.to) &&
+                write_string(stream, &self.from) &&
+                write_string(stream, &self.uuid) &&
+                write_number(stream, self.timestamp) && 
+                write_bytes(stream, &self.data);
         return ret;
     }
 }

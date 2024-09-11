@@ -1,5 +1,4 @@
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
 
 pub fn get_string(indata: &[u8])->(String, &[u8])
 {
@@ -18,7 +17,7 @@ pub fn get_u64(indata: &[u8])->(u64, &[u8])
 }
 
 
-pub fn read_stream<T>(stream: &Arc<Mutex<T>>)->Vec<u8>
+pub fn read_stream<T>(stream: &mut T)->Vec<u8>
 where 
     T: Read
 {
@@ -27,7 +26,7 @@ where
     let mut offs: usize = 0;
     let mut indata: Vec<u8> = Vec::new();
     loop {
-        match stream.lock().unwrap().read(&mut buff[offs..]) {
+        match stream.read(&mut buff[offs..]) {
             Ok(n) => {
                 let mut cbuff = &buff[..n];
                 if msz == 0 {
@@ -68,23 +67,23 @@ fn u8_8(b: &[u8]) -> [u8; 8] {
     b.try_into().unwrap()
 }
 
-pub fn write_string<T>(stream: &Arc<Mutex<T>>, str: &String)->bool
+pub fn write_string<T>(stream: &mut T, str: &String)->bool
 where
-    T: Write,
+   T: Write,
 {
     let str = str.as_bytes();
     let str_size = (str.len() as i32).to_be_bytes();
-    let ok = write_stream(&stream, &str_size) &
-                   write_stream(&stream, &str);
+    let ok = write_stream(stream, &str_size) &
+                   write_stream(stream, &str);
     return ok;
 }
 
-pub fn write_number<T, U>(stream: &Arc<Mutex<T>>, v: U)->bool
+pub fn write_number<T, U>(stream: &mut T, v: U)->bool
 where
     T: Write,
     U: ToBeBytes,
 {
-    let ok = write_stream(&stream, v.to_be_bytes().as_ref());
+    let ok = write_stream(stream, v.to_be_bytes().as_ref());
     return ok;
 }
 pub trait ToBeBytes {
@@ -104,23 +103,23 @@ impl ToBeBytes for u64 {
     }
 }
 
-pub fn write_bytes<T>(stream: &Arc<Mutex<T>>, data: &[u8])->bool
+pub fn write_bytes<T>(stream: &mut T, data: &[u8])->bool
 where
     T: Write,
 {
     let data_size = (data.len() as i32).to_be_bytes();
-    let ok = write_stream(&stream, &data_size) &
-                   write_stream(&stream, &data);
+    let ok = write_stream(stream, &data_size) &
+                   write_stream(stream, &data);
     return ok;
 }
 
-fn write_stream<T>(stream: &Arc<Mutex<T>>, data: &[u8])->bool
+fn write_stream<T>(stream: &mut T, data: &[u8])->bool
 where
     T: Write,
 {
     let mut is = false;
     loop {
-        match stream.lock().unwrap().write_all(data) {
+        match stream.write_all(data) {
             Ok(_) => { 
                 is = true;
                 break;

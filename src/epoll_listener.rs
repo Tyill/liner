@@ -75,7 +75,8 @@ impl EPollListener {
                             let tx = tx.clone();
                             let stream = stream.clone();
                             rayon::spawn(move || {
-                                while let Some(m) = Message::from_stream(&stream){
+                                let mut stream = stream.lock().unwrap();
+                                while let Some(m) = Message::from_stream(&mut stream){
                                     let _ = tx.send(m);
                                 }
                                 continue_read_stream(epoll_fd, stream_fd).expect("couldn't event continue_read_stream");
