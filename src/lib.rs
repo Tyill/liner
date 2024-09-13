@@ -1,9 +1,9 @@
-mod topic;
 mod redis;
 mod client;
 mod message;
 mod bytestream;
 mod epoll_listener;
+mod epoll_sender;
 use crate::client::Client;
 
 use std::ffi::CStr;

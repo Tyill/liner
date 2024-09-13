@@ -1,8 +1,8 @@
 use crate::message::Message;
 use crate::redis;
-use crate::topic::Topic;
 use crate::UCback;
 use crate::epoll_listener::EPollListener;
+use crate::epoll_sender::EPollSender;
 
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -13,7 +13,7 @@ pub struct Client{
     name: String,
     db: Arc<Mutex<redis::Connect>>,
     epoll_listener: Option<EPollListener>,
-    consumers: HashMap<String, Topic>,
+    epoll_sender: Option<EPollSender>,
     last_send_index: HashMap<String, usize>,
     is_run: bool,
     mtx: Mutex<()>,
@@ -27,7 +27,7 @@ impl Client {
                 name: name.to_string(),
                 db: Arc::new(Mutex::new(db)),
                 epoll_listener: None,
-                consumers: HashMap::new(),
+                epoll_sender: None,
                 last_send_index: HashMap::new(),
                 is_run: false,
                 mtx: Mutex::new(()),
@@ -59,6 +59,7 @@ impl Client {
             }
         });
         self.epoll_listener = Some(EPollListener::new(listener.unwrap(), tx_prodr, &self.db));
+        self.epoll_sender = Some(EPollSender::new(&self.db));
         self.is_run = true;
 
         return true;
@@ -78,8 +79,8 @@ impl Client {
             return false;
         }       
         for addr in &addresses{
-            if !self.consumers.contains_key(addr){
-                self.consumers.insert(addr.clone(), Topic::new(addr, &self.db));
+            if !self.epoll_sender.contains(addr){
+                self.epoll_sender.insert(addr.clone());
             }            
         }
         if !self.last_send_index.contains_key(to){
@@ -90,7 +91,7 @@ impl Client {
             index = 0;
         }
         let addr = &addresses[index];
-        self.consumers[addr].send_to(to, &self.name, uuid, data);
+        self.epoll_sender.send_to(to, &self.name, uuid, data);
 
         *self.last_send_index.get_mut(to).unwrap() = index + 1;
         return true;
