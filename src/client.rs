@@ -36,7 +36,6 @@ impl Client {
     }
     pub fn run(&mut self, localhost: &str, receive_cb: UCback) -> bool {
         let _lock = self.mtx.lock();
-
         if self.is_run{
             return true;
         }
@@ -58,8 +57,8 @@ impl Client {
                            m.data.as_ptr(), m.data.len());
             }
         });
-        self.epoll_listener = Some(EPollListener::new(listener.unwrap(), tx_prodr, &self.db));
-        self.epoll_sender = Some(EPollSender::new(&self.db));
+        self.epoll_listener = Some(EPollListener::new(listener.unwrap(), tx_prodr, self.db.clone()));
+        self.epoll_sender = Some(EPollSender::new(self.db.clone()));
         self.is_run = true;
 
         return true;
@@ -67,7 +66,9 @@ impl Client {
 
     pub fn send_to(&mut self, to: &str, uuid: &str, data: &[u8]) -> bool {
         let _lock = self.mtx.lock();
-
+        if !self.is_run{
+            return false;
+        }
         let addresses = self.db.lock().unwrap().get_topic_addresses(to);
         if let Err(err) = addresses{
             eprintln!("Error {}:{}: {}", file!(), line!(), err);
@@ -78,11 +79,6 @@ impl Client {
             eprintln!("Error not found addr for topic {}", to);
             return false;
         }       
-        for addr in &addresses{
-            if !self.epoll_sender.contains(addr){
-                self.epoll_sender.insert(addr.clone());
-            }            
-        }
         if !self.last_send_index.contains_key(to){
             self.last_send_index.insert(to.to_string(), 0);
         }
@@ -91,7 +87,7 @@ impl Client {
             index = 0;
         }
         let addr = &addresses[index];
-        self.epoll_sender.send_to(to, &self.name, uuid, data);
+        self.epoll_sender.as_ref().unwrap().send_to(addr, to, &self.name, uuid, data);
 
         *self.last_send_index.get_mut(to).unwrap() = index + 1;
         return true;
