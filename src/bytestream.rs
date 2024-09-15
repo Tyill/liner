@@ -1,3 +1,5 @@
+use crate::print_error;
+
 use std::io::{Read, Write};
 
 pub fn get_string(indata: &[u8])->(String, &[u8])
@@ -52,7 +54,7 @@ where
             }
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::Interrupted{
-                    eprintln!("Error {}:{}: {}", file!(), line!(), e);                    
+                    print_error(&format!("Error {}:{}: {}", file!(), line!(), e));                    
                 }
             }
         }
@@ -118,21 +120,13 @@ where
     T: Write,
 {
     let mut is = false;
-    loop {
-        match stream.write_all(data) {
-            Ok(_) => { 
-                is = true;
-                break;
-            },
-            Err(err) => {
-                if err.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                } else {
-                    eprintln!("Error {}:{}: {}", file!(), line!(), err);
-                    break;
-                }
-            },            
-        }
+    match stream.write_all(data) {
+        Ok(_) => { 
+            is = true;
+        },
+        Err(err) => {
+            print_error(&format!("Error {}:{}: {}", file!(), line!(), err));
+        },            
     }
     return is;
 }

@@ -1,5 +1,6 @@
 use crate::message::Message;
 use crate::redis;
+use crate::print_error;
 
 use std::collections::HashMap;
 use std::{thread, sync::mpsc};
@@ -44,10 +45,10 @@ impl EPollListener {
                         read_stream(epoll_fd, stream_fd, &streams, &tx);
                     }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
                         let stream_fd = ev.u64 as RawFd;
-                        remove_read_stream(epoll_fd, stream_fd).expect("couldn't remove_read_stream");;
+                        remove_read_stream(epoll_fd, stream_fd);
                         streams.remove(&stream_fd);
                     }else{
-                        eprintln!("unexpected events: {}", ev.events as i32);
+                        print_error(&format!("unexpected events: {}", ev.events as i32));
                     }
                 }
             }
@@ -75,7 +76,7 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>){
         Err(err)=>{
             unsafe { events.set_len(0); };
             if err.kind() != std::io::ErrorKind::Interrupted{
-                eprintln!("couldn't epoll_wait: {}", err);
+                print_error(&format!("couldn't epoll_wait: {}", err));
             }
         }
     }    
@@ -86,14 +87,14 @@ fn listener_accept(epoll_fd: RawFd, streams: &mut HashMap<RawFd, Arc<Mutex<TcpSt
         Ok((stream, addr)) => {
             stream.set_nonblocking(true).expect("couldn't listener set_nonblocking");
             let stream_fd = stream.as_raw_fd();
-            add_read_stream(epoll_fd, stream_fd).expect("couldn't add_read_stream");
+            add_read_stream(epoll_fd, stream_fd);
             streams.insert(stream_fd, Arc::new(Mutex::new(stream)));
 
           //  read_last_from_db(&db);
         }
-        Err(err) => eprintln!("couldn't accept: {}", err),
+        Err(err) => print_error(&format!("couldn't accept: {}", err)),
     };
-    continue_read_stream(epoll_fd, listener_fd).expect("couldn't continue_read_stream");
+    continue_read_stream(epoll_fd, listener_fd);
 }
 
 fn read_stream(epoll_fd: RawFd, stream_fd: RawFd, streams: &HashMap<RawFd, Arc<Mutex<TcpStream>>>, tx: &mpsc::Sender<Message>,){
@@ -105,7 +106,7 @@ fn read_stream(epoll_fd: RawFd, stream_fd: RawFd, streams: &HashMap<RawFd, Arc<M
             while let Some(m) = Message::from_stream(&mut stream){
                 let _ = tx.send(m);
             }
-            continue_read_stream(epoll_fd, stream_fd).expect("couldn't continue_read_stream");
+            continue_read_stream(epoll_fd, stream_fd);
         });
     }
 }
@@ -117,11 +118,11 @@ fn read_last_from_db(db: &Arc<Mutex<redis::Connect>>){
         // }
     });
 }
-fn add_read_stream(epoll_fd: i32, fd: RawFd)->io::Result<i32>{
-    regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD)
+fn add_read_stream(epoll_fd: i32, fd: RawFd){
+    regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD).expect("couldn't add_read_stream");
 }    
-fn continue_read_stream(epoll_fd: i32, fd: RawFd) -> io::Result<i32> {
-    regist_event(epoll_fd, fd, libc::EPOLL_CTL_MOD)
+fn continue_read_stream(epoll_fd: i32, fd: RawFd){
+    regist_event(epoll_fd, fd, libc::EPOLL_CTL_MOD).expect("couldn't continue_read_stream");
 }
 fn regist_event(epoll_fd: i32, fd: RawFd, ctl: i32)-> io::Result<i32> {
     let mut event = libc::epoll_event {
@@ -130,6 +131,6 @@ fn regist_event(epoll_fd: i32, fd: RawFd, ctl: i32)-> io::Result<i32> {
     };
     syscall!(epoll_ctl(epoll_fd, ctl, fd, &mut event))
 }
-fn remove_read_stream(epoll_fd: i32, fd: RawFd) -> io::Result<(i32)> {
-    syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()))    
+fn remove_read_stream(epoll_fd: i32, fd: RawFd){
+    syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())).expect("couldn't continue_read_stream");  
 }

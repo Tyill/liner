@@ -18,13 +18,13 @@ impl Connect {
     }    
     pub fn regist_topic(&mut self, name: &str, addr: &str)->RedisResult<()>{
         let conn = self.get_conn()?; 
-        conn.hset(format!("topic:{}:addr", name), addr, "")?;
+        conn.hset(&format!("topic:{}:addr", name), addr, "")?;
         Ok(())
     }
     pub fn get_topic_addresses(&mut self, name: &str)->RedisResult<Vec<String>>{
         if !self.topic_addr_cache.contains_key(name){
             let conn = self.get_conn()?; 
-            let res = conn.hkeys(format!("topic:{}:addr", name))?;
+            let res = conn.hkeys(&format!("topic:{}:addr", name))?;
             self.topic_addr_cache.insert(name.to_string(), res);
         }
         Ok(self.topic_addr_cache.get(name).unwrap().to_vec())

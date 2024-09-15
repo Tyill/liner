@@ -3,6 +3,7 @@ use crate::redis;
 use crate::UCback;
 use crate::epoll_listener::EPollListener;
 use crate::epoll_sender::EPollSender;
+use crate::print_error;
 
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -41,11 +42,11 @@ impl Client {
         }
         let listener = TcpListener::bind(localhost);
         if let Err(err) = listener {
-            eprintln!("Error {}:{}: {}", file!(), line!(), err);
+            print_error(&format!("Error {}:{}: {}", file!(), line!(), err));
             return false;        
         }
         if let Err(err) = self.db.lock().unwrap().regist_topic(&self.name, localhost){
-            eprintln!("Error {}:{}: {}", file!(), line!(), err);
+            print_error(&format!("Error {}:{}: {}", file!(), line!(), err));
             return false;
         }
         let (tx_prodr, rx_prodr) = mpsc::channel::<Message>();
@@ -71,12 +72,12 @@ impl Client {
         }
         let addresses = self.db.lock().unwrap().get_topic_addresses(to);
         if let Err(err) = addresses{
-            eprintln!("Error {}:{}: {}", file!(), line!(), err);
+            print_error(&format!("Error {}:{}: {}", file!(), line!(), err));
             return false           
         }
         let addresses = addresses.unwrap();
         if addresses.len() == 0{
-            eprintln!("Error not found addr for topic {}", to);
+            print_error(&format!("Error not found addr for topic {}", to));
             return false;
         }       
         if !self.last_send_index.contains_key(to){
@@ -87,7 +88,7 @@ impl Client {
             index = 0;
         }
         let addr = &addresses[index];
-        self.epoll_sender.as_ref().unwrap().send_to(addr, to, &self.name, uuid, data);
+        self.epoll_sender.as_mut().unwrap().send_to(addr, to, &self.name, uuid, data);
 
         *self.last_send_index.get_mut(to).unwrap() = index + 1;
         return true;
