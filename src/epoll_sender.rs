@@ -106,7 +106,7 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
         epoll_fd,
         events.as_mut_ptr() as *mut libc::epoll_event,
         128,
-        -1,
+        1000,
     )){
         Ok(ready_count)=>{
             unsafe { events.set_len(ready_count as usize) };

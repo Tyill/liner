@@ -1,4 +1,4 @@
-use crate::bytestream::{read_stream, get_string, get_u64,
+use crate::bytestream::{read_stream, get_string, get_u64, get_array,
                         write_string, write_number, write_bytes};
 
 use std::net::TcpStream;
@@ -35,11 +35,13 @@ impl Message {
         let (from, indata) = get_string(indata);
         let (uuid, indata) = get_string(indata);
         let (timestamp, indata) = get_u64(indata);
+        let (data, _indata) = get_array(indata);
         
-        Some(Self { to, from, uuid, timestamp, data: indata.to_vec()})
+        Some(Self { to, from, uuid, timestamp, data: data.to_vec()})
     }
     pub fn to_stream(&self, stream: &mut TcpStream)->bool {
-        let all_size = self.to.len() + self.from.len() + self.uuid.len() + std::mem::size_of::<u64>() + self.data.len();
+        let all_size = self.to.len() + self.from.len() + self.uuid.len() + std::mem::size_of::<i32>() * 3 +
+                              std::mem::size_of::<u64>() + self.data.len() + std::mem::size_of::<i32>();
         let ret = write_number(stream, all_size as i32) &&
                 write_string(stream, &self.to) &&
                 write_string(stream, &self.from) &&

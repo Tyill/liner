@@ -36,7 +36,9 @@ impl EPollListener {
             let mut streams: HashMap<RawFd, Arc<Mutex<TcpStream>>> = HashMap::new();
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(128);
             loop{    
-                wait(epoll_fd, &mut events);               
+                if !wait(epoll_fd, &mut events){
+                    break;
+                }               
                 for ev in &events {  
                     if ev.u64 == listener_fd as u64{
                         listener_accept(epoll_fd, &mut streams, &listener, listener_fd);
@@ -63,7 +65,7 @@ impl EPollListener {
     }
 }
 
-fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>){
+fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
     match syscall!(epoll_wait(
         epoll_fd,
         events.as_mut_ptr() as *mut libc::epoll_event,
@@ -71,13 +73,20 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>){
         -1,
     )){
         Ok(ready_count)=>{
-            unsafe { events.set_len(ready_count as usize) };
+            unsafe { 
+                events.set_len(ready_count as usize)
+            };
+            return true;
         },
         Err(err)=>{
-            unsafe { events.set_len(0); };
+            unsafe {
+                events.set_len(0); 
+            };
             if err.kind() != std::io::ErrorKind::Interrupted{
                 print_error(&format!("couldn't epoll_wait: {}", err));
+                return false;
             }
+            return true;
         }
     }    
 }
@@ -89,8 +98,6 @@ fn listener_accept(epoll_fd: RawFd, streams: &mut HashMap<RawFd, Arc<Mutex<TcpSt
             let stream_fd = stream.as_raw_fd();
             add_read_stream(epoll_fd, stream_fd);
             streams.insert(stream_fd, Arc::new(Mutex::new(stream)));
-
-          //  read_last_from_db(&db);
         }
         Err(err) => print_error(&format!("couldn't accept: {}", err)),
     };
@@ -104,20 +111,15 @@ fn read_stream(epoll_fd: RawFd, stream_fd: RawFd, streams: &HashMap<RawFd, Arc<M
         rayon::spawn(move || {
             let mut stream = stream.lock().unwrap();
             while let Some(m) = Message::from_stream(&mut stream){
-                let _ = tx.send(m);
+                if let Err(err) = tx.send(m){
+                    print_error(&format!("couldn't tx.send: {}", err));
+                }
             }
             continue_read_stream(epoll_fd, stream_fd);
         });
     }
 }
 
-fn read_last_from_db(db: &Arc<Mutex<redis::Connect>>){
-    rayon::spawn(move || {
-        // while let Some(m) = Message::from_stream(&stream){
-        //     let _ = tx.send(m);
-        // }
-    });
-}
 fn add_read_stream(epoll_fd: i32, fd: RawFd){
     regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD).expect("couldn't add_read_stream");
 }    

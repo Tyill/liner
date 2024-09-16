@@ -12,9 +12,16 @@ pub fn get_string(indata: &[u8])->(String, &[u8])
 
 pub fn get_u64(indata: &[u8])->(u64, &[u8])
 {
+    let offs = std::mem::size_of::<u64>();
+    let to = u64::from_be_bytes(u8_8(&indata[..offs]));
+    return (to, &indata[offs..]);
+}
+
+pub fn get_array(indata: &[u8])->(&[u8], &[u8])
+{
     let mut offs = 0;
     let sz: usize = i32::from_be_bytes(u8_4(&indata[0..4])) as usize; offs += 4;
-    let to = u64::from_be_bytes(u8_8(&indata[offs..offs + sz])); offs += sz;
+    let to = &indata[offs..offs + sz]; offs += sz;
     return (to, &indata[offs..]);
 }
 
@@ -28,32 +35,37 @@ where
     let mut offs: usize = 0;
     let mut indata: Vec<u8> = Vec::new();
     loop {
-        match stream.read(&mut buff[offs..]) {
-            Ok(n) => {
-                let mut cbuff = &buff[..n];
+        let mut rsz: usize = msz as usize - indata.len();
+        if rsz == 0{
+            rsz = 4;
+        }
+        match stream.read(&mut buff[offs..rsz]) {
+            Ok(n) => {                
                 if msz == 0 {
                     offs += n;
+                    if offs == 4{
+                        msz = i32::from_be_bytes(u8_4(&buff[0..4]));                        
+                        assert!(msz > 0);
+                        indata.reserve(msz as usize);
+                        offs = 0;
+                    }
+                    continue;
                 }
-                if msz == 0 && offs >= 4 {
-                    msz = i32::from_be_bytes(u8_4(&buff[0..4]));                        
-                    assert!(msz > 0);
-                    indata.reserve(msz as usize);
-                    cbuff = &buff[4..offs];
-                    offs = 0;
-                }
-                if n > 0 && msz > 0 {
-                    indata.extend_from_slice(cbuff);
+                if n > 0 {
+                    indata.extend_from_slice(&buff[..n]);
                     if indata.len() == msz as usize {
                         break;
                     }
-                }
-                if n == 0{ // close stream on other side
+                }else{ // close stream on other side
                     indata.clear();
                     break; 
                 }
             }
             Err(e) => {
-                if e.kind() != std::io::ErrorKind::Interrupted{
+                let e = e.kind();
+                if e == std::io::ErrorKind::WouldBlock && indata.len() == 0{
+                    break;
+                }else if e != std::io::ErrorKind::Interrupted{
                     print_error(&format!("Error {}:{}: {}", file!(), line!(), e));                    
                 }
             }
