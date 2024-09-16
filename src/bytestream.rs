@@ -38,7 +38,9 @@ where
         let mut rsz: usize = msz as usize - indata.len();
         if rsz == 0{
             rsz = 4;
-        }
+        }else if rsz > buff.len(){
+            rsz = buff.len();
+        } 
         match stream.read(&mut buff[offs..rsz]) {
             Ok(n) => {                
                 if msz == 0 {
@@ -61,13 +63,12 @@ where
                     break; 
                 }
             }
-            Err(e) => {
-                if indata.is_empty(){
-                    break;
-                }
+            Err(e) => {                
                 let e = e.kind();
                 if e == std::io::ErrorKind::WouldBlock{
-                    continue;
+                    if indata.is_empty(){
+                        break;
+                    }
                 }else if e != std::io::ErrorKind::Interrupted{
                     print_error(&format!("Error {}:{}: {}", file!(), line!(), e));                    
                 }

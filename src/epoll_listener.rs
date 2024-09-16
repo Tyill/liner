@@ -3,11 +3,12 @@ use crate::redis;
 use crate::print_error;
 
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::{thread, sync::mpsc};
 use std::net::{TcpStream, TcpListener};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex};
-use std::io;
+use std::io::{BufReader};
 
 
 #[allow(unused_macros)]
@@ -103,8 +104,9 @@ fn read_stream(epoll_fd: RawFd, stream_fd: RawFd, streams: &HashMap<RawFd, Arc<M
         let tx = tx.clone();
         let stream = stream.clone();
         rayon::spawn(move || {
-            let mut stream = stream.lock().unwrap();
-            while let Some(m) = Message::from_stream(&mut stream){
+            let stream = stream.lock().unwrap();
+            let mut reader = BufReader::new(stream.deref());
+            while let Some(m) = Message::from_stream(&mut reader){
                 if let Err(err) = tx.send(m){
                     print_error(&format!("couldn't tx.send: {}", err));
                 }

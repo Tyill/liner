@@ -1,8 +1,8 @@
 use crate::bytestream::{read_stream, get_string, get_u64, get_array,
                         write_string, write_number, write_bytes};
 
-use std::net::TcpStream;
 use std::time::SystemTime;
+use std::io::{Write, Read};
 
 pub struct Message {
     pub to: String,
@@ -28,7 +28,9 @@ impl Message {
             data: data.to_owned(),
         }
     }    
-    pub fn from_stream(stream: &mut TcpStream) -> Option<Message> {
+    pub fn from_stream<T>(stream: &mut T) -> Option<Message>
+        where T: Read
+    {
         let indata = read_stream(stream);
         if indata.len() == 0{
             return None;
@@ -42,7 +44,9 @@ impl Message {
         
         Some(Self { to, from, uuid, timestamp, number_mess, data: data.to_vec()})
     }
-    pub fn to_stream(&self, stream: &mut TcpStream)->bool {
+    pub fn to_stream<T>(&self, stream: &mut T)->bool 
+        where T: Write
+    {
         let all_size = self.to.len() + self.from.len() + self.uuid.len() + std::mem::size_of::<i32>() * 3 +
                               std::mem::size_of::<u64>() * 2 + self.data.len() + std::mem::size_of::<i32>();
         let ret = write_number(stream, all_size as i32) &&
