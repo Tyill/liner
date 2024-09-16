@@ -24,7 +24,8 @@ macro_rules! syscall {
 
 struct WriteStream{
     addr: String,
-    stream: TcpStream,  
+    stream: TcpStream,
+    last_send_index: i32,
 }
 
 pub struct EPollSender{
@@ -106,7 +107,7 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
         epoll_fd,
         events.as_mut_ptr() as *mut libc::epoll_event,
         128,
-        1000,
+        -1,
     )){
         Ok(ready_count)=>{
             unsafe { events.set_len(ready_count as usize) };
@@ -134,7 +135,7 @@ fn append_new_streams(epoll_fd: RawFd,
             Ok(stream)=>{
                 stream.set_nonblocking(true).expect("couldn't stream set_nonblocking");
                 add_write_stream(epoll_fd, stream.as_raw_fd());
-                streams.insert(stream.as_raw_fd(), Arc::new(Mutex::new(WriteStream{addr: addr.clone(), stream})));
+                streams.insert(stream.as_raw_fd(), Arc::new(Mutex::new(WriteStream{addr: addr.clone(), stream, last_send_index: 0})));
             },
             Err(err)=>{
                 addrs_lost.push(addr.clone());
@@ -162,19 +163,21 @@ fn write_stream(epoll_fd: RawFd,
                     }
                 }
                 let mut stream = stream.lock().unwrap();
-                while !buff.is_empty() {
-                    let mess = buff.pop().unwrap();
+                let mut send_count = 0;
+                for mess in buff.iter().rev(){ 
                     if !mess.to_stream(&mut stream.stream){
-                        buff.push(mess);
                         break;
                     }
+                    send_count += 1;
                 }
                 if let Some(messages) = messages_new.lock().unwrap().get_mut(&addr){
+                    let mut ix = 0;
                     while !buff.is_empty() {
                         let mess = buff.pop().unwrap();
-                        messages.insert(0, mess);
+                        messages.insert(ix, mess);
+                        ix += 1;
                     }
-                    if !messages.is_empty(){
+                    if send_count < messages.len(){
                         continue_write_stream(epoll_fd, stream_fd);
                     }
                 }                  
