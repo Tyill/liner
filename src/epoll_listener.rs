@@ -81,12 +81,8 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
         Err(err)=>{
             unsafe {
                 events.set_len(0); 
-            };
-            if err.kind() != std::io::ErrorKind::Interrupted{
-                print_error(&format!("couldn't epoll_wait: {}", err));
-                return false;
-            }
-            return true;
+            };            
+            return err.kind() == std::io::ErrorKind::Interrupted; 
         }
     }    
 }

@@ -62,9 +62,12 @@ where
                 }
             }
             Err(e) => {
-                let e = e.kind();
-                if e == std::io::ErrorKind::WouldBlock && indata.len() == 0{
+                if indata.is_empty(){
                     break;
+                }
+                let e = e.kind();
+                if e == std::io::ErrorKind::WouldBlock{
+                    continue;
                 }else if e != std::io::ErrorKind::Interrupted{
                     print_error(&format!("Error {}:{}: {}", file!(), line!(), e));                    
                 }
