@@ -29,6 +29,11 @@ impl Connect {
         }
         Ok(self.topic_addr_cache.get(name).unwrap().to_vec())
     }
+    pub fn get_last_mess_number(&mut self, addr_from: &str, addr_to: &str)->RedisResult<u64>{
+        let conn = self.get_conn()?; 
+        let res: String = conn.get(&format!("mess_from_{}_to_{}:number", addr_from, addr_to))?;
+        Ok(res.parse::<u64>().unwrap())
+    }
     fn get_conn(&mut self)->RedisResult<&mut redis::Connection>{
         if !self.conn.is_open(){
             let client = redis::Client::open(self.conn_str.clone())?;

@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 pub struct Client{
     name: String,
+    localhost: String,
     db: Arc<Mutex<redis::Connect>>,
     epoll_listener: Option<EPollListener>,
     epoll_sender: Option<EPollSender>,
@@ -26,6 +27,7 @@ impl Client {
         Some(
             Self{
                 name: name.to_string(),
+                localhost: "".to_string(),
                 db: Arc::new(Mutex::new(db)),
                 epoll_listener: None,
                 epoll_sender: None,
@@ -58,6 +60,7 @@ impl Client {
                            m.data.as_ptr(), m.data.len());
             }
         });
+        self.localhost = localhost.to_string();
         self.epoll_listener = Some(EPollListener::new(listener.unwrap(), tx_prodr, self.db.clone()));
         self.epoll_sender = Some(EPollSender::new(self.db.clone()));
         self.is_run = true;
@@ -88,7 +91,7 @@ impl Client {
             index = 0;
         }
         let addr = &addresses[index];
-        self.epoll_sender.as_mut().unwrap().send_to(addr, to, &self.name, uuid, data);
+        self.epoll_sender.as_mut().unwrap().send_to(&self.localhost, addr, to, &self.name, uuid, data);
 
         *self.last_send_index.get_mut(to).unwrap() = index + 1;
         return true;

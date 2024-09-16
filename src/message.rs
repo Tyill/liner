@@ -9,11 +9,12 @@ pub struct Message {
     pub from: String,
     pub uuid: String,
     pub timestamp: u64,
+    pub number_mess: u64,
     pub data: Vec<u8>,
 }
 
 impl Message {
-    pub fn new(to: &str, from: &str, uuid: &str, data: &[u8]) -> Message {
+    pub fn new(to: &str, from: &str, uuid: &str, number_mess: u64, data: &[u8]) -> Message {
         let ms: u64 = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
@@ -23,6 +24,7 @@ impl Message {
             from: from.to_string(),
             uuid: uuid.to_string(),
             timestamp: ms,
+            number_mess,
             data: data.to_owned(),
         }
     }    
@@ -35,18 +37,20 @@ impl Message {
         let (from, indata) = get_string(indata);
         let (uuid, indata) = get_string(indata);
         let (timestamp, indata) = get_u64(indata);
+        let (number_mess, indata) = get_u64(indata);
         let (data, _indata) = get_array(indata);
         
-        Some(Self { to, from, uuid, timestamp, data: data.to_vec()})
+        Some(Self { to, from, uuid, timestamp, number_mess, data: data.to_vec()})
     }
     pub fn to_stream(&self, stream: &mut TcpStream)->bool {
         let all_size = self.to.len() + self.from.len() + self.uuid.len() + std::mem::size_of::<i32>() * 3 +
-                              std::mem::size_of::<u64>() + self.data.len() + std::mem::size_of::<i32>();
+                              std::mem::size_of::<u64>() * 2 + self.data.len() + std::mem::size_of::<i32>();
         let ret = write_number(stream, all_size as i32) &&
                 write_string(stream, &self.to) &&
                 write_string(stream, &self.from) &&
                 write_string(stream, &self.uuid) &&
                 write_number(stream, self.timestamp) && 
+                write_number(stream, self.number_mess) && 
                 write_bytes(stream, &self.data);
         return ret;
     }

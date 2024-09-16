@@ -25,15 +25,15 @@ macro_rules! syscall {
 struct WriteStream{
     addr: String,
     stream: TcpStream,
-    last_send_index: i32,
 }
 
 pub struct EPollSender{
     epoll_fd: i32,
-    addrs_for: HashSet<String>, 
-    addrs_new: Arc<Mutex<Vec<String>>>,    
+    db: Arc<Mutex<redis::Connect>>,
+    addrs_for: HashSet<String>,
+    addrs_new: Arc<Mutex<Vec<String>>>,
     messages: Arc<Mutex<HashMap<String, Vec<Message>>>>, // key - addr
-    streams: Arc<Mutex<HashMap<String, RawFd>>>, // key - addr
+    last_number_mess: HashMap<String, u64>, // key - addr
 }
 
 impl EPollSender {
@@ -47,17 +47,13 @@ impl EPollSender {
             let mut streams: HashMap<RawFd, Arc<Mutex<WriteStream>>> = HashMap::new();
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(128);
             loop{ 
-                if !addrs_new_.lock().unwrap().is_empty(){
-                    append_new_streams(epoll_fd, &mut addrs_new_, &mut streams, &messages_new);
-                }                
-                if !wait(epoll_fd, &mut events){
+                append_new_streams(epoll_fd, &mut addrs_new_, &mut streams, &messages_new);
+                
+                if !wait(epoll_fd, &mut events, 10){
                     break;
                 }
                 for ev in &events {  
-                    if ev.events as i32 & libc::EPOLLOUT > 0{
-                        let stream_fd = ev.u64 as RawFd;
-                        write_stream(epoll_fd, stream_fd, &streams, &mut messages_new);
-                    }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
+                    if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
                         let stream_fd = ev.u64 as RawFd;
                         remove_write_stream(epoll_fd, stream_fd);
                         if let Some(stream) = streams.get(&stream_fd){
@@ -65,35 +61,40 @@ impl EPollSender {
                             addrs_new_.lock().unwrap().push(addr);
                         }
                         streams.remove(&stream_fd);                        
-                    }else{
-                        print_error(&format!("unexpected events: {}", ev.events as i32));
                     }
                 }
+                write_stream(&streams, &mut messages_new);                
             }
         });
         Self{
             epoll_fd,
+            db,
             addrs_for: HashSet::new(),
             addrs_new,
             messages,
-            streams: Arc::new(Mutex::new(HashMap::new())),
+            last_number_mess: HashMap::new(),
         }
     }
     
-    pub fn send_to(&mut self, addr_to: &str, to: &str, from: &str, uuid: &str, data: &[u8]) {
+    pub fn send_to(&mut self, addr_from: &str, addr_to: &str,  to: &str, from: &str, uuid: &str, data: &[u8]) {
         if !self.addrs_for.contains(addr_to){
             self.addrs_for.insert(addr_to.to_string());
-            self.addrs_new.lock().unwrap().push(addr_to.to_string());
-        }        
-        let mess = Message::new(to, from, uuid, data);
+            self.addrs_new.lock().unwrap().push(addr_to.to_string()); 
+            if let Ok(last_mess_num) = self.db.lock().unwrap().get_last_mess_number(addr_from, addr_to){
+                self.last_number_mess.insert(addr_to.to_string(), last_mess_num);
+            }else{
+                print_error(&format!("error get_last_mess_number from db"));
+                self.last_number_mess.insert(addr_to.to_string(), 0);
+            }
+        }  
+        let number_mess = self.last_number_mess[addr_to] + 1;
+        *self.last_number_mess.get_mut(addr_to).unwrap() = number_mess;
+        let mess = Message::new(to, from, uuid, number_mess, data);
         if let Ok(mut messages) = self.messages.lock(){
             if !messages.contains_key(addr_to){
                 messages.insert(addr_to.to_string(), Vec::new());
             }
-            messages.get_mut(addr_to).unwrap().push(mess);
-            if let Some(stream_fd) = self.streams.lock().unwrap().get(addr_to){
-                continue_write_stream(self.epoll_fd, *stream_fd);
-            }
+            messages.get_mut(addr_to).unwrap().push(mess);           
         }   
     }
     
@@ -102,12 +103,12 @@ impl EPollSender {
     }
 }
 
-fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
+fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>, timeoutMs: i32)->bool{
     match syscall!(epoll_wait(
         epoll_fd,
         events.as_mut_ptr() as *mut libc::epoll_event,
         128,
-        -1,
+        timeoutMs,
     )){
         Ok(ready_count)=>{
             unsafe { events.set_len(ready_count as usize) };
@@ -135,7 +136,7 @@ fn append_new_streams(epoll_fd: RawFd,
             Ok(stream)=>{
                 stream.set_nonblocking(true).expect("couldn't stream set_nonblocking");
                 add_write_stream(epoll_fd, stream.as_raw_fd());
-                streams.insert(stream.as_raw_fd(), Arc::new(Mutex::new(WriteStream{addr: addr.clone(), stream, last_send_index: 0})));
+                streams.insert(stream.as_raw_fd(), Arc::new(Mutex::new(WriteStream{addr: addr.clone(), stream})));
             },
             Err(err)=>{
                 addrs_lost.push(addr.clone());
@@ -146,15 +147,13 @@ fn append_new_streams(epoll_fd: RawFd,
     *addrs.lock().unwrap() = addrs_lost;
 }
 
-fn write_stream(epoll_fd: RawFd,
-                stream_fd: RawFd,
-                streams: &HashMap<RawFd, Arc<Mutex<WriteStream>>>, 
+fn write_stream(streams: &HashMap<RawFd, Arc<Mutex<WriteStream>>>, 
                 messages_new: &Arc<Mutex<HashMap<String, Vec<Message>>>>){
-    if let Some(stream) = streams.get(&stream_fd){
-        let addr = stream.lock().unwrap().addr.clone();
+    for stream in streams{
+        let addr = stream.1.lock().unwrap().addr.clone();
         let messages_new = messages_new.clone();
         if !&messages_new.lock().unwrap()[&addr].is_empty(){
-            let stream = stream.clone();
+            let stream = stream.1.clone();
             rayon::spawn(move || {
                 let mut buff: Vec<Message> = Vec::new(); 
                 if let Some(messages) = messages_new.lock().unwrap().get_mut(&addr){
@@ -163,12 +162,10 @@ fn write_stream(epoll_fd: RawFd,
                     }
                 }
                 let mut stream = stream.lock().unwrap();
-                let mut send_count = 0;
                 for mess in buff.iter().rev(){ 
                     if !mess.to_stream(&mut stream.stream){
                         break;
                     }
-                    send_count += 1;
                 }
                 if let Some(messages) = messages_new.lock().unwrap().get_mut(&addr){
                     let mut ix = 0;
@@ -176,9 +173,6 @@ fn write_stream(epoll_fd: RawFd,
                         let mess = buff.pop().unwrap();
                         messages.insert(ix, mess);
                         ix += 1;
-                    }
-                    if send_count < messages.len(){
-                        continue_write_stream(epoll_fd, stream_fd);
                     }
                 }                  
             });
@@ -189,12 +183,9 @@ fn write_stream(epoll_fd: RawFd,
 fn add_write_stream(epoll_fd: i32, fd: RawFd){
     regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD).expect("couldn't add_write_stream");
 }    
-fn continue_write_stream(epoll_fd: i32, fd: RawFd){
-    regist_event(epoll_fd, fd, libc::EPOLL_CTL_MOD).expect("couldn't continue_write_stream");
-}
 fn regist_event(epoll_fd: i32, fd: RawFd, ctl: i32)-> io::Result<i32> {
     let mut event = libc::epoll_event {
-        events: (libc::EPOLLONESHOT | libc::EPOLLRDHUP | libc::EPOLLOUT) as u32,
+        events: (libc::EPOLLONESHOT | libc::EPOLLRDHUP) as u32,
         u64: fd as u64,
     };
     syscall!(epoll_ctl(epoll_fd, ctl, fd, &mut event))

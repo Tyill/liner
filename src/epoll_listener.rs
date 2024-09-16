@@ -49,8 +49,6 @@ impl EPollListener {
                         let stream_fd = ev.u64 as RawFd;
                         remove_read_stream(epoll_fd, stream_fd);
                         streams.remove(&stream_fd);
-                    }else{
-                        print_error(&format!("unexpected events: {}", ev.events as i32));
                     }
                 }
             }
