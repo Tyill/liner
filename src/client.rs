@@ -47,7 +47,9 @@ impl Client {
             print_error(&format!("Error {}:{}: {}", file!(), line!(), err));
             return false;        
         }
-        if let Err(err) = self.db.lock().unwrap().regist_topic(&self.name, localhost){
+        let listener = listener.unwrap();
+        self.localhost = listener.local_addr().unwrap().to_string();
+        if let Err(err) = self.db.lock().unwrap().regist_topic(&self.name, &self.localhost){
             print_error(&format!("Error {}:{}: {}", file!(), line!(), err));
             return false;
         }
@@ -59,9 +61,8 @@ impl Client {
                            m.uuid.as_ptr() as *const i8, m.timestamp, 
                            m.data.as_ptr(), m.data.len());
             }
-        });
-        self.localhost = localhost.to_string();
-        self.epoll_listener = Some(EPollListener::new(listener.unwrap(), tx_prodr, self.db.clone()));
+        });        
+        self.epoll_listener = Some(EPollListener::new(listener, tx_prodr, self.db.clone()));
         self.epoll_sender = Some(EPollSender::new(self.db.clone()));
         self.is_run = true;
 
@@ -91,10 +92,10 @@ impl Client {
             index = 0;
         }
         let addr = &addresses[index];
-        self.epoll_sender.as_mut().unwrap().send_to(&self.localhost, addr, to, &self.name, uuid, data);
+        let ok = self.epoll_sender.as_mut().unwrap().send_to(addr, to, &self.name, uuid, data);
 
         *self.last_send_index.get_mut(to).unwrap() = index + 1;
-        return true;
+        return ok;
     }
 }
 
