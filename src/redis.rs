@@ -37,7 +37,7 @@ impl Connect {
         let conn = format!("{}_{}", self.topic_addr_local, addr_rem);
         let dbconn = self.get_dbconn()?; 
         let res: String = dbconn.get(&format!("connection_{}:mess_number", conn))?;
-        Ok(res.parse::<u64>().unwrap())
+        Ok(res.parse::<u64>().unwrap())              
     }
     pub fn get_last_mess_number_for_sender(&mut self, addr_rem: &str)->RedisResult<u64>{
         let conn = format!("{}_{}", addr_rem, self.topic_addr_local);
@@ -45,12 +45,19 @@ impl Connect {
         let res: String = dbconn.get(&format!("connection_{}:mess_number", conn))?;
         Ok(res.parse::<u64>().unwrap())
     }
-    pub fn set_last_mess_number_from_listener(&mut self, addr_rem: &str, val: u64)->RedisResult<u64>{
+    pub fn set_last_mess_number_from_listener(&mut self, addr_rem: &str, val: u64)->RedisResult<()>{
         let conn = format!("{}_{}", addr_rem, self.topic_addr_local);
         let dbconn = self.get_dbconn()?; 
-        let res: String = dbconn.set(&format!("connection_{}:mess_number", conn), val)?;
-        Ok(res.parse::<u64>().unwrap())
+        let _: String = dbconn.set(&format!("connection_{}:mess_number", conn), val)?;
+        Ok(())
     }
+    pub fn set_last_mess_number_from_sender(&mut self, addr_rem: &str, val: u64)->RedisResult<()>{
+        let conn = format!("{}_{}", self.topic_addr_local, addr_rem);
+        let dbconn = self.get_dbconn()?; 
+        let _: String = dbconn.set(&format!("connection_{}:mess_number", conn), val)?;
+        Ok(())
+    }
+   
         
     fn get_dbconn(&mut self)->RedisResult<&mut redis::Connection>{
         if !self.conn.is_open(){

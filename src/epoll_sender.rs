@@ -80,9 +80,12 @@ impl EPollSender {
             self.addrs_new.lock().unwrap().push(addr_to.to_string()); 
             if let Ok(last_mess_num) = self.db.lock().unwrap().get_last_mess_number_for_sender(addr_to){
                 self.last_mess_number.insert(addr_to.to_string(), last_mess_num);
-            }else{
-                print_error(&format!("error get_last_mess_number from db"));
-                return false;
+            }else {
+                if let Err(err) = self.db.lock().unwrap().set_last_mess_number_from_sender(addr_to, 0){            
+                    print_error(&format!("error get_last_mess_number from db: {}", err), file!(), line!());
+                    return false;
+                }
+                self.last_mess_number.insert(addr_to.to_string(), 0);
             }
         }  
         let number_mess = self.last_mess_number[addr_to] + 1;
@@ -144,7 +147,7 @@ fn append_new_streams(epoll_fd: RawFd,
             },
             Err(err)=>{
                 addrs_lost.push(addr.clone());
-                print_error(&format!("Error {}:{}: {} {}", file!(), line!(), err, addr));
+                print_error(&format!("{} {}", err, addr), file!(), line!());
             }
         }
     }
@@ -164,7 +167,7 @@ fn write_stream(stream_fd: RawFd,
                 let mut buff: Vec<Message> = Vec::new();
                 let last_mess_number = db.lock().unwrap().get_last_mess_number_for_sender(&addr_to);
                 if let Err(err) = last_mess_number{
-                    print_error(&format!("error get_last_mess_number_for_sender from db: {}", err));
+                    print_error(&format!("error get_last_mess_number_for_sender from db: {}", err), file!(), line!());
                     return;
                 }
                 let last_mess_number = last_mess_number.unwrap();

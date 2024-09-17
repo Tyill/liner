@@ -51,6 +51,6 @@ pub extern "C" fn send_to(client: &mut Box<Option<Client>>,
     }    
 }  
 
-fn print_error(mess: &str){
-    eprintln!("{}", mess);
+fn print_error(mess: &str, file: &str, line: u32){
+    eprintln!("Error {}:{}: {}", file, line, mess);
 }

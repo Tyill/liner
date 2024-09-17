@@ -89,26 +89,15 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
 
 fn listener_accept(epoll_fd: RawFd, 
                    streams: &mut HashMap<RawFd, Arc<Mutex<TcpStream>>>,
-                   listener: &TcpListener,
-                   db: &Arc<Mutex<redis::Connect>>,
-                   last_mess_number: &mut HashMap<RawFd, Arc<Mutex<u64>>>){
+                   listener: &TcpListener){
     match listener.accept() {
         Ok((stream, _addr)) => {
             stream.set_nonblocking(true).expect("couldn't listener set_nonblocking");
-            let stream_fd = stream.as_raw_fd();
-            if !last_mess_number.contains_key(&stream_fd){
-                let addr_rem = stream.peer_addr().unwrap().to_string();
-                if let Ok(lmn) = db.lock().unwrap().get_last_mess_number_for_listener(&addr_rem){
-                    last_mess_number.insert(stream_fd, Arc::new(Mutex::new(lmn)));
-                }else{
-                    print_error(&format!("error get_last_mess_number_for_listener"));
-                    last_mess_number.insert(stream_fd, Arc::new(Mutex::new(0)));
-                }
-            }
+            let stream_fd = stream.as_raw_fd();            
             add_read_stream(epoll_fd, stream_fd);
             streams.insert(stream_fd, Arc::new(Mutex::new(stream)));
         }
-        Err(err) => print_error(&format!("couldn't accept: {}", err)),
+        Err(err) => print_error(&format!("couldn't accept: {}", err), file!(), line!()),
     };
     continue_read_stream(epoll_fd, listener.as_raw_fd());
 }
@@ -132,18 +121,32 @@ fn read_stream(epoll_fd: RawFd,
                 if m.number_mess > *last_mess_num{
                     *last_mess_num = m.number_mess;
                     if let Err(err) = tx.send(m){
-                        print_error(&format!("couldn't tx.send: {}", err));
+                        print_error(&format!("couldn't tx.send: {}", err), file!(), line!());
                     }
                 }else{
-                    print_error(&format!("receive old mess num{}", m.number_mess));
+                    print_error(&format!("receive old mess num{}", m.number_mess), file!(), line!());
                 }
             }
             let addr_rem = stream.peer_addr().unwrap().to_string();
             if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(&addr_rem, *last_mess_num){
-                print_error(&format!("couldn't db.set_last_mess_number: {}", err));
+                print_error(&format!("couldn't db.set_last_mess_number: {}", err), file!(), line!());
             }
             continue_read_stream(epoll_fd, stream_fd);
         });
+    }
+}
+
+fn get_last_mess_number(stream_fd: RawFd, 
+                        db: &Arc<Mutex<redis::Connect>>,
+                        last_mess_number: &mut HashMap<RawFd, Arc<Mutex<u64>>>){
+    if !last_mess_number.contains_key(&stream_fd){
+        let addr_rem = stream.peer_addr().unwrap().to_string();
+        if let Ok(lmn) = db.lock().unwrap().get_last_mess_number_for_listener(&addr_rem){
+            last_mess_number.insert(stream_fd, Arc::new(Mutex::new(lmn)));
+        }else{
+            print_error("error get_last_mess_number_for_listener", file!(), line!());
+            last_mess_number.insert(stream_fd, Arc::new(Mutex::new(0)));
+        }
     }
 }
 

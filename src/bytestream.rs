@@ -70,7 +70,7 @@ where
                         break;
                     }
                 }else if e != std::io::ErrorKind::Interrupted{
-                    print_error(&format!("Error {}:{}: {}", file!(), line!(), e));                    
+                    print_error(&format!("{}", e), file!(), line!());                    
                 }
             }
         }
@@ -141,7 +141,7 @@ where
             is = true;
         },
         Err(err) => {
-            print_error(&format!("Error {}:{}: {}", file!(), line!(), err));
+            print_error(&format!("{}", err), file!(), line!());
         },            
     }
     return is;
