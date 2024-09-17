@@ -23,12 +23,12 @@ macro_rules! syscall {
     }};
 }
 
-pub struct EPollListener{
+pub struct Listener{
     _epoll_fd: i32,    
 }
 
-impl EPollListener {
-    pub fn new(listener: TcpListener, tx: mpsc::Sender<Message>, db: Arc<Mutex<redis::Connect>>)->EPollListener{
+impl Listener {
+    pub fn new(listener: TcpListener, tx: mpsc::Sender<Message>, db: Arc<Mutex<redis::Connect>>)->Listener{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         thread::spawn(move|| {
             listener.set_nonblocking(true).expect("couldn't listener set_nonblocking");
@@ -36,17 +36,16 @@ impl EPollListener {
             regist_event(epoll_fd, listener_fd, libc::EPOLL_CTL_ADD).expect("couldn't event regist");
             let mut streams: HashMap<RawFd, Arc<Mutex<TcpStream>>> = HashMap::new();
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(128);
-            let mut last_mess_number: HashMap<RawFd, Arc<Mutex<u64>>> = HashMap::new();
             loop{    
                 if !wait(epoll_fd, &mut events){
                     break;
                 }               
                 for ev in &events {  
                     if ev.u64 == listener_fd as u64{
-                        listener_accept(epoll_fd, &mut streams, &listener, &db, &mut last_mess_number);
+                        listener_accept(epoll_fd, &mut streams, &listener);
                     }else if ev.events as i32 & libc::EPOLLIN > 0{
                         let stream_fd = ev.u64 as RawFd;
-                        read_stream(epoll_fd, stream_fd, &streams, &tx, &db, &mut last_mess_number);
+                        read_stream(epoll_fd, stream_fd, &streams, &tx, &db);
                     }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
                         let stream_fd = ev.u64 as RawFd;
                         remove_read_stream(epoll_fd, stream_fd);
@@ -106,20 +105,33 @@ fn read_stream(epoll_fd: RawFd,
                stream_fd: RawFd,
                streams: &HashMap<RawFd, Arc<Mutex<TcpStream>>>, 
                tx: &mpsc::Sender<Message>, 
-               db: &Arc<Mutex<redis::Connect>>,
-               last_mess_number: &mut HashMap<RawFd, Arc<Mutex<u64>>>){
+               db: &Arc<Mutex<redis::Connect>>){
     if let Some(stream) = streams.get(&stream_fd){
         let tx = tx.clone();
         let stream = stream.clone();
-        let last_mess_num = last_mess_number.get(&stream_fd).unwrap().clone();
         let db = db.clone();
         rayon::spawn(move || {
             let stream = stream.lock().unwrap();
             let mut reader = BufReader::new(stream.deref());
-            let mut last_mess_num = last_mess_num.lock().unwrap();
+            let mut last_mess_num: u64 = 0;
+            let mut sender_name = String::new();
+            let mut sender_topic = String::new();
             while let Some(m) = Message::from_stream(&mut reader){
-                if m.number_mess > *last_mess_num{
-                    *last_mess_num = m.number_mess;
+                if last_mess_num == 0{
+                    match db.lock().unwrap().get_last_mess_number_for_listener(&m.sender_name, &m.topic_from){
+                        Ok(num)=>{
+                            last_mess_num = num;
+                        },
+                        Err(err)=>{
+                            print_error(&format!("couldn't get_last_mess_number_for_listener: {}", err), file!(), line!());
+                            last_mess_num = 0;
+                        }
+                    }
+                    sender_name = m.sender_name.clone();
+                    sender_topic = m.topic_from.clone();
+                }
+                if m.number_mess > last_mess_num{
+                    last_mess_num = m.number_mess;
                     if let Err(err) = tx.send(m){
                         print_error(&format!("couldn't tx.send: {}", err), file!(), line!());
                     }
@@ -127,8 +139,7 @@ fn read_stream(epoll_fd: RawFd,
                     print_error(&format!("receive old mess num{}", m.number_mess), file!(), line!());
                 }
             }
-            let addr_rem = stream.peer_addr().unwrap().to_string();
-            if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(&addr_rem, *last_mess_num){
+            if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(&sender_name, &sender_topic, last_mess_num){
                 print_error(&format!("couldn't db.set_last_mess_number: {}", err), file!(), line!());
             }
             continue_read_stream(epoll_fd, stream_fd);
@@ -136,19 +147,6 @@ fn read_stream(epoll_fd: RawFd,
     }
 }
 
-fn get_last_mess_number(stream_fd: RawFd, 
-                        db: &Arc<Mutex<redis::Connect>>,
-                        last_mess_number: &mut HashMap<RawFd, Arc<Mutex<u64>>>){
-    if !last_mess_number.contains_key(&stream_fd){
-        let addr_rem = stream.peer_addr().unwrap().to_string();
-        if let Ok(lmn) = db.lock().unwrap().get_last_mess_number_for_listener(&addr_rem){
-            last_mess_number.insert(stream_fd, Arc::new(Mutex::new(lmn)));
-        }else{
-            print_error("error get_last_mess_number_for_listener", file!(), line!());
-            last_mess_number.insert(stream_fd, Arc::new(Mutex::new(0)));
-        }
-    }
-}
 
 fn add_read_stream(epoll_fd: i32, fd: RawFd){
     regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD).expect("couldn't add_read_stream");

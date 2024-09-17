@@ -23,7 +23,7 @@ macro_rules! syscall {
     }};
 }
 
-pub struct EPollSender{
+pub struct Sender{
     epoll_fd: i32,
     db: Arc<Mutex<redis::Connect>>,
     addrs_for: HashSet<String>,
@@ -33,8 +33,8 @@ pub struct EPollSender{
     streams_fd: Arc<Mutex<HashMap<String, RawFd>>>
 }
 
-impl EPollSender {
-    pub fn new(db: Arc<Mutex<redis::Connect>>)->EPollSender{
+impl Sender {
+    pub fn new(db: Arc<Mutex<redis::Connect>>)->Sender{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         let messages: Arc<Mutex<HashMap<String, Vec<Message>>>> = Arc::new(Mutex::new(HashMap::new()));
         let messages_new = messages.clone();
