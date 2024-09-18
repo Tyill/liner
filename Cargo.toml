@@ -8,3 +8,6 @@ crate-type = ["cdylib"]      # Creates dynamic lib
 redis = "0.26.1"
 rayon = "1.10"
 libc = "0.2"
+
+[features]
+liner_debug = []

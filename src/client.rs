@@ -11,9 +11,8 @@ use std::{thread, sync::mpsc};
 use std::collections::HashMap;
 
 pub struct Client{
-    unique_name: String,
+    _unique_name: String,
     topic: String,
-    localhost: String,
     db: Arc<Mutex<redis::Connect>>,
     listener: Option<Listener>,
     sender: Option<Sender>,
@@ -23,13 +22,12 @@ pub struct Client{
 }
 
 impl Client {
-    pub fn new(name: &str, redis_path: &str) -> Option<Client> {
-        let db = redis::Connect::new(redis_path).ok()?;
+    pub fn new(unique_name: &str, redis_path: &str) -> Option<Client> {
+        let db = redis::Connect::new(&unique_name, redis_path).ok()?;
         Some(
             Self{
-                unique_name: name.to_string(),
+                _unique_name: unique_name.to_string(),
                 topic: "".to_string(),
-                localhost: "".to_string(),
                 db: Arc::new(Mutex::new(db)),
                 listener: None,
                 sender: None,
@@ -50,16 +48,15 @@ impl Client {
             return false;        
         }
         let listener = listener.unwrap();
-        self.localhost = listener.local_addr().unwrap().to_string();
-        if let Err(err) = self.db.lock().unwrap().regist_topic(topic, &self.localhost){
+        if let Err(err) = self.db.lock().unwrap().regist_topic(topic, &localhost){
             print_error(&format!("{}", err), file!(), line!());
             return false;
         }
         let (tx_prodr, rx_prodr) = mpsc::channel::<Message>();
         thread::spawn(move||{ 
             for m in rx_prodr.iter(){
-                receive_cb(m.to.as_ptr() as *const i8,
-                           m.from.as_ptr() as *const i8, 
+                receive_cb(m.topic_to.as_ptr() as *const i8,
+                           m.topic_from.as_ptr() as *const i8, 
                            m.uuid.as_ptr() as *const i8, 
                            m.timestamp, 
                            m.data.as_ptr(), m.data.len());
@@ -78,7 +75,7 @@ impl Client {
         if !self.is_run{
             return false;
         }
-        let addresses = self.db.lock().unwrap().get_topic_addresses(topic);
+        let addresses = self.db.lock().unwrap().get_addresses_of_topic(topic);
         if let Err(err) = addresses{
             print_error(&format!("{}", err), file!(), line!());
             return false           

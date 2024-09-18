@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Custom launch",
+            "targetCreateCommands": [
+                "target create ${workspaceFolder}/target/debug/liner"
+            ],
+            "processCreateCommands": [
+                "settings set target.run-args value1 value2 value3",
+                "process launch"
+            ],
+            "args": [],
+            "cwd": "${workspaceRoot}",
+            "cargo": {
+                "args": [
+                   "build",
+                   "--manifest-path=${workspaceFolder}/Cargo.toml",
+                   "--features=liner_debug"
+                ],
+        }       
+    ]
+}

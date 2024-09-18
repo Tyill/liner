@@ -1,9 +1,10 @@
 use crate::message::Message;
 use crate::redis;
 use crate::print_error;
+use crate::print_debug;
 
 use std::collections::HashMap;
-use std::ops::Deref;
+use std::io::Read;
 use std::{thread, sync::mpsc};
 use std::net::{TcpStream, TcpListener};
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -111,12 +112,12 @@ fn read_stream(epoll_fd: RawFd,
         let stream = stream.clone();
         let db = db.clone();
         rayon::spawn(move || {
-            let stream = stream.lock().unwrap();
-            let mut reader = BufReader::new(stream.deref());
+            let mut stream = stream.lock().unwrap();
+            let mut reader = BufReader::new(stream.by_ref());
             let mut last_mess_num: u64 = 0;
             let mut sender_name = String::new();
             let mut sender_topic = String::new();
-            while let Some(m) = Message::from_stream(&mut reader){
+            while let Some(m) = Message::from_stream(reader.by_ref()){
                 if last_mess_num == 0{
                     match db.lock().unwrap().get_last_mess_number_for_listener(&m.sender_name, &m.topic_from){
                         Ok(num)=>{
