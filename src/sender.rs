@@ -1,6 +1,7 @@
 use crate::message::Message;
 use crate::redis;
 use crate::print_error;
+use crate::settings;
 
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
@@ -52,8 +53,7 @@ impl Sender {
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(128);
             loop{ 
                 append_new_streams(epoll_fd, &mut addrs_new_, &mut streams, &mut streams_fd_, &messages_new);
-                
-                if !wait(epoll_fd, &mut events, 10*1000){ // 10sec
+                if !wait(epoll_fd, &mut events){
                     break;
                 }                  
                 for ev in &events {  
@@ -118,12 +118,12 @@ impl Sender {
     }
 }
 
-fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>, timeout_ms: i32)->bool{
+fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
     match syscall!(epoll_wait(
         epoll_fd,
         events.as_mut_ptr() as *mut libc::epoll_event,
         128,
-        timeout_ms,
+        -1,
     )){
         Ok(ready_count)=>{
             unsafe { events.set_len(ready_count as usize) };
@@ -183,7 +183,9 @@ fn write_stream(stream_fd: RawFd,
                     return;
                 }                
                 let mut last_send_mess_number = 0;
-                let mut has_new_mess = true;  
+                let mut has_new_mess = true;
+                let mut write_count = 0;
+                let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, &stream.stream); 
                 while has_new_mess{
                     let last_mess_number = db.lock().unwrap().get_last_mess_number_for_sender(&topic);
                     if let Err(err) = last_mess_number{
@@ -200,27 +202,28 @@ fn write_stream(stream_fd: RawFd,
                             }
                         }
                     }
-                    let mut writer = BufWriter::new(&stream.stream); 
                     for mess in &buff{ 
                         if last_send_mess_number < mess.number_mess{
                             last_send_mess_number = mess.number_mess;
                             if !mess.to_stream(&mut writer){
                                 break;
                             }
+                            write_count += 1;
                         }                        
-                    }
-                    if let Err(err) = writer.flush(){
-                        if err.kind() != std::io::ErrorKind::WouldBlock &&
-                           err.kind() != std::io::ErrorKind::Interrupted{
-                           print_error(&format!("{}", err), file!(), line!());                    
-                        }
-                    }
+                    }                   
                     if let Some(messages) = messages_new.lock().unwrap().get_mut(&addr_to){
                         has_new_mess = !messages.is_empty();
                         buff.append(messages);
-                        *messages = buff;                        
+                        *messages = buff;
                     }
-                }                   
+                }
+                if let Err(err) = writer.flush(){
+                    if err.kind() != std::io::ErrorKind::WouldBlock &&
+                       err.kind() != std::io::ErrorKind::Interrupted{
+                       print_error(&format!("{}", err), file!(), line!());                    
+                    }
+                }
+                println!("write_count {}", write_count); 
             });
         }
     }

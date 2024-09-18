@@ -135,14 +135,25 @@ fn write_stream<T>(stream: &mut T, data: &[u8])->bool
 where
     T: Write,
 {
-    let mut is = false;
-    match stream.write_all(data) {
-        Ok(_) => { 
-            is = true;
-        },
-        Err(err) => {
-            print_error(&format!("{}", err), file!(), line!());
-        },            
+    let dsz = data.len();
+    let mut wsz: usize = 0;
+    while wsz < dsz{
+        match stream.write(&data[wsz..]) {
+            Ok(n) => { 
+                if n == 0{
+                    break;
+                }
+                wsz += n;
+            },
+            Err(err) => {
+                let e = err.kind();
+                if e == std::io::ErrorKind::WouldBlock{
+                    continue;
+                }else if e != std::io::ErrorKind::Interrupted{
+                    print_error(&format!("{}", e), file!(), line!());                    
+                }
+            },            
+        }
     }
-    return is;
+    return wsz == dsz;
 }

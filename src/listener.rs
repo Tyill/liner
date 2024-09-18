@@ -1,5 +1,6 @@
 use crate::message::Message;
 use crate::redis;
+use crate::settings;
 use crate::print_error;
 use crate::print_debug;
 
@@ -113,41 +114,55 @@ fn read_stream(epoll_fd: RawFd,
         let db = db.clone();
         rayon::spawn(move || {
             let mut stream = stream.lock().unwrap();
-            let mut reader = BufReader::new(stream.by_ref());
+            let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.by_ref());
             let mut last_mess_num: u64 = 0;
+            let mut last_mess_num_prev: u64 = 0;
             let mut sender_name = String::new();
             let mut sender_topic = String::new();
+            let mut read_count = 0;
             while let Some(m) = Message::from_stream(reader.by_ref()){
                 if last_mess_num == 0{
-                    match db.lock().unwrap().get_last_mess_number_for_listener(&m.sender_name, &m.topic_from){
-                        Ok(num)=>{
-                            last_mess_num = num;
-                        },
-                        Err(err)=>{
-                            print_error(&format!("couldn't get_last_mess_number_for_listener: {}", err), file!(), line!());
-                            last_mess_num = 0;
-                        }
-                    }
+                    last_mess_num = get_last_mess_number(&db, &m.sender_name, &m.topic_from);
+                    last_mess_num_prev = last_mess_num;
                     sender_name = m.sender_name.clone();
                     sender_topic = m.topic_from.clone();
                 }
                 if m.number_mess > last_mess_num{
                     last_mess_num = m.number_mess;
+                    read_count += 1;
                     if let Err(err) = tx.send(m){
                         print_error(&format!("couldn't tx.send: {}", err), file!(), line!());
                     }
-                }else{
-                    print_error(&format!("receive old mess num{}", m.number_mess), file!(), line!());
+                }                
+                if last_mess_num - last_mess_num_prev > settings::TOLERANCE_FOR_UPDATE_MESS_NUMBER{
+                    set_last_mess_number(&db, &sender_name, &sender_topic, last_mess_num);
+                    last_mess_num_prev = last_mess_num;
                 }
             }
-            if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(&sender_name, &sender_topic, last_mess_num){
-                print_error(&format!("couldn't db.set_last_mess_number: {}", err), file!(), line!());
-            }
+            set_last_mess_number(&db, &sender_name, &sender_topic, last_mess_num);
             continue_read_stream(epoll_fd, stream_fd);
+            println!("continue_read_stream {}", read_count);
         });
     }
 }
 
+fn set_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, topic_from: &str, last_mess_num: u64){
+    if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(&sender_name, &topic_from, last_mess_num){
+        print_error(&format!("couldn't db.set_last_mess_number: {}", err), file!(), line!());
+    }
+}
+
+fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, topic_from: &str)->u64{
+    match db.lock().unwrap().get_last_mess_number_for_listener(sender_name, topic_from){
+        Ok(num)=>{
+            num
+        },
+        Err(err)=>{
+            print_error(&format!("couldn't get_last_mess_number_for_listener: {}", err), file!(), line!());
+            0
+        }
+    }
+}
 
 fn add_read_stream(epoll_fd: i32, fd: RawFd){
     regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD).expect("couldn't add_read_stream");

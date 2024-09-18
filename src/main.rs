@@ -1,10 +1,9 @@
 use liner;
 use std::ffi::CString;
-use std::ffi::CStr;
 use std::{thread, time};
        
 
-extern "C" fn cb1(_to: *const i8, from: *const i8, _uuid: *const i8, _timestamp: u64, _data: *const u8, _dsize: usize){
+extern "C" fn cb1(_to: *const i8, _from: *const i8, _uuid: *const i8, _timestamp: u64, _data: *const u8, _dsize: usize){
    // unsafe {
       //  let from = CStr::from_ptr(from).to_str().unwrap();
     
@@ -12,7 +11,7 @@ extern "C" fn cb1(_to: *const i8, from: *const i8, _uuid: *const i8, _timestamp:
     //}
 }
 
-extern "C" fn cb2(_to: *const i8, from: *const i8, _uuid: *const i8, _timestamp: u64, _data: *const u8, _dsize: usize){
+extern "C" fn cb2(_to: *const i8, _from: *const i8, _uuid: *const i8, _timestamp: u64, _data: *const u8, _dsize: usize){
   //  unsafe {
       //  let from = CStr::from_ptr(from).to_str().unwrap();
     
@@ -44,8 +43,7 @@ fn main() {
 
     let uuid = CString::new("1234").unwrap();
    
-    loop {
-        
+    loop {        
         for _ in 0..150{
         liner::send_to(&mut c1, 
             topic_2.as_ptr(),
@@ -53,7 +51,7 @@ fn main() {
             array.as_ptr(), array.len());
         }
 
-        thread::sleep(time::Duration::from_millis(1000));
+        thread::sleep(time::Duration::from_millis(100));
     }
 }
 

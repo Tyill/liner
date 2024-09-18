@@ -4,6 +4,7 @@ mod message;
 mod bytestream;
 mod listener;
 mod sender;
+mod settings;
 use crate::client::Client;
 
 use std::ffi::CStr;

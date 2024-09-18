@@ -1,0 +1,4 @@
+
+pub const TOLERANCE_FOR_UPDATE_MESS_NUMBER: u64 = 100;
+pub const WRITE_BUFFER_CAPASITY: usize = 8192;
+pub const READ_BUFFER_CAPASITY: usize = 8192;
