@@ -46,7 +46,7 @@ fn main() {
     let uuid = CString::new("1234").unwrap();
    
     loop {        
-        for _ in 0..5{
+        for _ in 0..100{
             liner::send_to(&mut c1, 
                 topic_2.as_ptr(),
                 uuid.as_ptr(),

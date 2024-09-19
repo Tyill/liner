@@ -37,7 +37,7 @@ pub struct Sender{
     messages: Arc<Mutex<HashMap<String, LinkedList<Message>>>>, // key - addr
     last_mess_number: HashMap<String, u64>,              
     streams_fd: Arc<Mutex<HashMap<String, RawFd>>>,
-    event_fd: RawFd,
+    wakeup_fd: RawFd,
 }
 
 impl Sender {
@@ -50,7 +50,7 @@ impl Sender {
         let streams_fd: Arc<Mutex<HashMap<String, RawFd>>> = Arc::new(Mutex::new(HashMap::new()));
         let mut streams_fd_ = streams_fd.clone();
         let db_ = db.clone();
-        let event_fd = eventfd_create(epoll_fd);
+        let wakeup_fd = wakeupfd_create(epoll_fd);
         thread::spawn(move|| {
             let mut streams: HashMap<RawFd, Arc<Mutex<WriteStream>>> = HashMap::new();
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
@@ -60,17 +60,17 @@ impl Sender {
                     break;
                 }                  
                 for ev in &events {  
+                    let stream_fd = ev.u64 as RawFd;
                     if ev.events as i32 & libc::EPOLLIN > 0{
-                        let stream_fd = ev.u64 as RawFd;
-                        if stream_fd == event_fd{
-                            eventfd_reset(event_fd);
+                        if stream_fd == wakeup_fd{
+                            wakeupfd_reset(wakeup_fd);
                         }
                     }else if ev.events as i32 & libc::EPOLLOUT > 0{
-                        let stream_fd = ev.u64 as RawFd;
                         write_stream(stream_fd, &streams, messages_new.clone(), db_.clone());
                     }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
-                        let stream_fd = ev.u64 as RawFd;
                         remove_stream(epoll_fd, stream_fd, &mut streams, &streams_fd_, &addrs_new_);
+                    }else{
+                        print_error!(format!("unknown event {}", stream_fd as RawFd));
                     }
                 }               
             }
@@ -83,7 +83,7 @@ impl Sender {
             messages,
             last_mess_number: HashMap::new(),
             streams_fd,
-            event_fd,
+            wakeup_fd,
         }
     }
     
@@ -118,7 +118,7 @@ impl Sender {
         }
         if is_new_addr{
             self.addrs_new.lock().unwrap().push(addr_to.to_string());
-            eventfd_notify(self.epoll_fd, self.event_fd);    
+            wakeupfd_notify(self.wakeup_fd);    
         }
         return true;
     }
@@ -203,6 +203,7 @@ fn write_stream(stream_fd: RawFd,
                         return;
                     }
                     let last_mess_number = last_mess_number.unwrap();
+                    println!("sender last_mess_number {}",last_mess_number);  
                     let mut buff: LinkedList<Message> = LinkedList::new();
                     if let Some(messages) = messages_new.lock().unwrap().get_mut(&addr_to){
                         while !messages.is_empty() {
@@ -225,6 +226,9 @@ fn write_stream(stream_fd: RawFd,
                         has_new_mess = !messages.is_empty();
                         buff.append(messages);
                         *messages = buff;
+                        if has_new_mess{
+                            println!("sender has_new_mess {} write_count {} last_num {}", has_new_mess, write_count, last_send_mess_number);
+                        }
                     }
                 }
                 if let Err(err) = writer.flush(){
@@ -233,7 +237,7 @@ fn write_stream(stream_fd: RawFd,
                        print_error!(&format!("{}", err));                    
                     }
                 }
-                println!("write_count {}", write_count); 
+                println!("sender write_count {} last_num {}", write_count, last_send_mess_number); 
             });
         }
     }
@@ -266,26 +270,25 @@ fn regist_event(epoll_fd: i32, fd: RawFd, ctl: i32)-> io::Result<i32> {
     };
     syscall!(epoll_ctl(epoll_fd, ctl, fd, &mut event))
 }
-fn eventfd_create(epoll_fd: RawFd)->RawFd{
-    let event_fd = syscall!(eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK)).expect("couldn't eventfd");
+fn wakeupfd_create(epoll_fd: RawFd)->RawFd{
+    let event_fd = syscall!(eventfd(0, 0)).expect("couldn't eventfd");
     let mut event = libc::epoll_event {
-        events: (libc::EPOLLONESHOT | libc::EPOLLIN) as u32,
+        events: (libc::EPOLLIN) as u32,
         u64: event_fd as u64,
     };
     syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, event_fd, &mut event)).expect("couldn't eventfd_create");
     event_fd
 }
-fn eventfd_notify(epoll_fd: RawFd, event_fd: RawFd){
+fn wakeupfd_notify(event_fd: RawFd){
     let b: u64 = 1;
-    if let Err(_) = syscall!(write(event_fd, &b as *const u64 as *const c_void, std::mem::size_of::<u64>())){
-        //ignore
-    }
-    continue_write_stream(epoll_fd, event_fd);
+    if let Err(err) = syscall!(write(event_fd, &b as *const u64 as *const c_void, std::mem::size_of::<u64>())){
+        print_error!(&format!("{}", err));
+    }  
 }
-fn eventfd_reset(event_fd: i32){
+fn wakeupfd_reset(event_fd: i32){
     let b: u64 = 0;
-    if let Err(_) = syscall!(write(event_fd, &b as *const u64 as *const c_void, std::mem::size_of::<u64>())){
-        //ignore
+    if let Err(err) = syscall!(read(event_fd, &b as *const u64 as *mut c_void, std::mem::size_of::<u64>())){
+        print_error!(&format!("{}", err));
     }
 }
 
