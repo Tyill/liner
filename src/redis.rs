@@ -7,7 +7,8 @@ pub struct Connect{
     conn_str: String,
     conn: redis::Connection,
     topic_addr_cache: HashMap<String, Vec<String>>,
-    last_mess_number: HashMap<String, u64>, // key: sender_name,sender_topic,listener_topic 
+    unique_name_cache: HashMap<String, String>, // key: topic, addr
+    last_mess_number: HashMap<String, u64>, // key: sender_name,sender_topic,listener_name,listener_topic 
 }
 impl Connect {
     pub fn new(unique_name: &str, conn_str: &str)->RedisResult<Connect>{
@@ -19,13 +20,15 @@ impl Connect {
             conn_str: conn_str.to_string(),
             conn,
             topic_addr_cache: HashMap::new(),
+            unique_name_cache: HashMap::new(),
             last_mess_number: HashMap::new()
         })
     }    
     pub fn regist_topic(&mut self, topic: &str, addr: &str)->RedisResult<()>{
         self.source_topic = topic.to_string();
+        let unique: String = self.unique_name.to_string();
         let dbconn = self.get_dbconn()?;
-        dbconn.hset(&format!("topic:{}:addr", topic), addr, "")?;
+        dbconn.hset(&format!("topic:{}:addr", topic), addr, unique)?;
         Ok(())
     }
     pub fn get_addresses_of_topic(&mut self, topic: &str)->RedisResult<Vec<String>>{
