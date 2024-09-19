@@ -4,6 +4,7 @@ use crate::print_error;
 use crate::settings;
 
 use std::net::TcpStream;
+use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet, LinkedList};
 use std::thread;
@@ -35,7 +36,8 @@ pub struct Sender{
     addrs_new: Arc<Mutex<Vec<String>>>,
     messages: Arc<Mutex<HashMap<String, LinkedList<Message>>>>, // key - addr
     last_mess_number: HashMap<String, u64>,              
-    streams_fd: Arc<Mutex<HashMap<String, RawFd>>>
+    streams_fd: Arc<Mutex<HashMap<String, RawFd>>>,
+    event_fd: RawFd,
 }
 
 impl Sender {
@@ -48,16 +50,22 @@ impl Sender {
         let streams_fd: Arc<Mutex<HashMap<String, RawFd>>> = Arc::new(Mutex::new(HashMap::new()));
         let mut streams_fd_ = streams_fd.clone();
         let db_ = db.clone();
+        let event_fd = eventfd_create(epoll_fd);
         thread::spawn(move|| {
             let mut streams: HashMap<RawFd, Arc<Mutex<WriteStream>>> = HashMap::new();
-            let mut events: Vec<libc::epoll_event> = Vec::with_capacity(128);
+            let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
             loop{ 
                 append_new_streams(epoll_fd, &mut addrs_new_, &mut streams, &mut streams_fd_, &messages_new);
                 if !wait(epoll_fd, &mut events){
                     break;
                 }                  
                 for ev in &events {  
-                    if ev.events as i32 & libc::EPOLLOUT > 0{
+                    if ev.events as i32 & libc::EPOLLIN > 0{
+                        let stream_fd = ev.u64 as RawFd;
+                        if stream_fd == event_fd{
+                            eventfd_reset(event_fd);
+                        }
+                    }else if ev.events as i32 & libc::EPOLLOUT > 0{
                         let stream_fd = ev.u64 as RawFd;
                         write_stream(stream_fd, &streams, messages_new.clone(), db_.clone());
                     }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
@@ -75,6 +83,7 @@ impl Sender {
             messages,
             last_mess_number: HashMap::new(),
             streams_fd,
+            event_fd,
         }
     }
     
@@ -88,7 +97,7 @@ impl Sender {
                 self.last_mess_number.insert(addr_to.to_string(), last_mess_num);
             }else {
                 if let Err(err) = self.db.lock().unwrap().init_last_mess_number_from_sender(to){            
-                    print_error(&format!("error get_last_mess_number from db: {}", err), file!(), line!());
+                    print_error!(&format!("error init_last_mess_number_from_sender from db: {}", err));
                     return false;
                 }
                 self.last_mess_number.insert(addr_to.to_string(), 0);
@@ -108,7 +117,8 @@ impl Sender {
             }
         }
         if is_new_addr{
-            self.addrs_new.lock().unwrap().push(addr_to.to_string()); 
+            self.addrs_new.lock().unwrap().push(addr_to.to_string());
+            eventfd_notify(self.epoll_fd, self.event_fd);    
         }
         return true;
     }
@@ -122,7 +132,7 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
     match syscall!(epoll_wait(
         epoll_fd,
         events.as_mut_ptr() as *mut libc::epoll_event,
-        128,
+        settings::EPOLL_LISTEN_EVENTS_COUNT as i32,
         -1,
     )){
         Ok(ready_count)=>{
@@ -158,7 +168,7 @@ fn append_new_streams(epoll_fd: RawFd,
             },
             Err(err)=>{
                 addrs_lost.push(addr.clone());
-                print_error(&format!("{} {}", err, addr), file!(), line!());
+                print_error!(&format!("{} {}", err, addr));
             }
         }
     }
@@ -179,7 +189,7 @@ fn write_stream(stream_fd: RawFd,
                 if let Some(t) = db.lock().unwrap().get_topic_by_address(&addr_to){
                     topic = t;
                 }else{
-                    print_error("couldn't get_topic_by_address", file!(), line!());
+                    print_error!("couldn't get_topic_by_address");
                     return;
                 }                
                 let mut last_send_mess_number = 0;
@@ -189,7 +199,7 @@ fn write_stream(stream_fd: RawFd,
                 while has_new_mess{
                     let last_mess_number = db.lock().unwrap().get_last_mess_number_for_sender(&topic);
                     if let Err(err) = last_mess_number{
-                        print_error(&format!("error get_last_mess_number_for_sender from db: {}", err), file!(), line!());
+                        print_error!(&format!("error get_last_mess_number_for_sender from db: {}", err));
                         return;
                     }
                     let last_mess_number = last_mess_number.unwrap();
@@ -220,7 +230,7 @@ fn write_stream(stream_fd: RawFd,
                 if let Err(err) = writer.flush(){
                     if err.kind() != std::io::ErrorKind::WouldBlock &&
                        err.kind() != std::io::ErrorKind::Interrupted{
-                       print_error(&format!("{}", err), file!(), line!());                    
+                       print_error!(&format!("{}", err));                    
                     }
                 }
                 println!("write_count {}", write_count); 
@@ -256,6 +266,29 @@ fn regist_event(epoll_fd: i32, fd: RawFd, ctl: i32)-> io::Result<i32> {
     };
     syscall!(epoll_ctl(epoll_fd, ctl, fd, &mut event))
 }
+fn eventfd_create(epoll_fd: RawFd)->RawFd{
+    let event_fd = syscall!(eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK)).expect("couldn't eventfd");
+    let mut event = libc::epoll_event {
+        events: (libc::EPOLLONESHOT | libc::EPOLLIN) as u32,
+        u64: event_fd as u64,
+    };
+    syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, event_fd, &mut event)).expect("couldn't eventfd_create");
+    event_fd
+}
+fn eventfd_notify(epoll_fd: RawFd, event_fd: RawFd){
+    let b: u64 = 1;
+    if let Err(_) = syscall!(write(event_fd, &b as *const u64 as *const c_void, std::mem::size_of::<u64>())){
+        //ignore
+    }
+    continue_write_stream(epoll_fd, event_fd);
+}
+fn eventfd_reset(event_fd: i32){
+    let b: u64 = 0;
+    if let Err(_) = syscall!(write(event_fd, &b as *const u64 as *const c_void, std::mem::size_of::<u64>())){
+        //ignore
+    }
+}
+
 fn remove_write_stream(epoll_fd: i32, fd: RawFd){
     syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())).expect("couldn't remove_write_stream");   
 }

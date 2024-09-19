@@ -19,7 +19,9 @@ extern "C" fn cb2(_to: *const i8, _from: *const i8, _uuid: *const i8, _timestamp
   //  }
 }
 
+
 fn main() {
+
     let unique1 = CString::new("unique1").unwrap();
     let dbpath = CString::new("redis://127.0.0.1/").unwrap();
     let mut c1 = liner::init(unique1.as_ptr(), dbpath.as_ptr());
@@ -44,14 +46,14 @@ fn main() {
     let uuid = CString::new("1234").unwrap();
    
     loop {        
-        for _ in 0..150{
-        liner::send_to(&mut c1, 
-            topic_2.as_ptr(),
-            uuid.as_ptr(),
-            array.as_ptr(), array.len());
+        for _ in 0..5{
+            liner::send_to(&mut c1, 
+                topic_2.as_ptr(),
+                uuid.as_ptr(),
+                array.as_ptr(), array.len());
         }
 
-        thread::sleep(time::Duration::from_millis(100));
+        thread::sleep(time::Duration::from_millis(1000));
     }
 }
 

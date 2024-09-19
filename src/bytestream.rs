@@ -70,7 +70,7 @@ where
                         break;
                     }
                 }else if e != std::io::ErrorKind::Interrupted{
-                    print_error(&format!("{}", e), file!(), line!());                    
+                    print_error!(&format!("{}", e));                    
                 }
             }
         }
@@ -150,7 +150,7 @@ where
                 if e == std::io::ErrorKind::WouldBlock{
                     continue;
                 }else if e != std::io::ErrorKind::Interrupted{
-                    print_error(&format!("{}", e), file!(), line!());                    
+                    print_error!(&format!("{}", e));                    
                 }
             },            
         }

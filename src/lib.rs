@@ -53,15 +53,16 @@ pub extern "C" fn send_to(client: &mut Box<Option<Client>>,
     }    
 }  
 
-fn print_error(mess: &str, file: &str, line: u32){
-    eprintln!("Error {}:{}: {}", file, line, mess);
+#[macro_export]
+macro_rules! print_error {
+    ($arg:expr) => { eprintln!("Error {}:{}: {}", file!(), line!(), $arg) }
 }
 
 // The debug version
 #[cfg(feature = "liner_debug")]
 #[macro_export]
 macro_rules! print_debug {
-    ($( $args:expr ),*) => { println!( $( $args ),* ); }
+    ($( $args:expr ),*) => { println!("Debug", $( $args ),* ) }
 }
 
 // Non-debug version

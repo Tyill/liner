@@ -2,7 +2,6 @@ use crate::message::Message;
 use crate::redis;
 use crate::settings;
 use crate::print_error;
-use crate::print_debug;
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -37,7 +36,7 @@ impl Listener {
             let listener_fd = listener.as_raw_fd();
             regist_event(epoll_fd, listener_fd, libc::EPOLL_CTL_ADD).expect("couldn't event regist");
             let mut streams: HashMap<RawFd, Arc<Mutex<TcpStream>>> = HashMap::new();
-            let mut events: Vec<libc::epoll_event> = Vec::with_capacity(128);
+            let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
             loop{    
                 if !wait(epoll_fd, &mut events){
                     break;
@@ -70,7 +69,7 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
     match syscall!(epoll_wait(
         epoll_fd,
         events.as_mut_ptr() as *mut libc::epoll_event,
-        128,
+        settings::EPOLL_LISTEN_EVENTS_COUNT as i32,
         -1,
     )){
         Ok(ready_count)=>{
@@ -98,7 +97,7 @@ fn listener_accept(epoll_fd: RawFd,
             add_read_stream(epoll_fd, stream_fd);
             streams.insert(stream_fd, Arc::new(Mutex::new(stream)));
         }
-        Err(err) => print_error(&format!("couldn't accept: {}", err), file!(), line!()),
+        Err(err) => print_error!(&format!("couldn't accept: {}", err)),
     };
     continue_read_stream(epoll_fd, listener.as_raw_fd());
 }
@@ -120,18 +119,18 @@ fn read_stream(epoll_fd: RawFd,
             let mut sender_name = String::new();
             let mut sender_topic = String::new();
             let mut read_count = 0;
-            while let Some(m) = Message::from_stream(reader.by_ref()){
+            while let Some(mess) = Message::from_stream(reader.by_ref()){
                 if last_mess_num == 0{
-                    last_mess_num = get_last_mess_number(&db, &m.sender_name, &m.topic_from);
+                    last_mess_num = get_last_mess_number(&db, &mess.sender_name, &mess.topic_from);
                     last_mess_num_prev = last_mess_num;
-                    sender_name = m.sender_name.clone();
-                    sender_topic = m.topic_from.clone();
+                    sender_name = mess.sender_name.clone();
+                    sender_topic = mess.topic_from.clone();
                 }
-                if m.number_mess > last_mess_num{
-                    last_mess_num = m.number_mess;
+                if mess.number_mess > last_mess_num{
+                    last_mess_num = mess.number_mess;
                     read_count += 1;
-                    if let Err(err) = tx.send(m){
-                        print_error(&format!("couldn't tx.send: {}", err), file!(), line!());
+                    if let Err(err) = tx.send(mess){
+                        print_error!(&format!("couldn't tx.send: {}", err));
                     }
                 }                
                 if last_mess_num - last_mess_num_prev > settings::TOLERANCE_FOR_UPDATE_MESS_NUMBER{
@@ -148,7 +147,7 @@ fn read_stream(epoll_fd: RawFd,
 
 fn set_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, topic_from: &str, last_mess_num: u64){
     if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(&sender_name, &topic_from, last_mess_num){
-        print_error(&format!("couldn't db.set_last_mess_number: {}", err), file!(), line!());
+        print_error!(&format!("couldn't db.set_last_mess_number: {}", err));
     }
 }
 
@@ -158,7 +157,7 @@ fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, topi
             num
         },
         Err(err)=>{
-            print_error(&format!("couldn't get_last_mess_number_for_listener: {}", err), file!(), line!());
+            print_error!(&format!("couldn't get_last_mess_number_for_listener: {}", err));
             0
         }
     }

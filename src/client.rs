@@ -44,12 +44,12 @@ impl Client {
         }
         let listener = TcpListener::bind(localhost);
         if let Err(err) = listener {
-            print_error(&format!("{}", err), file!(), line!());
+            print_error!(&format!("{}", err));
             return false;        
         }
         let listener = listener.unwrap();
         if let Err(err) = self.db.lock().unwrap().regist_topic(topic, &localhost){
-            print_error(&format!("{}", err), file!(), line!());
+            print_error!(&format!("{}", err));
             return false;
         }
         let (tx_prodr, rx_prodr) = mpsc::channel::<Message>();
@@ -77,12 +77,12 @@ impl Client {
         }
         let addresses = self.db.lock().unwrap().get_addresses_of_topic(topic);
         if let Err(err) = addresses{
-            print_error(&format!("{}", err), file!(), line!());
+            print_error!(&format!("{}", err));
             return false           
         }
         let addresses = addresses.unwrap();
         if addresses.len() == 0{
-            print_error(&format!("not found addr for topic {}", topic), file!(), line!());
+            print_error!(&format!("not found addr for topic {}", topic));
             return false;
         }       
         if !self.last_send_index.contains_key(topic){
