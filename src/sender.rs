@@ -223,7 +223,12 @@ fn write_stream(stream_fd: RawFd,
                 messages_new: Arc<Mutex<HashMap<String, LinkedList<Message>>>>,
                 db: Arc<Mutex<redis::Connect>>){
     if let Some(stream) = streams.get(&stream_fd){
-        let addr_to = stream.lock().unwrap().address.clone();
+        let addr_to;
+        if let Ok(stream) = stream.try_lock(){
+            addr_to = stream.address.clone();
+        }else{
+            return;
+        }
         if !&messages_new.lock().unwrap()[&addr_to].is_empty(){
             let stream = stream.clone();
             rayon::spawn(move || {
