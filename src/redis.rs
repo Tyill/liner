@@ -26,12 +26,18 @@ impl Connect {
             last_send_mess_number: HashMap::new(),
         })
     }    
+    pub fn redis_path(&self)->String{
+        return self.conn_str.clone();
+    }
     pub fn regist_topic(&mut self, topic: &str, addr: &str)->RedisResult<()>{
         self.source_topic = topic.to_string();
         let unique: String = self.unique_name.to_string();
         let dbconn = self.get_dbconn()?;
         dbconn.hset(&format!("topic:{}:addr", topic), addr, unique)?;
         Ok(())
+    }
+    pub fn set_source_topic(&mut self, topic: &str){
+        self.source_topic = topic.to_string();
     }
     pub fn init_addresses_of_topic(&mut self, topic: &str)->RedisResult<()>{
         let dbconn = self.get_dbconn()?; 

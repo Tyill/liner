@@ -6,14 +6,14 @@ use crate::sender::Sender;
 use crate::print_error;
 
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::{thread, sync::mpsc};
 use std::collections::HashMap;
 
 pub struct Client{
     unique_name: String,
     topic: String,
-    db: Arc<Mutex<redis::Connect>>,
+    db: redis::Connect,
     listener: Option<Listener>,
     sender: Option<Sender>,
     last_send_index: HashMap<String, usize>,
@@ -28,7 +28,7 @@ impl Client {
             Self{
                 unique_name: unique_name.to_string(),
                 topic: "".to_string(),
-                db: Arc::new(Mutex::new(db)),
+                db,
                 listener: None,
                 sender: None,
                 last_send_index: HashMap::new(),
@@ -48,7 +48,7 @@ impl Client {
             return false;        
         }
         let listener = listener.unwrap();
-        if let Err(err) = self.db.lock().unwrap().regist_topic(topic, &localhost){
+        if let Err(err) = self.db.regist_topic(topic, &localhost){
             print_error!(&format!("{}", err));
             return false;
         }
@@ -63,8 +63,8 @@ impl Client {
             }
         });  
         self.topic = topic.to_string();      
-        self.listener = Some(Listener::new(listener, tx_prodr, self.db.clone()));
-        self.sender = Some(Sender::new(&self.unique_name, self.db.clone()));
+        self.listener = Some(Listener::new(listener, tx_prodr, self.unique_name.clone(), self.db.redis_path(), topic.to_string()));
+        self.sender = Some(Sender::new(self.unique_name.clone(), self.db.redis_path(), topic.to_string()));
         self.is_run = true;
 
         return true;
@@ -75,7 +75,7 @@ impl Client {
         if !self.is_run{
             return false;
         }
-        let addresses = self.db.lock().unwrap().get_addresses_of_topic(topic);
+        let addresses = self.db.get_addresses_of_topic(topic);
         if let Err(err) = addresses{
             print_error!(&format!("{}", err));
             return false           
@@ -93,7 +93,7 @@ impl Client {
             index = 0;
         }
         let addr = &addresses[index];
-        let ok = self.sender.as_mut().unwrap().send_to(addr, topic, &self.topic, uuid, data);
+        let ok = self.sender.as_mut().unwrap().send_to(&mut self.db, addr, topic, &self.topic, uuid, data);
 
         *self.last_send_index.get_mut(topic).unwrap() = index + 1;
         return ok;

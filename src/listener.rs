@@ -1,3 +1,4 @@
+use crate::common;
 use crate::message::Message;
 use crate::redis;
 use crate::settings;
@@ -24,33 +25,44 @@ macro_rules! syscall {
     }};
 }
 
+struct ReadStream{
+    stream: TcpStream,
+    is_active: bool,
+}
+
 pub struct Listener{
     _epoll_fd: i32,    
 }
 
 impl Listener {
-    pub fn new(listener: TcpListener, tx: mpsc::Sender<Message>, db: Arc<Mutex<redis::Connect>>)->Listener{
+    pub fn new(listener: TcpListener, tx: mpsc::Sender<Message>, 
+               unique_name: String, redis_path: String, source_topic: String)->Listener{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         thread::spawn(move|| {
             listener.set_nonblocking(true).expect("couldn't listener set_nonblocking");
             let listener_fd = listener.as_raw_fd();
             regist_event(epoll_fd, listener_fd, libc::EPOLL_CTL_ADD).expect("couldn't event regist");
-            let mut streams: HashMap<RawFd, Arc<Mutex<TcpStream>>> = HashMap::new();
+            let mut streams: HashMap<RawFd, Arc<Mutex<ReadStream>>> = HashMap::new();
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
-            loop{    
-                if !wait(epoll_fd, &mut events){
-                    break;
-                }               
-                for ev in &events {  
-                    if ev.u64 == listener_fd as u64{
-                        listener_accept(epoll_fd, &mut streams, &listener);
-                    }else if ev.events as i32 & libc::EPOLLIN > 0{
+            if let Ok(db) = redis::Connect::new(&unique_name, &redis_path){
+                let db = Arc::new(Mutex::new(db));
+                db.lock().unwrap().set_source_topic(&source_topic);
+                loop{    
+                    if !wait(epoll_fd, &mut events){
+                        break;
+                    }               
+                    for ev in &events {
                         let stream_fd = ev.u64 as RawFd;
-                        read_stream(epoll_fd, stream_fd, &streams, &tx, &db);
-                    }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
-                        let stream_fd = ev.u64 as RawFd;
-                        remove_read_stream(epoll_fd, stream_fd);
-                        streams.remove(&stream_fd);
+                        if stream_fd == listener_fd{
+                            listener_accept(epoll_fd, &mut streams, &listener);
+                        }else if ev.events as i32 & libc::EPOLLIN > 0{
+                            read_stream(epoll_fd, stream_fd, &streams, &tx, &db);
+                        }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
+                            remove_read_stream(epoll_fd, stream_fd);
+                            streams.remove(&stream_fd);
+                        }else{
+                            print_error!(format!("unknown event {}", stream_fd));
+                        }
                     }
                 }
             }
@@ -88,14 +100,14 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
 }
 
 fn listener_accept(epoll_fd: RawFd, 
-                   streams: &mut HashMap<RawFd, Arc<Mutex<TcpStream>>>,
+                   streams: &mut HashMap<RawFd, Arc<Mutex<ReadStream>>>,
                    listener: &TcpListener){
     match listener.accept() {
         Ok((stream, _addr)) => {
             stream.set_nonblocking(true).expect("couldn't listener set_nonblocking");
             let stream_fd = stream.as_raw_fd();            
             add_read_stream(epoll_fd, stream_fd);
-            streams.insert(stream_fd, Arc::new(Mutex::new(stream)));
+            streams.insert(stream_fd, Arc::new(Mutex::new(ReadStream{stream, is_active: false})));
         }
         Err(err) => print_error!(&format!("couldn't accept: {}", err)),
     };
@@ -104,16 +116,27 @@ fn listener_accept(epoll_fd: RawFd,
 
 fn read_stream(epoll_fd: RawFd,
                stream_fd: RawFd,
-               streams: &HashMap<RawFd, Arc<Mutex<TcpStream>>>, 
+               streams: &HashMap<RawFd, Arc<Mutex<ReadStream>>>, 
                tx: &mpsc::Sender<Message>, 
                db: &Arc<Mutex<redis::Connect>>){
     if let Some(stream) = streams.get(&stream_fd){
         let tx = tx.clone();
         let stream = stream.clone();
         let db = db.clone();
+        if let Ok(mut stream) = stream.try_lock(){
+            if !stream.is_active{
+                stream.is_active = true;
+            }else{
+                continue_read_stream(epoll_fd, stream_fd);
+                return;
+            }
+        }else{
+            continue_read_stream(epoll_fd, stream_fd);
+            return;
+        }
         rayon::spawn(move || {
             let mut stream = stream.lock().unwrap();
-            let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.by_ref());
+            let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.stream.by_ref());
             let mut last_mess_num: u64 = 0;
             let mut last_mess_num_prev: u64 = 0;
             let mut sender_name = String::new();
@@ -137,7 +160,7 @@ fn read_stream(epoll_fd: RawFd,
                     missed_count += 1;
                 }          
                 if last_mess_num - last_mess_num_prev > settings::TOLERANCE_FOR_UPDATE_MESS_NUMBER{
-                    println!("listener set_last_mess_number last_mess_num {}", last_mess_num); 
+                    println!("{} listener set_last_mess_number last_mess_num {}", common::current_time_ms(), last_mess_num); 
                     set_last_mess_number(&db, &sender_name, &sender_topic, last_mess_num);
                     last_mess_num_prev = last_mess_num;
                 }
@@ -145,8 +168,9 @@ fn read_stream(epoll_fd: RawFd,
             if last_mess_num - last_mess_num_prev > 0{
                 set_last_mess_number(&db, &sender_name, &sender_topic, last_mess_num);
             }
-            continue_read_stream(epoll_fd, stream_fd);
-            println!("listener read_count {} missed_count {} last_read_num {} ", read_count, missed_count, last_mess_num);
+            stream.is_active = false;
+            continue_read_stream(epoll_fd, stream_fd);            
+            println!("{} listener read_count {} missed_count {} last_read_num {} ", common::current_time_ms(), read_count, missed_count, last_mess_num);
         });
     }
 }

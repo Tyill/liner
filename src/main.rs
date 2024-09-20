@@ -46,14 +46,14 @@ fn main() {
     let uuid = CString::new("1234").unwrap();
    
     loop {        
-        for _ in 0..100{
+        for _ in 0..1000{
             liner::send_to(&mut c1, 
                 topic_2.as_ptr(),
                 uuid.as_ptr(),
                 array.as_ptr(), array.len());
         }
 
-        thread::sleep(time::Duration::from_millis(1000));
+        thread::sleep(time::Duration::from_millis(100));
     }
 }
 
