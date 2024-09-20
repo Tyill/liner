@@ -142,7 +142,9 @@ fn read_stream(epoll_fd: RawFd,
                     last_mess_num_prev = last_mess_num;
                 }
             }
-            set_last_mess_number(&db, &sender_name, &sender_topic, last_mess_num);
+            if last_mess_num - last_mess_num_prev > 0{
+                set_last_mess_number(&db, &sender_name, &sender_topic, last_mess_num);
+            }
             continue_read_stream(epoll_fd, stream_fd);
             println!("listener read_count {} missed_count {} last_read_num {} ", read_count, missed_count, last_mess_num);
         });

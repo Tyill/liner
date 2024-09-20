@@ -11,7 +11,7 @@ use std::{thread, sync::mpsc};
 use std::collections::HashMap;
 
 pub struct Client{
-    _unique_name: String,
+    unique_name: String,
     topic: String,
     db: Arc<Mutex<redis::Connect>>,
     listener: Option<Listener>,
@@ -26,7 +26,7 @@ impl Client {
         let db = redis::Connect::new(&unique_name, redis_path).ok()?;
         Some(
             Self{
-                _unique_name: unique_name.to_string(),
+                unique_name: unique_name.to_string(),
                 topic: "".to_string(),
                 db: Arc::new(Mutex::new(db)),
                 listener: None,
@@ -64,7 +64,7 @@ impl Client {
         });  
         self.topic = topic.to_string();      
         self.listener = Some(Listener::new(listener, tx_prodr, self.db.clone()));
-        self.sender = Some(Sender::new(self.db.clone()));
+        self.sender = Some(Sender::new(&self.unique_name, self.db.clone()));
         self.is_run = true;
 
         return true;

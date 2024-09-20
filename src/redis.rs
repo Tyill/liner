@@ -6,9 +6,10 @@ pub struct Connect{
     source_topic: String,
     conn_str: String,
     conn: redis::Connection,
-    topic_addr_cache: HashMap<String, Vec<String>>,
-    unique_name_cache: HashMap<String, String>, // key: topic, addr
-    last_mess_number: HashMap<String, u64>, // key: sender_name,sender_topic,listener_name,listener_topic 
+    topic_addr_cache: HashMap<String, Vec<String>>, // key: topic, value: addrs
+    unique_name_cache: HashMap<String, String>, // key: addr, value: uname
+    last_mess_number: HashMap<String, u64>, // key: sender_name,sender_topic,listener_name,listener_topic
+    last_send_mess_number: HashMap<String, u64>, // key: listener_name,listener_topic 
 }
 impl Connect {
     pub fn new(unique_name: &str, conn_str: &str)->RedisResult<Connect>{
@@ -19,9 +20,10 @@ impl Connect {
             source_topic: "".to_string(),
             conn_str: conn_str.to_string(),
             conn,
-            topic_addr_cache: HashMap::new(),
+            topic_addr_cache: HashMap::new(),  
             unique_name_cache: HashMap::new(),
-            last_mess_number: HashMap::new()
+            last_mess_number: HashMap::new(),
+            last_send_mess_number: HashMap::new(),
         })
     }    
     pub fn regist_topic(&mut self, topic: &str, addr: &str)->RedisResult<()>{
@@ -31,28 +33,38 @@ impl Connect {
         dbconn.hset(&format!("topic:{}:addr", topic), addr, unique)?;
         Ok(())
     }
+    pub fn init_addresses_of_topic(&mut self, topic: &str)->RedisResult<()>{
+        let dbconn = self.get_dbconn()?; 
+        let addrs_names: Vec<(String, String)> = dbconn.hgetall(&format!("topic:{}:addr", topic))?;
+        let mut addrs: Vec<String> = Vec::new();
+        for an in addrs_names{
+            self.unique_name_cache.insert(an.0.clone(), an.1);
+            addrs.push(an.0);
+        }            
+        self.topic_addr_cache.insert(topic.to_string(), addrs);
+        Ok(())
+    }
     pub fn get_addresses_of_topic(&mut self, topic: &str)->RedisResult<Vec<String>>{
         if !self.topic_addr_cache.contains_key(topic){
-            let dbconn = self.get_dbconn()?; 
-            let res = dbconn.hkeys(&format!("topic:{}:addr", topic))?;
-            self.topic_addr_cache.insert(topic.to_string(), res);
+            self.init_addresses_of_topic(topic)?;
         }
         Ok(self.topic_addr_cache.get(topic).unwrap().to_vec())
     }
-    pub fn get_topic_by_address(&self, address: &str)->Option<String>{
+    pub fn get_listener_by_address(&self, address: &str)->Option<(String, String)>{
+        let mut listener_topic = String::new();
         for topic in &self.topic_addr_cache{
             if topic.1.contains(&address.to_string()){
-                return Some(topic.0.to_string())
+                listener_topic = topic.0.to_string();
             }
+        }
+        if self.unique_name_cache.contains_key(address){
+            return Some((listener_topic, self.unique_name_cache[address].to_string()));
         }
         None
     }
-    pub fn get_unique_name(&self)->String{
-        self.unique_name.to_string()
-    }
-
+   
     pub fn set_last_mess_number_from_listener(&mut self, sender_name: &str, sender_topic: &str, val: u64)->RedisResult<()>{
-        let conn = format!("{}_{}_{}", sender_name, sender_topic, self.source_topic);
+        let conn = format!("{}_{}_{}_{}", sender_name, sender_topic, self.unique_name, self.source_topic);
         let dbconn = self.get_dbconn()?;
         dbconn.set(&format!("connection_{}:mess_number", conn), val)?;
         if self.last_mess_number.contains_key(&conn){
@@ -63,7 +75,7 @@ impl Connect {
         Ok(())
     }  
     pub fn get_last_mess_number_for_listener(&mut self, sender_name: &str, sender_topic: &str)->RedisResult<u64>{
-        let conn = format!("{}_{}_{}", sender_name, sender_topic, self.source_topic);
+        let conn = format!("{}_{}_{}_{}", sender_name, sender_topic, self.unique_name, self.source_topic);
         if !self.last_mess_number.contains_key(&conn){
             let dbconn = self.get_dbconn()?; 
             let res: String = dbconn.get(&format!("connection_{}:mess_number", conn))?;
@@ -72,17 +84,30 @@ impl Connect {
         Ok(*self.last_mess_number.get(&conn).unwrap())              
     }
      
-    pub fn init_last_mess_number_from_sender(&mut self, listener_topic: &str)->RedisResult<()>{
-        let conn = format!("{}_{}_{}", self.unique_name, self.source_topic, listener_topic);
+    pub fn init_last_mess_number_from_sender(&mut self, listener_name: &str, listener_topic: &str)->RedisResult<()>{
+        let conn = format!("{}_{}_{}_{}", self.unique_name, self.source_topic, listener_name, listener_topic);
         let dbconn = self.get_dbconn()?; 
         dbconn.set_nx(&format!("connection_{}:mess_number", conn), 0)?;
         Ok(())
     }
-    pub fn get_last_mess_number_for_sender(&mut self, listener_topic: &str)->RedisResult<u64>{
-        let conn = format!("{}_{}_{}", self.unique_name, self.source_topic, listener_topic);
+    pub fn get_last_mess_number_for_sender(&mut self, listener_name: &str, listener_topic: &str)->RedisResult<u64>{
+        let conn = format!("{}_{}_{}_{}", self.unique_name, self.source_topic, listener_name, listener_topic);
         let dbconn = self.get_dbconn()?; 
         let res: String = dbconn.get(&format!("connection_{}:mess_number", conn))?;
         Ok(res.parse::<u64>().unwrap())
+    }
+
+    pub fn set_last_send_mess_number(&mut self, listener_name: &str, listener_topic: &str, val: u64){
+        let conn = format!("{}_{}", listener_name, listener_topic);
+        self.last_send_mess_number.insert(conn, val);
+    }
+    pub fn get_last_send_mess_number(&mut self, listener_name: &str, listener_topic: &str)->u64{
+        let conn = format!("{}_{}", listener_name, listener_topic);
+        if self.last_send_mess_number.contains_key(&conn){
+            return self.last_send_mess_number[&conn];
+        }else{
+            return 0;
+        }
     }
         
     fn get_dbconn(&mut self)->RedisResult<&mut redis::Connection>{

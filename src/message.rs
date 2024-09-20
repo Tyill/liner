@@ -1,7 +1,7 @@
 use crate::bytestream::{read_stream, get_string, get_u64, get_array,
                         write_string, write_number, write_bytes};
+use crate::common;
 
-use std::time::SystemTime;
 use std::io::{Write, Read};
 
 pub struct Message {
@@ -16,10 +16,7 @@ pub struct Message {
 
 impl Message {
     pub fn new(to: &str, from: &str, sender_name: &str, uuid: &str, number_mess: u64, data: &[u8]) -> Message {
-        let ms: u64 = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let ms: u64 = common::current_time_ms();
         Self {
             topic_to: to.to_string(),
             topic_from: from.to_string(),
