@@ -1,4 +1,5 @@
 use liner;
+use std::time::SystemTime;
 use std::ffi::CString;
 use std::{thread, time};
        
@@ -19,9 +20,7 @@ extern "C" fn cb2(_to: *const i8, _from: *const i8, _uuid: *const i8, _timestamp
   //  }
 }
 
-
 fn main() {
-
     let unique1 = CString::new("unique1").unwrap();
     let dbpath = CString::new("redis://127.0.0.1/").unwrap();
     let mut c1 = liner::init(unique1.as_ptr(), dbpath.as_ptr());
@@ -38,25 +37,30 @@ fn main() {
     let localhost = CString::new("localhost:2256").unwrap();
     liner::run(&mut c2, topic_2.as_ptr(), localhost.as_ptr(), cb2);
 
-    let mut array: [u8; 3] = [0; 3];
-    array[0] = 1;
-    array[1] = 2;
-    array[2] = 3;
-
+    let array: [u8; 200] = [0; 200];
     let uuid = CString::new("1234").unwrap();
-   
     loop {        
-        for _ in 0..1000{
+
+        println!("{} begin send_to", current_time_ms());       
+        for _ in 0..10000{
             liner::send_to(&mut c1, 
                 topic_2.as_ptr(),
                 uuid.as_ptr(),
                 array.as_ptr(), array.len());
         }
+        println!("{} end send_to", current_time_ms());       
+            
 
-        thread::sleep(time::Duration::from_millis(100));
+        thread::sleep(time::Duration::from_millis(1000));
     }
 }
 
+fn current_time_ms()->u64{ 
+    SystemTime::now()
+    .duration_since(SystemTime::UNIX_EPOCH)
+    .unwrap()
+    .as_millis() as u64
+}
 
 // use std::sync::{Arc, Mutex};
 

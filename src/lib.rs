@@ -52,7 +52,14 @@ pub extern "C" fn send_to(client: &mut Box<Option<Client>>,
         let c = client.as_mut();
         c.as_mut().unwrap().send_to(topic, uuid, data)
     }    
-}  
+}
+
+#[no_mangle]
+pub extern "C" fn set_internal_thread_pool_size(client: &mut Box<Option<Client>>, num: u32){
+    
+}
+
+
 
 #[macro_export]
 macro_rules! print_error {

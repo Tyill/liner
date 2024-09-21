@@ -134,17 +134,12 @@ impl Sender {
                 }
                 self.last_mess_number.insert(addr_to.to_string(), 0);
             }
+            self.messages.lock().unwrap().insert(addr_to.to_string(), LinkedList::new());
         }  
         let number_mess = self.last_mess_number[addr_to] + 1;
         *self.last_mess_number.get_mut(addr_to).unwrap() = number_mess;
-        let sender_name = &self.unique_name;
-        let mess = Message::new(to, from, &sender_name, uuid, number_mess, data);
-        if let Ok(mut messages) = self.messages.lock(){
-            if !messages.contains_key(addr_to){
-                messages.insert(addr_to.to_string(), LinkedList::new());
-            }
-            messages.get_mut(addr_to).unwrap().push_back(mess);            
-        }
+        let mess = Message::new(to, from, &self.unique_name, uuid, number_mess, data);
+        self.messages.lock().unwrap().get_mut(addr_to).unwrap().push_back(mess);
         if let Some(strm_fd) = self.streams_fd.lock().unwrap().get(addr_to){
             continue_write_stream(self.epoll_fd, *strm_fd);
         }
@@ -248,9 +243,6 @@ fn write_stream(epoll_fd: RawFd,
             if !stream.is_active && !&messages_new.lock().unwrap()[&stream.address].is_empty(){
                 stream.is_active = true;
             }else{
-                if !&messages_new.lock().unwrap()[&stream.address].is_empty(){
-                    continue_write_stream(epoll_fd, stream_fd);
-                }
                 return;
             }
         }else{
@@ -275,39 +267,36 @@ fn write_stream(epoll_fd: RawFd,
                 return;
             }
             let last_mess_number = last_mess_number.unwrap();
-            println!("{} sender last_mess_number {}", common::current_time_ms(), last_mess_number);  
-                
             let mut last_send_mess_number = db.lock().unwrap().get_last_send_mess_number(&listener_name, &listener_topic);
-            let mut has_new_mess = true;
-            let mut write_count = 0;
             {
-                let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream.stream.by_ref()); 
-                while has_new_mess{                    
-                    let mut buff: LinkedList<Message> = LinkedList::new();
-                    if let Some(messages) = messages_new.lock().unwrap().get_mut(&addr_to){
-                        while !messages.is_empty() {
-                            let mess = messages.pop_front().unwrap();
-                            if last_mess_number < mess.number_mess{
-                                buff.push_back(mess);
-                            }
+                let mut buff: LinkedList<Message> = LinkedList::new();
+                if let Some(messages) = messages_new.lock().unwrap().get_mut(&addr_to){
+                    while !messages.is_empty() {
+                        let mess = messages.pop_front().unwrap();
+                        if last_mess_number < mess.number_mess{
+                            buff.push_back(mess);
                         }
                     }
+                }
+                let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream.stream.by_ref()); 
+                loop{                    
                     for mess in &buff{ 
                         if last_send_mess_number < mess.number_mess{
                             last_send_mess_number = mess.number_mess;
                             if !mess.to_stream(&mut writer){
                                 break;
                             }
-                            write_count += 1;
                         }                        
                     }                   
                     if let Some(messages) = messages_new.lock().unwrap().get_mut(&addr_to){
-                        has_new_mess = !messages.is_empty();
-                        buff.append(messages);
-                        *messages = buff;
-                        if has_new_mess{
-                            println!("{} sender has_new_mess {} write_count {} last_num {}", common::current_time_ms(), has_new_mess, write_count, last_send_mess_number);
-                        }
+                        if !messages.is_empty(){
+                            while !messages.is_empty() {
+                                buff.push_back(messages.pop_front().unwrap());
+                            }
+                        }else{                            
+                            *messages = buff;
+                            break;
+                        }       
                     }
                 }
                 if let Err(err) = writer.flush(){
@@ -315,9 +304,8 @@ fn write_stream(epoll_fd: RawFd,
                         err.kind() != std::io::ErrorKind::Interrupted{
                         print_error!(&format!("{}", err));                    
                     }
-                }
+                }               
                 db.lock().unwrap().set_last_send_mess_number(&listener_name, &listener_topic, last_send_mess_number);
-                println!("{} sender write_count {} last_num {}", common::current_time_ms(), write_count, last_send_mess_number); 
             }
             stream.is_active = false;            
         });

@@ -105,11 +105,11 @@ fn listener_accept(epoll_fd: RawFd,
     match listener.accept() {
         Ok((stream, _addr)) => {
             stream.set_nonblocking(true).expect("couldn't listener set_nonblocking");
-            let stream_fd = stream.as_raw_fd();            
+            let stream_fd = stream.as_raw_fd();
+            streams.insert(stream_fd, Arc::new(Mutex::new(ReadStream{stream, is_active: false})));    
             add_read_stream(epoll_fd, stream_fd);
-            streams.insert(stream_fd, Arc::new(Mutex::new(ReadStream{stream, is_active: false})));
         }
-        Err(err) => print_error!(&format!("couldn't accept: {}", err)),
+        Err(err) => print_error!(&format!("couldn't listener accept: {}", err)),
     };
     continue_read_stream(epoll_fd, listener.as_raw_fd());
 }
@@ -119,58 +119,42 @@ fn read_stream(epoll_fd: RawFd,
                streams: &HashMap<RawFd, Arc<Mutex<ReadStream>>>, 
                tx: &mpsc::Sender<Message>, 
                db: &Arc<Mutex<redis::Connect>>){
-    if let Some(stream) = streams.get(&stream_fd){
-        let tx = tx.clone();
+    if let Some(stream) = streams.get(&stream_fd){        
         let stream = stream.clone();
-        let db = db.clone();
         if let Ok(mut stream) = stream.try_lock(){
             if !stream.is_active{
                 stream.is_active = true;
             }else{
-                continue_read_stream(epoll_fd, stream_fd);
                 return;
             }
         }else{
             continue_read_stream(epoll_fd, stream_fd);
             return;
         }
+        let tx = tx.clone();
+        let db = db.clone();
         rayon::spawn(move || {
             let mut stream = stream.lock().unwrap();
             let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.stream.by_ref());
             let mut last_mess_num: u64 = 0;
-            let mut last_mess_num_prev: u64 = 0;
             let mut sender_name = String::new();
             let mut sender_topic = String::new();
-            let mut read_count = 0;
-            let mut missed_count = 0;
             while let Some(mess) = Message::from_stream(reader.by_ref()){
                 if last_mess_num == 0{
                     last_mess_num = get_last_mess_number(&db, &mess.sender_name, &mess.topic_from);
-                    last_mess_num_prev = last_mess_num;
                     sender_name = mess.sender_name.clone();
                     sender_topic = mess.topic_from.clone();
                 }
                 if mess.number_mess > last_mess_num{
                     last_mess_num = mess.number_mess;
-                    read_count += 1;
                     if let Err(err) = tx.send(mess){
                         print_error!(&format!("couldn't tx.send: {}", err));
                     }
-                }else{
-                    missed_count += 1;
-                }          
-                if last_mess_num - last_mess_num_prev > settings::TOLERANCE_FOR_UPDATE_MESS_NUMBER{
-                    println!("{} listener set_last_mess_number last_mess_num {}", common::current_time_ms(), last_mess_num); 
-                    set_last_mess_number(&db, &sender_name, &sender_topic, last_mess_num);
-                    last_mess_num_prev = last_mess_num;
                 }
             }
-            if last_mess_num - last_mess_num_prev > 0{
-                set_last_mess_number(&db, &sender_name, &sender_topic, last_mess_num);
-            }
+            set_last_mess_number(&db, &sender_name, &sender_topic, last_mess_num);
             stream.is_active = false;
             continue_read_stream(epoll_fd, stream_fd);            
-            println!("{} listener read_count {} missed_count {} last_read_num {} ", common::current_time_ms(), read_count, missed_count, last_mess_num);
         });
     }
 }

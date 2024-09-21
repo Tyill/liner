@@ -16,13 +16,12 @@ pub struct Message {
 
 impl Message {
     pub fn new(to: &str, from: &str, sender_name: &str, uuid: &str, number_mess: u64, data: &[u8]) -> Message {
-        let ms: u64 = common::current_time_ms();
         Self {
             topic_to: to.to_string(),
             topic_from: from.to_string(),
             sender_name: sender_name.to_string(),
             uuid: uuid.to_string(),
-            timestamp: ms,
+            timestamp: common::current_time_ms(),
             number_mess,
             data: data.to_owned(),
         }
@@ -48,7 +47,7 @@ impl Message {
     {
         let all_size = self.topic_to.len() + self.topic_from.len() + self.sender_name.len() + self.uuid.len() + std::mem::size_of::<i32>() * 4 +
                               std::mem::size_of::<u64>() * 2 + self.data.len() + std::mem::size_of::<i32>();
-        let ret = write_number(stream, all_size as i32) &&
+        let ok: bool = write_number(stream, all_size as i32) &&
                 write_string(stream, &self.topic_to) &&
                 write_string(stream, &self.topic_from) &&
                 write_string(stream, &self.sender_name) &&
@@ -56,7 +55,7 @@ impl Message {
                 write_number(stream, self.timestamp) && 
                 write_number(stream, self.number_mess) && 
                 write_bytes(stream, &self.data);
-        return ret;
+        return ok;
     }
 }
 
