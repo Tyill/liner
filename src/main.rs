@@ -37,7 +37,7 @@ fn main() {
     let localhost = CString::new("localhost:2256").unwrap();
     liner::run(&mut c2, topic_2.as_ptr(), localhost.as_ptr(), cb2);
 
-    let array: [u8; 100] = [0; 100];
+    let array = vec![0; 100];
     let uuid = CString::new("1234").unwrap();
     loop {        
 

@@ -9,7 +9,6 @@ pub struct Connect{
     topic_addr_cache: HashMap<String, Vec<String>>, // key: topic, value: addrs
     unique_name_cache: HashMap<String, String>, // key: addr, value: uname
     last_mess_number: HashMap<String, u64>, // key: sender_name,sender_topic,listener_name,listener_topic
-    last_send_mess_number: HashMap<String, u64>, // key: listener_name,listener_topic 
 }
 impl Connect {
     pub fn new(unique_name: &str, conn_str: &str)->RedisResult<Connect>{
@@ -23,7 +22,6 @@ impl Connect {
             topic_addr_cache: HashMap::new(),  
             unique_name_cache: HashMap::new(),
             last_mess_number: HashMap::new(),
-            last_send_mess_number: HashMap::new(),
         })
     }    
     pub fn redis_path(&self)->String{
@@ -102,20 +100,7 @@ impl Connect {
         let res: String = dbconn.get(&format!("connection_{}:mess_number", conn))?;
         Ok(res.parse::<u64>().unwrap())
     }
-
-    pub fn set_last_send_mess_number(&mut self, listener_name: &str, listener_topic: &str, val: u64){
-        let conn = format!("{}_{}", listener_name, listener_topic);
-        self.last_send_mess_number.insert(conn, val);
-    }
-    pub fn get_last_send_mess_number(&mut self, listener_name: &str, listener_topic: &str)->u64{
-        let conn = format!("{}_{}", listener_name, listener_topic);
-        if self.last_send_mess_number.contains_key(&conn){
-            return self.last_send_mess_number[&conn];
-        }else{
-            return 0;
-        }
-    }
-        
+          
     fn get_dbconn(&mut self)->RedisResult<&mut redis::Connection>{
         if !self.conn.is_open(){
             let client = redis::Client::open(self.conn_str.clone())?;

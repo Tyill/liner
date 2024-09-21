@@ -27,8 +27,10 @@ macro_rules! syscall {
 
 struct WriteStream{
     address: String,
-    topic: String,
+    listener_topic: String,
+    listener_name: String,
     stream: TcpStream,
+    last_send_mess_number: u64,
     is_active: bool,
 }
 
@@ -149,14 +151,11 @@ impl Sender {
         }
         if common::current_time_ms() - self.ctime_ms[addr_to] >= settings::WRITE_MESS_DELAY_MS {
             *self.ctime_ms.get_mut(addr_to).unwrap() = common::current_time_ms();
+            let buff = self.message_buffer.get_mut(addr_to).unwrap().take();
             if let Ok(mut mess_lock) = self.messages.lock(){
-                let mess_for_send = mess_lock.get_mut(addr_to).unwrap().take();
-                if let Some(mut mess_for_send) = mess_for_send{
-                    let buff = self.message_buffer.get_mut(addr_to).unwrap().take();
+                if let Some(mess_for_send) = mess_lock.get_mut(addr_to).unwrap().as_mut(){
                     mess_for_send.append(&mut buff.unwrap());
-                    *mess_lock.get_mut(addr_to).unwrap() = Some(mess_for_send);
                 }else{
-                    let buff = self.message_buffer.get_mut(addr_to).unwrap().take();
                     *mess_lock.get_mut(addr_to).unwrap() = buff;
                 }
             }
@@ -229,24 +228,22 @@ fn append_new_streams(epoll_fd: RawFd,
     for addr in &addrs.lock().unwrap().clone(){
         match TcpStream::connect(&addr.address){
             Ok(stream)=>{       
-                let mut to_topic= String::new();
+                let mut listener_name= String::new();
+                let mut listener_topic= String::new();
+                let mut last_send_mess_number: u64 = 0;
                 if let Ok(mut db) = db.lock(){
                     if let Err(err) = db.init_addresses_of_topic(&addr.topic){
                         addrs_lost.push(addr.clone());
                         print_error!(format!("couldn't db.init_addresses_of_topic {}, error {}", addr.topic, err));
                         return;
                     }
-                    let listener_name;
-                    let listener_topic;
                     if let Some((topic, name)) = db.get_listener_by_address(&addr.address){
                         listener_topic = topic;
                         listener_name = name;
-                        to_topic = listener_topic.clone();
                         if let Ok(num) = db.get_last_mess_number_for_sender(&listener_name, &listener_topic){
-                            db.set_last_send_mess_number(&listener_name, &listener_topic, num);
+                            last_send_mess_number = num;
                         }else{
                             print_error!(format!("couldn't db.get_last_mess_number_for_sender {}", addr.address));
-                            db.set_last_send_mess_number(&listener_name, &listener_topic, 0);
                         }
                     }else{
                         addrs_lost.push(addr.clone());
@@ -256,7 +253,9 @@ fn append_new_streams(epoll_fd: RawFd,
                 }  
                 stream.set_nonblocking(true).expect("couldn't stream set_nonblocking");
                 let stm_fd = stream.as_raw_fd();
-                let wstream = WriteStream{address: addr.address.clone(), topic: to_topic, stream, is_active: false};
+                let wstream = WriteStream{address: addr.address.clone(),
+                                                       listener_topic, listener_name,
+                                                       stream, last_send_mess_number, is_active: false};
                 streams.insert(wstream.stream.as_raw_fd(), Arc::new(Mutex::new(wstream)));
                 add_write_stream(epoll_fd, stm_fd);
                 streams_fd.lock().unwrap().insert(addr.address.clone(), stm_fd);
@@ -290,54 +289,42 @@ fn write_stream(epoll_fd: RawFd,
         rayon::spawn(move || {
             let mut stream = stream.lock().unwrap();
             let addr_to = stream.address.to_string();
-            let listener_topic;
-            let listener_name;
-            if let Some((topic, name)) = db.lock().unwrap().get_listener_by_address(&addr_to){
-                listener_topic = topic;
-                listener_name = name;
-            }else{
-                print_error!(format!("couldn't db.get_listener_by_address {}", addr_to));
-                return;
-            }
-            let last_mess_number = db.lock().unwrap().get_last_mess_number_for_sender(&listener_name, &listener_topic);
+            let last_mess_number = db.lock().unwrap().get_last_mess_number_for_sender(&stream.listener_name, &stream.listener_topic);
             if let Err(err) = last_mess_number{
                 print_error!(&format!("error get_last_mess_number_for_sender from db: {}", err));
                 return;
             }
             let last_mess_number = last_mess_number.unwrap();
-            let mut last_send_mess_number = db.lock().unwrap().get_last_send_mess_number(&listener_name, &listener_topic);
+            let mut last_send_mess_number = stream.last_send_mess_number;
             {
                 let mut buff: Vec<Message> = Vec::new();
                 let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream.stream.by_ref()); 
-                loop{   
-                    let mess_for_send = messages_new.lock().unwrap().get_mut(&addr_to).unwrap().take();
-                    if let Some(mess_for_send) = mess_for_send{                
-                        for mess in &mess_for_send{
-                            if last_send_mess_number < mess.number_mess{
-                                last_send_mess_number = mess.number_mess;
-                                if !mess.to_stream(&mut writer){
-                                    break;
-                                }
-                            }                     
+                loop{  
+                    let mut mess_for_send = None;
+                    if let Ok(mut mess_lock) = messages_new.lock(){
+                        mess_for_send = mess_lock.get_mut(&addr_to).unwrap().take();
+                        if let None = mess_for_send{
+                            *mess_lock.get_mut(&addr_to).unwrap() = Some(buff);
+                            break;
                         }
-                        for mess in mess_for_send{
-                            if last_mess_number < mess.number_mess{
-                                buff.push(mess);
+                    }   
+                    for mess in mess_for_send.unwrap(){
+                        if last_send_mess_number < mess.number_mess{
+                            last_send_mess_number = mess.number_mess;
+                            if !mess.to_stream(&mut writer){
+                                break;
                             }
                         }
-                    }else{
-                        *messages_new.lock().unwrap().get_mut(&addr_to).unwrap() = Some(buff);
-                        break;
+                        if last_mess_number < mess.number_mess{
+                            buff.push(mess);
+                        }
                     }
                 }
                 if let Err(err) = writer.flush(){
-                    if err.kind() != std::io::ErrorKind::WouldBlock &&
-                        err.kind() != std::io::ErrorKind::Interrupted{
-                        print_error!(&format!("{}", err));                    
-                    }
-                }               
-                db.lock().unwrap().set_last_send_mess_number(&listener_name, &listener_topic, last_send_mess_number);
+                    print_error!(&format!("{}", err));
+                }
             }
+            stream.last_send_mess_number = last_send_mess_number;
             stream.is_active = false;            
         });
     }
@@ -351,7 +338,7 @@ fn remove_stream(epoll_fd: i32,
     if let Some(stream) = streams.get(&strm_fd){
         remove_write_stream(epoll_fd, strm_fd);
         let address = stream.lock().unwrap().address.clone();
-        let topic = stream.lock().unwrap().topic.clone();
+        let topic = stream.lock().unwrap().listener_topic.clone();
         streams.remove(&strm_fd);
         streams_fd.lock().unwrap().remove(&address);
         addrs_new.lock().unwrap().push(Address{address, topic});
