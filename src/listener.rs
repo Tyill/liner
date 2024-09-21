@@ -1,4 +1,3 @@
-use crate::common;
 use crate::message::Message;
 use crate::redis;
 use crate::settings;
@@ -120,7 +119,6 @@ fn read_stream(epoll_fd: RawFd,
                tx: &mpsc::Sender<Message>, 
                db: &Arc<Mutex<redis::Connect>>){
     if let Some(stream) = streams.get(&stream_fd){        
-        let stream = stream.clone();
         if let Ok(mut stream) = stream.try_lock(){
             if !stream.is_active{
                 stream.is_active = true;
@@ -133,6 +131,7 @@ fn read_stream(epoll_fd: RawFd,
         }
         let tx = tx.clone();
         let db = db.clone();
+        let stream = stream.clone();
         rayon::spawn(move || {
             let mut stream = stream.lock().unwrap();
             let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.stream.by_ref());

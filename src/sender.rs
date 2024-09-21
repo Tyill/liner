@@ -7,7 +7,7 @@ use crate::common;
 use std::net::TcpStream;
 use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
-use std::collections::{HashMap, HashSet, LinkedList};
+use std::collections::{HashMap, HashSet};
 use std::thread;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::io::{self, BufWriter, Write};
@@ -43,17 +43,19 @@ pub struct Sender{
     unique_name: String,
     addrs_for: HashSet<String>,
     addrs_new: Arc<Mutex<Vec<Address>>>,
-    messages: Arc<Mutex<HashMap<String, LinkedList<Message>>>>, // key - addr
+    message_buffer: HashMap<String, Option<Vec<Message>>>, // key - addr
+    messages: Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>, // key - addr
     last_mess_number: HashMap<String, u64>,              
     streams_fd: Arc<Mutex<HashMap<String, RawFd>>>,
     wakeup_fd: RawFd,
     is_new_addr: Arc<Mutex<bool>>,
+    ctime_ms: HashMap<String, u64>, // key - addr
 }
 
 impl Sender {
     pub fn new(unique_name: String, redis_path: String, source_topic: String)->Sender{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
-        let messages: Arc<Mutex<HashMap<String, LinkedList<Message>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let messages: Arc<Mutex<HashMap<String, Option<Vec<Message>>>>> = Arc::new(Mutex::new(HashMap::new()));
         let messages_new = messages.clone();
         let addrs_new: Arc<Mutex<Vec<Address>>> = Arc::new(Mutex::new(Vec::new()));
         let mut addrs_new_ = addrs_new.clone();
@@ -102,47 +104,31 @@ impl Sender {
             epoll_fd,
             addrs_for: HashSet::new(),
             addrs_new,
+            message_buffer: HashMap::new(),
             messages,
             last_mess_number: HashMap::new(),
             streams_fd,
             wakeup_fd,
             is_new_addr,
+            ctime_ms: HashMap::new(),
         }
     }
     
     pub fn send_to(&mut self, db: &mut redis::Connect, addr_to: &str, to: &str, from: &str, uuid: &str, data: &[u8])->bool{
         let mut is_new_addr = false;
         if !self.addrs_for.contains(addr_to){
-            self.addrs_for.insert(addr_to.to_string());
-            is_new_addr = true;
-            let listener_name ;
-            let listener_topic;
-            if let Some((topic, name)) = db.get_listener_by_address(&addr_to){
-                listener_topic = topic;
-                listener_name = name;
-            }else{
-                print_error!(format!("couldn't db.get_listener_by_address {}", addr_to));
+            if !self.append_new_state(db, addr_to, to){
                 return false;
             }
-            let last_mess_num = db.get_last_mess_number_for_sender(&listener_name, &listener_topic);
-            if let Ok(last_mess_num) = last_mess_num{
-                self.last_mess_number.insert(addr_to.to_string(), last_mess_num);
-            }else {
-                if let Err(err) = db.init_last_mess_number_from_sender(&listener_name, to){            
-                    print_error!(&format!("error init_last_mess_number_from_sender from db: {}", err));
-                    return false;
-                }
-                self.last_mess_number.insert(addr_to.to_string(), 0);
-            }
-            self.messages.lock().unwrap().insert(addr_to.to_string(), LinkedList::new());
-        }  
+            self.addrs_for.insert(addr_to.to_string());
+            is_new_addr = true;
+        }
         let number_mess = self.last_mess_number[addr_to] + 1;
         *self.last_mess_number.get_mut(addr_to).unwrap() = number_mess;
+       
         let mess = Message::new(to, from, &self.unique_name, uuid, number_mess, data);
-        self.messages.lock().unwrap().get_mut(addr_to).unwrap().push_back(mess);
-        if let Some(strm_fd) = self.streams_fd.lock().unwrap().get(addr_to){
-            continue_write_stream(self.epoll_fd, *strm_fd);
-        }
+        self.send_mess_to_buff(mess, addr_to);
+               
         if is_new_addr{
             self.addrs_new.lock().unwrap().push(Address{address: addr_to.to_string(), topic: to.to_string()});
             *self.is_new_addr.lock().unwrap() = true;
@@ -154,7 +140,59 @@ impl Sender {
     pub fn _close(&self) {
         let _ = syscall!(close(self.epoll_fd));
     }
+
+    fn send_mess_to_buff(&mut self, mess: Message, addr_to: &str){
+        if let Some(mbuff) = self.message_buffer.get_mut(addr_to).unwrap(){
+            mbuff.push(mess);
+        }else{
+            *self.message_buffer.get_mut(addr_to).unwrap() = Some(vec![mess]);
+        }
+        if common::current_time_ms() - self.ctime_ms[addr_to] >= settings::WRITE_MESS_DELAY_MS {
+            *self.ctime_ms.get_mut(addr_to).unwrap() = common::current_time_ms();
+            if let Ok(mut mess_lock) = self.messages.lock(){
+                let mess_for_send = mess_lock.get_mut(addr_to).unwrap().take();
+                if let Some(mut mess_for_send) = mess_for_send{
+                    let buff = self.message_buffer.get_mut(addr_to).unwrap().take();
+                    mess_for_send.append(&mut buff.unwrap());
+                    *mess_lock.get_mut(addr_to).unwrap() = Some(mess_for_send);
+                }else{
+                    let buff = self.message_buffer.get_mut(addr_to).unwrap().take();
+                    *mess_lock.get_mut(addr_to).unwrap() = buff;
+                }
+            }
+            if let Some(strm_fd) = self.streams_fd.lock().unwrap().get(addr_to){
+                continue_write_stream(self.epoll_fd, *strm_fd);
+            }         
+        }
+    }
+
+    fn append_new_state(&mut self, db: &mut redis::Connect, addr_to: &str, to: &str)->bool{
+        let listener_name ;
+        let listener_topic;
+        if let Some((topic, name)) = db.get_listener_by_address(&addr_to){
+            listener_topic = topic;
+            listener_name = name;
+        }else{
+            print_error!(format!("couldn't db.get_listener_by_address {}", addr_to));
+            return false;
+        }
+        let last_mess_num = db.get_last_mess_number_for_sender(&listener_name, &listener_topic);
+        if let Ok(last_mess_num) = last_mess_num{
+            self.last_mess_number.insert(addr_to.to_string(), last_mess_num);
+        }else {
+            if let Err(err) = db.init_last_mess_number_from_sender(&listener_name, to){            
+                print_error!(&format!("error init_last_mess_number_from_sender from db: {}", err));
+                return false;
+            }
+            self.last_mess_number.insert(addr_to.to_string(), 0);
+        }            
+        self.messages.lock().unwrap().insert(addr_to.to_string(), Some(Vec::new()));
+        self.message_buffer.insert(addr_to.to_string(), Some(Vec::new()));
+        self.ctime_ms.insert(addr_to.to_string(), common::current_time_ms());
+        return true;
+    }
 }
+
 
 fn check_available_stream(prev_time: &mut u64)->bool{
     if common::current_time_ms() - *prev_time > settings::CHECK_AVAILABLE_STREAM_TIMEOUT_MS{
@@ -235,12 +273,12 @@ fn append_new_streams(epoll_fd: RawFd,
 fn write_stream(epoll_fd: RawFd,
                 stream_fd: RawFd,
                 streams: &HashMap<RawFd, Arc<Mutex<WriteStream>>>, 
-                messages_new: Arc<Mutex<HashMap<String, LinkedList<Message>>>>,
+                messages_new: Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>,
                 db: Arc<Mutex<redis::Connect>>){
     if let Some(stream) = streams.get(&stream_fd){
         let stream = stream.clone();
         if let Ok(mut stream) = stream.try_lock(){
-            if !stream.is_active && !&messages_new.lock().unwrap()[&stream.address].is_empty(){
+            if !stream.is_active{
                 stream.is_active = true;
             }else{
                 return;
@@ -269,34 +307,27 @@ fn write_stream(epoll_fd: RawFd,
             let last_mess_number = last_mess_number.unwrap();
             let mut last_send_mess_number = db.lock().unwrap().get_last_send_mess_number(&listener_name, &listener_topic);
             {
-                let mut buff: LinkedList<Message> = LinkedList::new();
-                if let Some(messages) = messages_new.lock().unwrap().get_mut(&addr_to){
-                    while !messages.is_empty() {
-                        let mess = messages.pop_front().unwrap();
-                        if last_mess_number < mess.number_mess{
-                            buff.push_back(mess);
-                        }
-                    }
-                }
+                let mut buff: Vec<Message> = Vec::new();
                 let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream.stream.by_ref()); 
-                loop{                    
-                    for mess in &buff{ 
-                        if last_send_mess_number < mess.number_mess{
-                            last_send_mess_number = mess.number_mess;
-                            if !mess.to_stream(&mut writer){
-                                break;
+                loop{   
+                    let mess_for_send = messages_new.lock().unwrap().get_mut(&addr_to).unwrap().take();
+                    if let Some(mess_for_send) = mess_for_send{                
+                        for mess in &mess_for_send{
+                            if last_send_mess_number < mess.number_mess{
+                                last_send_mess_number = mess.number_mess;
+                                if !mess.to_stream(&mut writer){
+                                    break;
+                                }
+                            }                     
+                        }
+                        for mess in mess_for_send{
+                            if last_mess_number < mess.number_mess{
+                                buff.push(mess);
                             }
-                        }                        
-                    }                   
-                    if let Some(messages) = messages_new.lock().unwrap().get_mut(&addr_to){
-                        if !messages.is_empty(){
-                            while !messages.is_empty() {
-                                buff.push_back(messages.pop_front().unwrap());
-                            }
-                        }else{                            
-                            *messages = buff;
-                            break;
-                        }       
+                        }
+                    }else{
+                        *messages_new.lock().unwrap().get_mut(&addr_to).unwrap() = Some(buff);
+                        break;
                     }
                 }
                 if let Err(err) = writer.flush(){

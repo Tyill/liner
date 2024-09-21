@@ -55,7 +55,7 @@ pub extern "C" fn send_to(client: &mut Box<Option<Client>>,
 }
 
 #[no_mangle]
-pub extern "C" fn set_internal_thread_pool_size(client: &mut Box<Option<Client>>, num: u32){
+pub extern "C" fn set_internal_thread_pool_size(_client: &mut Box<Option<Client>>, _num: u32){
     
 }
 
