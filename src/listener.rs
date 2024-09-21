@@ -138,6 +138,7 @@ fn read_stream(epoll_fd: RawFd,
             let mut last_mess_num: u64 = 0;
             let mut sender_name = String::new();
             let mut sender_topic = String::new();
+            let mut count = 0;
             while let Some(mess) = Message::from_stream(reader.by_ref()){
                 if last_mess_num == 0{
                     last_mess_num = get_last_mess_number(&db, &mess.sender_name, &mess.topic_from);
@@ -149,8 +150,10 @@ fn read_stream(epoll_fd: RawFd,
                     if let Err(err) = tx.send(mess){
                         print_error!(&format!("couldn't tx.send: {}", err));
                     }
+                    count += 1;
                 }
             }
+            println!("count {}", count);
             set_last_mess_number(&db, &sender_name, &sender_topic, last_mess_num);
             stream.is_active = false;
             continue_read_stream(epoll_fd, stream_fd);            

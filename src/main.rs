@@ -39,10 +39,9 @@ fn main() {
 
     let array = vec![0; 100];
     let uuid = CString::new("1234").unwrap();
-    loop {        
-
+    loop {
         println!("{} begin send_to", current_time_ms());       
-        for _ in 0..10000{
+        for _ in 0..2{
             liner::send_to(&mut c1, 
                 topic_2.as_ptr(),
                 uuid.as_ptr(),
