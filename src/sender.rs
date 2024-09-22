@@ -68,7 +68,7 @@ impl Sender {
         let streams_fd: Arc<Mutex<HashMap<String, RawFd>>> = Arc::new(Mutex::new(HashMap::new()));
         let mut streams_fd_ = streams_fd.clone();
         let wakeup_fd = wakeupfd_create(epoll_fd);
-        let is_new_addr = Arc::new(Mutex::new(false));
+        let is_new_addr: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
         let is_new_addr_ = is_new_addr.clone();
         let unique_name_ = unique_name.clone();
         thread::spawn(move|| {
@@ -79,8 +79,7 @@ impl Sender {
                 let db = Arc::new(Mutex::new(db));
                 db.lock().unwrap().set_source_topic(&source_topic);
                 loop{ 
-                    if *is_new_addr_.lock().unwrap() || check_available_stream(&mut prev_time) {
-                        *is_new_addr_.lock().unwrap() = false;
+                    if check_available_stream(&is_new_addr_, &mut prev_time) {
                         append_new_streams(epoll_fd, &mut addrs_new_, &mut streams, 
                                            &mut streams_fd_, &messages_new, &db);
                     }
@@ -110,18 +109,19 @@ impl Sender {
         let waiting_addr_list: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
         let waiting_addr_list_ = waiting_addr_list.clone();
         let waiting_addr_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
-        let waiting_addr_cvar_ = Arc::clone(&waiting_addr_cvar);
+        let waiting_addr_cvar_ = waiting_addr_cvar.clone();
         let messages_new = messages.clone();
         let streams_fd_ = streams_fd.clone();
         let message_buffer = Arc::new(Mutex::new(HashMap::new()));
         let message_buffer_ = message_buffer.clone();
-        thread::spawn(move|| loop{
-            {
+        thread::spawn(move|| loop{ // waiting cycle
+            if waiting_addr_list_.lock().unwrap().is_empty(){
                 let (lock, cvar) = &*waiting_addr_cvar_;
                 let mut _started = lock.lock().unwrap();
                 _started = cvar.wait(_started).unwrap();
             }
-            std::thread::sleep(Duration::from_millis(settings::WRITE_MESS_DELAY_MS));
+            std::thread::sleep(Duration::from_millis(settings::WRITE_MESS_TIMEOUT_MS));
+
             let mut waiting_list_lock = waiting_addr_list_.lock().unwrap();
             for addr in &waiting_list_lock.clone(){
                 send_mess_to_listener(epoll_fd, addr, &message_buffer_, &messages_new, &streams_fd_);
@@ -175,20 +175,24 @@ impl Sender {
     }
 
     fn send_mess_to_buff(&mut self, mess: Message, addr_to: &str){
-        if let Some(mbuff) = self.message_buffer.lock().unwrap().get_mut(addr_to).unwrap(){
-            mbuff.push(mess);
-        }else{
-            *self.message_buffer.lock().unwrap().get_mut(addr_to).unwrap() = Some(vec![mess]);
+        if let Ok(mut message_buffer_lock) = self.message_buffer.lock(){
+            if let Some(mbuff) = message_buffer_lock.get_mut(addr_to).unwrap(){
+                mbuff.push(mess);
+            }else{
+                *message_buffer_lock.get_mut(addr_to).unwrap() = Some(vec![mess]);
+            }
         }
         if common::current_time_ms() - self.ctime_ms[addr_to] >= settings::WRITE_MESS_DELAY_MS {
             *self.ctime_ms.get_mut(addr_to).unwrap() = common::current_time_ms();
             send_mess_to_listener(self.epoll_fd, addr_to, &self.message_buffer, &self.messages, &self.streams_fd);
         }else{
+            let is_first = self.waiting_addr_list.lock().unwrap().is_empty();
             self.waiting_addr_list.lock().unwrap().insert(addr_to.to_string());
-
-            let (lock, cvar) = &*self.waiting_addr_cvar;
-            *lock.lock().unwrap() = true;
-            cvar.notify_one();
+            if is_first{
+                let (lock, cvar) = &*self.waiting_addr_cvar;
+                *lock.lock().unwrap() = true;
+                cvar.notify_one();
+            }
         }
     }
    
@@ -219,11 +223,14 @@ impl Sender {
     }
 }
 
- fn send_mess_to_listener(epoll_fd: RawFd, addr_to: &str, 
+fn send_mess_to_listener(epoll_fd: RawFd, addr_to: &str, 
                            message_buffer: &Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>,
                            messages: &Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>,
                            streams_fd: &Arc<Mutex<HashMap<String, RawFd>>>){
     let buff = message_buffer.lock().unwrap().get_mut(addr_to).unwrap().take();
+    if let None = buff{
+        return; // already send from waiting cycle
+    }
     if let Ok(mut mess_lock) = messages.lock(){
         if let Some(mess_for_send) = mess_lock.get_mut(addr_to).unwrap().as_mut(){
             mess_for_send.append(&mut buff.unwrap());
@@ -236,8 +243,9 @@ impl Sender {
     }
 }
 
-fn check_available_stream(prev_time: &mut u64)->bool{
-    if common::current_time_ms() - *prev_time > settings::CHECK_AVAILABLE_STREAM_TIMEOUT_MS{
+fn check_available_stream(is_new_addr: &Arc<Mutex<bool>>, prev_time: &mut u64)->bool{
+    if *is_new_addr.lock().unwrap() || common::current_time_ms() - *prev_time > settings::CHECK_AVAILABLE_STREAM_TIMEOUT_MS{
+        *is_new_addr.lock().unwrap() = false;
         *prev_time = common::current_time_ms();
         return true;
     }
