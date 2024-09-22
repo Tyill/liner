@@ -70,7 +70,7 @@ impl Client {
         return true;
     }
 
-    pub fn send_to(&mut self, topic: &str, uuid: &str, data: &[u8]) -> bool {
+    pub fn send_to(&mut self, topic: &str, uuid: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
         let _lock = self.mtx.lock();
         if !self.is_run{
             return false;
@@ -93,7 +93,9 @@ impl Client {
             index = 0;
         }
         let addr = &addresses[index];
-        let ok = self.sender.as_mut().unwrap().send_to(&mut self.db, addr, topic, &self.topic, uuid, data);
+        let ok = self.sender
+        .as_mut().unwrap().send_to(&mut self.db, addr, 
+                                   topic, &self.topic, uuid, data, at_least_once_delivery);
 
         *self.last_send_index.get_mut(topic).unwrap() = index + 1;
         return ok;

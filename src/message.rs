@@ -1,9 +1,13 @@
-use crate::bytestream::{read_stream, get_string, get_u64, get_array,
+use crate::bytestream::{read_stream, get_string, get_u64, get_u8, get_array,
                         write_string, write_number, write_bytes};
 use crate::common;
 
 use std::io::{Write, Read};
 
+pub mod mess_flags {
+    pub const _COMPRESS: u8 = 0x01;
+    pub const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
+}
 pub struct Message {
     pub topic_to: String,
     pub topic_from: String,
@@ -11,11 +15,16 @@ pub struct Message {
     pub uuid: String,
     pub timestamp: u64,
     pub number_mess: u64,
+    pub flags: u8,
     pub data: Vec<u8>,
 }
 
 impl Message {
-    pub fn new(to: &str, from: &str, sender_name: &str, uuid: &str, number_mess: u64, data: &[u8]) -> Message {
+    pub fn new(to: &str, from: &str, sender_name: &str, uuid: &str, number_mess: u64, data: &[u8], at_least_once_delivery: bool) -> Message {
+        let mut flags = 0;
+        if at_least_once_delivery{
+            flags |= mess_flags::AT_LEAST_ONCE_DELIVERY;
+        }
         Self {
             topic_to: to.to_string(),
             topic_from: from.to_string(),
@@ -23,6 +32,7 @@ impl Message {
             uuid: uuid.to_string(),
             timestamp: common::current_time_ms(),
             number_mess,
+            flags,
             data: data.to_owned(),
         }
     }    
@@ -39,8 +49,9 @@ impl Message {
         let (uuid, indata) = get_string(indata);
         let (timestamp, indata) = get_u64(indata);
         let (number_mess, indata) = get_u64(indata);
+        let (flags, indata) = get_u8(indata);
         let (data, _indata) = get_array(indata);
-        Some(Self { topic_to, topic_from, sender_name, uuid, timestamp, number_mess, data: data.to_vec()})
+        Some(Self { topic_to, topic_from, sender_name, uuid, timestamp, number_mess, flags, data: data.to_vec()})
     }
     pub fn to_stream<T>(&self, stream: &mut T)->bool 
         where T: Write
@@ -54,6 +65,7 @@ impl Message {
                 write_string(stream, &self.uuid) &&
                 write_number(stream, self.timestamp) && 
                 write_number(stream, self.number_mess) && 
+                write_number(stream, self.flags) && 
                 write_bytes(stream, &self.data);
         return ok;
     }

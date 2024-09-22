@@ -45,7 +45,7 @@ fn main() {
             liner::send_to(&mut c1, 
                 topic_2.as_ptr(),
                 uuid.as_ptr(),
-                array.as_ptr(), array.len());
+                array.as_ptr(), array.len(), false);
         }
         println!("{} end send_to", current_time_ms());       
             

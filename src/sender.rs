@@ -1,4 +1,5 @@
 use crate::message::Message;
+use crate::message::mess_flags;
 use crate::redis;
 use crate::print_error;
 use crate::settings;
@@ -38,7 +39,7 @@ struct WriteStream{
 #[derive(Clone)]
 struct Address{
     address: String,
-    topic: String,
+    listener_topic: String,
     is_new_addr: bool,
 }
 
@@ -62,7 +63,7 @@ impl Sender {
     pub fn new(unique_name: String, redis_path: String, source_topic: String)->Sender{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         let messages: Arc<Mutex<HashMap<String, Option<Vec<Message>>>>> = Arc::new(Mutex::new(HashMap::new()));
-        let messages_new = messages.clone();
+        let messages_ = messages.clone();
         let addrs_new: Arc<Mutex<Vec<Address>>> = Arc::new(Mutex::new(Vec::new()));
         let mut addrs_new_ = addrs_new.clone();
         let streams_fd: Arc<Mutex<HashMap<String, RawFd>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -81,7 +82,7 @@ impl Sender {
                 loop{ 
                     if check_available_stream(&is_new_addr_, &mut prev_time) {
                         append_new_streams(epoll_fd, &mut addrs_new_, &mut streams, 
-                                           &mut streams_fd_, &messages_new, &db);
+                                           &mut streams_fd_, &messages_, &db);
                     }
                     if !wait(epoll_fd, &mut events){
                         break;
@@ -93,9 +94,10 @@ impl Sender {
                                 wakeupfd_reset(wakeup_fd);
                             }
                         }else if ev.events as i32 & libc::EPOLLOUT > 0{
-                            write_stream(epoll_fd, stream_fd, &streams, messages_new.clone(), db.clone());
+                            write_stream(epoll_fd, stream_fd, &streams, messages_.clone(), db.clone());
                         }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
-                            remove_stream(epoll_fd, stream_fd, &mut streams, &streams_fd_, &addrs_new_);
+                            remove_stream(epoll_fd, stream_fd, &mut streams, &streams_fd_,
+                                          &messages_, &addrs_new_, &db);
                         }else{
                             print_error!(format!("unknown event {}", stream_fd as RawFd));
                         }
@@ -110,11 +112,11 @@ impl Sender {
         let waiting_addr_list_ = waiting_addr_list.clone();
         let waiting_addr_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
         let waiting_addr_cvar_ = waiting_addr_cvar.clone();
-        let messages_new = messages.clone();
+        let messages_ = messages.clone();
         let streams_fd_ = streams_fd.clone();
         let message_buffer = Arc::new(Mutex::new(HashMap::new()));
         let message_buffer_ = message_buffer.clone();
-        thread::spawn(move|| loop{ // waiting cycle
+        thread::spawn(move|| loop{ // write waiting cycle
             if waiting_addr_list_.lock().unwrap().is_empty(){
                 let (lock, cvar) = &*waiting_addr_cvar_;
                 let mut _started = lock.lock().unwrap();
@@ -124,7 +126,7 @@ impl Sender {
 
             let mut waiting_list_lock = waiting_addr_list_.lock().unwrap();
             for addr in &waiting_list_lock.clone(){
-                send_mess_to_listener(epoll_fd, addr, &message_buffer_, &messages_new, &streams_fd_);
+                send_mess_to_listener(epoll_fd, addr, &message_buffer_, &messages_, &streams_fd_);
             }
             waiting_list_lock.clear();
         });
@@ -145,7 +147,8 @@ impl Sender {
         }
     }
     
-    pub fn send_to(&mut self, db: &mut redis::Connect, addr_to: &str, to: &str, from: &str, uuid: &str, data: &[u8])->bool{
+    pub fn send_to(&mut self, db: &mut redis::Connect, addr_to: &str, to: &str, from: &str, 
+                   uuid: &str, data: &[u8], at_least_once_delivery: bool)->bool{
         let mut is_new_addr = false;
         if !self.addrs_for.contains(addr_to){
             if !self.append_new_state(db, addr_to, to){
@@ -157,12 +160,12 @@ impl Sender {
         let number_mess = self.last_mess_number[addr_to] + 1;
         *self.last_mess_number.get_mut(addr_to).unwrap() = number_mess;
        
-        let mess = Message::new(to, from, &self.unique_name, uuid, number_mess, data);
+        let mess = Message::new(to, from, &self.unique_name, uuid, number_mess, data, at_least_once_delivery);
         self.send_mess_to_buff(mess, addr_to);
                
         if is_new_addr{
             self.addrs_new.lock().unwrap().push(Address{address: addr_to.to_string(), 
-                                                        topic: to.to_string(),
+                                                        listener_topic: to.to_string(),
                                                         is_new_addr: true});
             *self.is_new_addr.lock().unwrap() = true;
             wakeupfd_notify(self.wakeup_fd);    
@@ -285,9 +288,9 @@ fn append_new_streams(epoll_fd: RawFd,
         }
         match TcpStream::connect(&addr.address){
             Ok(stream)=>{       
-                if let Err(err) = db.lock().unwrap().init_addresses_of_topic(&addr.topic){
+                if let Err(err) = db.lock().unwrap().init_addresses_of_topic(&addr.listener_topic){
                     addrs_lost.push(addr.clone());
-                    print_error!(format!("couldn't db.init_addresses_of_topic {}, error {}", addr.topic, err));
+                    print_error!(format!("couldn't db.init_addresses_of_topic {}, error {}", addr.listener_topic, err));
                     return;
                 }
                 let listener_name;
@@ -327,7 +330,7 @@ fn append_new_streams(epoll_fd: RawFd,
 fn write_stream(epoll_fd: RawFd,
                 stream_fd: RawFd,
                 streams: &HashMap<RawFd, Arc<Mutex<WriteStream>>>, 
-                messages_new: Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>,
+                messages: Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>,
                 db: Arc<Mutex<redis::Connect>>){
     if let Some(stream) = streams.get(&stream_fd){
         let stream = stream.clone();
@@ -356,21 +359,25 @@ fn write_stream(epoll_fd: RawFd,
                 let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream.stream.by_ref()); 
                 loop{  
                     let mut mess_for_send = None;
-                    if let Ok(mut mess_lock) = messages_new.lock(){
+                    if let Ok(mut mess_lock) = messages.lock(){
                         mess_for_send = mess_lock.get_mut(&addr_to).unwrap().take();
                         if let None = mess_for_send{
                             *mess_lock.get_mut(&addr_to).unwrap() = Some(buff);
                             break;
                         }
                     }   
-                    for mess in mess_for_send.unwrap(){
+                    let mess_for_send = mess_for_send.unwrap();
+                    for mess in &mess_for_send{
                         if last_send_mess_number < mess.number_mess{
                             last_send_mess_number = mess.number_mess;
                             if !mess.to_stream(&mut writer){
                                 break;
                             }
                         }
-                        if last_mess_number < mess.number_mess{
+                    }
+                    for mess in mess_for_send{
+                        if mess.flags & mess_flags::AT_LEAST_ONCE_DELIVERY > 0 &&
+                           last_mess_number < mess.number_mess{
                             buff.push(mess);
                         }
                     }
@@ -389,14 +396,24 @@ fn remove_stream(epoll_fd: i32,
                  strm_fd: RawFd, 
                  streams: &mut HashMap<RawFd, Arc<Mutex<WriteStream>>>,
                  streams_fd: &Arc<Mutex<HashMap<String, RawFd>>>,
-                 addrs_new: &Arc<Mutex<Vec<Address>>>){
+                 messages: &Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>,
+                 addrs_new: &Arc<Mutex<Vec<Address>>>,
+                 db: &Arc<Mutex<redis::Connect>>){
     if let Some(stream) = streams.get(&strm_fd){
         remove_write_stream(epoll_fd, strm_fd);
         let address = stream.lock().unwrap().address.clone();
-        let topic = stream.lock().unwrap().listener_topic.clone();
+        let listener_topic = stream.lock().unwrap().listener_topic.clone();
+        let listener_name = stream.lock().unwrap().listener_name.clone();
         streams.remove(&strm_fd);
         streams_fd.lock().unwrap().remove(&address);
-        addrs_new.lock().unwrap().push(Address{address, topic, is_new_addr: false});
+      
+        let mess = messages.lock().unwrap().get_mut(&address).unwrap().take();
+        if let Some(mess) = mess{
+            if let Err(err) = db.lock().unwrap().save_messages_from_sender(&listener_name, &listener_topic, mess){
+                print_error!(&format!("{}", err));
+            }
+        }
+        addrs_new.lock().unwrap().push(Address{address, listener_topic, is_new_addr: false});
     }     
 }
 

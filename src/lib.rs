@@ -43,14 +43,15 @@ pub extern "C" fn run(client: &mut Box<Option<Client>>,
 pub extern "C" fn send_to(client: &mut Box<Option<Client>>,
                           topic: *const i8,
                           uuid: *const i8,
-                          data: *const u8, data_size: usize)->bool{
+                          data: *const u8, data_size: usize,
+                          at_least_once_delivery: bool)->bool{
     unsafe {
         let topic = CStr::from_ptr(topic).to_str().unwrap();
         let uuid = CStr::from_ptr(uuid).to_str().unwrap();       
         let data = std::slice::from_raw_parts(data, data_size);
 
         let c = client.as_mut();
-        c.as_mut().unwrap().send_to(topic, uuid, data)
+        c.as_mut().unwrap().send_to(topic, uuid, data, at_least_once_delivery)
     }    
 }
 

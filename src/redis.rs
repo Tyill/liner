@@ -1,3 +1,5 @@
+use crate::message::Message;
+
 use redis::{Commands, ConnectionLike, RedisResult};
 use std::collections::HashMap;
 
@@ -99,6 +101,28 @@ impl Connect {
         let dbconn = self.get_dbconn()?; 
         let res: String = dbconn.get(&format!("connection_{}:mess_number", conn))?;
         Ok(res.parse::<u64>().unwrap())
+    }
+
+    pub fn save_messages_from_sender(&mut self, listener_name: &str, listener_topic: &str, mess: Vec<Message>)->RedisResult<()>{
+        let conn = format!("{}_{}_{}_{}", self.unique_name, self.source_topic, listener_name, listener_topic);
+        let dbconn = self.get_dbconn()?; 
+        for m in mess{
+            let mut buf: Vec<u8> = Vec::new(); 
+            m.to_stream(&mut buf);                
+            dbconn.rpush(&format!("connection_{}:messages", conn), buf)?;
+        }
+        Ok(())
+    }
+
+    pub fn load_messages_for_sender(&mut self, listener_name: &str, listener_topic: &str, mess: Vec<Message>)->RedisResult<()>{
+        let conn = format!("{}_{}_{}_{}", self.unique_name, self.source_topic, listener_name, listener_topic);
+        let dbconn = self.get_dbconn()?; 
+        let llen: Option<usize> = dbconn.llen(&format!("connection_{}:messages", conn))?;
+        if let Some(llen) = llen{
+            let ret = dbconn.lpop(&format!("connection_{}:messages", conn), core::num::NonZeroUsize::new(llen))?;
+            println!("ret");
+        }
+        Ok(())
     }
           
     fn get_dbconn(&mut self)->RedisResult<&mut redis::Connection>{

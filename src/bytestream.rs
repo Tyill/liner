@@ -17,6 +17,13 @@ pub fn get_u64(indata: &[u8])->(u64, &[u8])
     return (to, &indata[offs..]);
 }
 
+pub fn get_u8(indata: &[u8])->(u8, &[u8])
+{
+    let offs = std::mem::size_of::<u8>();
+    let to = indata[0];
+    return (to, &indata[offs..]);
+}
+
 pub fn get_array(indata: &[u8])->(&[u8], &[u8])
 {
     let mut offs = 0;
@@ -107,6 +114,12 @@ where
 pub trait ToBeBytes {
     type ByteArray: AsRef<[u8]>;
     fn to_be_bytes(&self) -> Self::ByteArray;
+}
+impl ToBeBytes for u8 {
+    type ByteArray = [u8; 1];
+    fn to_be_bytes(&self) -> Self::ByteArray {
+        u8::to_be_bytes(*self)
+    }
 }
 impl ToBeBytes for i32 {
     type ByteArray = [u8; 4];
