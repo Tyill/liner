@@ -114,7 +114,7 @@ impl Connect {
         Ok(())
     }
 
-    pub fn load_messages_for_sender(&mut self, listener_name: &str, listener_topic: &str, mess: Vec<Message>)->RedisResult<()>{
+    pub fn load_messages_for_sender(&mut self, listener_name: &str, listener_topic: &str)->RedisResult<Vec<Message>>{
         let conn = format!("{}_{}_{}_{}", self.unique_name, self.source_topic, listener_name, listener_topic);
         let dbconn = self.get_dbconn()?; 
         let llen: Option<usize> = dbconn.llen(&format!("connection_{}:messages", conn))?;
@@ -122,7 +122,8 @@ impl Connect {
             let ret = dbconn.lpop(&format!("connection_{}:messages", conn), core::num::NonZeroUsize::new(llen))?;
             println!("ret");
         }
-        Ok(())
+        let res = Vec::new();
+        Ok(res)
     }
           
     fn get_dbconn(&mut self)->RedisResult<&mut redis::Connection>{

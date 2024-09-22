@@ -12,7 +12,7 @@ use std::ffi::CStr;
 
 
 #[no_mangle]
-pub extern "C" fn init(unique_name: *const i8,
+pub extern "C" fn new_client(unique_name: *const i8,
                        redis_path: *const i8,
                        )->Box<Option<Client>>{
     unsafe{
@@ -53,6 +53,11 @@ pub extern "C" fn send_to(client: &mut Box<Option<Client>>,
         let c = client.as_mut();
         c.as_mut().unwrap().send_to(topic, uuid, data, at_least_once_delivery)
     }    
+}
+
+#[no_mangle]
+pub extern "C" fn delete_client(c: Box<Option<Client>>){
+    drop(c.unwrap());
 }
 
 #[no_mangle]

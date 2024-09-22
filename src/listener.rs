@@ -55,7 +55,7 @@ impl Listener {
                         if stream_fd == listener_fd{
                             listener_accept(epoll_fd, &mut streams, &listener);
                         }else if ev.events as i32 & libc::EPOLLIN > 0{
-                            read_stream(epoll_fd, stream_fd, &streams, &tx, &db);
+                            read_stream(epoll_fd, stream_fd, &streams, tx.clone(), db.clone());
                         }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
                             remove_read_stream(epoll_fd, stream_fd);
                             streams.remove(&stream_fd);
@@ -116,8 +116,8 @@ fn listener_accept(epoll_fd: RawFd,
 fn read_stream(epoll_fd: RawFd,
                stream_fd: RawFd,
                streams: &HashMap<RawFd, Arc<Mutex<ReadStream>>>, 
-               tx: &mpsc::Sender<Message>, 
-               db: &Arc<Mutex<redis::Connect>>){
+               tx: mpsc::Sender<Message>, 
+               db: Arc<Mutex<redis::Connect>>){
     if let Some(stream) = streams.get(&stream_fd){        
         if let Ok(mut stream) = stream.try_lock(){
             if !stream.is_active{
@@ -129,8 +129,6 @@ fn read_stream(epoll_fd: RawFd,
             continue_read_stream(epoll_fd, stream_fd);
             return;
         }
-        let tx = tx.clone();
-        let db = db.clone();
         let stream = stream.clone();
         rayon::spawn(move || {
             let mut stream = stream.lock().unwrap();
@@ -138,7 +136,6 @@ fn read_stream(epoll_fd: RawFd,
             let mut last_mess_num: u64 = 0;
             let mut sender_name = String::new();
             let mut sender_topic = String::new();
-            let mut count = 0;
             while let Some(mess) = Message::from_stream(reader.by_ref()){
                 if last_mess_num == 0{
                     last_mess_num = get_last_mess_number(&db, &mess.sender_name, &mess.topic_from);
@@ -150,10 +147,8 @@ fn read_stream(epoll_fd: RawFd,
                     if let Err(err) = tx.send(mess){
                         print_error!(&format!("couldn't tx.send: {}", err));
                     }
-                    count += 1;
                 }
             }
-            println!("count {}", count);
             set_last_mess_number(&db, &sender_name, &sender_topic, last_mess_num);
             stream.is_active = false;
             continue_read_stream(epoll_fd, stream_fd);            

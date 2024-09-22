@@ -4,7 +4,7 @@ use crate::common;
 
 use std::io::{Write, Read};
 
-pub mod mess_flags {
+mod mess_flags {
     pub const _COMPRESS: u8 = 0x01;
     pub const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
 }
@@ -68,6 +68,9 @@ impl Message {
                 write_number(stream, self.flags) && 
                 write_bytes(stream, &self.data);
         return ok;
+    }
+    pub fn at_least_once_delivery(&self)->bool{
+        self.flags & mess_flags::AT_LEAST_ONCE_DELIVERY > 0
     }
 }
 

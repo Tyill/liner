@@ -102,3 +102,13 @@ impl Client {
     }
 }
 
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _lock = self.mtx.lock();
+        if !self.is_run{
+            return;
+        }
+        drop(self.sender.take().unwrap());
+        
+    }
+}
