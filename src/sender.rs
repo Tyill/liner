@@ -55,8 +55,8 @@ pub struct Sender{
     wakeup_fd: RawFd,
     is_new_addr: Arc<Mutex<bool>>,
     ctime_ms: HashMap<String, u64>, // key - addr
-    waiting_addr_list: Arc<Mutex<HashSet<String>>>, // value - addr
-    waiting_addr_cvar: Arc<(Mutex<bool>, Condvar)>,
+    delay_write_list: Arc<Mutex<HashSet<String>>>, // value - addr
+    delay_write_cvar: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl Sender {
@@ -108,27 +108,27 @@ impl Sender {
             }
         });
 
-        let waiting_addr_list: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-        let waiting_addr_list_ = waiting_addr_list.clone();
-        let waiting_addr_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
-        let waiting_addr_cvar_ = waiting_addr_cvar.clone();
+        let delay_write_list: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let delay_write_list_ = delay_write_list.clone();
+        let delay_write_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        let delay_write_cvar_ = delay_write_cvar.clone();
         let messages_ = messages.clone();
         let streams_fd_ = streams_fd.clone();
         let message_buffer = Arc::new(Mutex::new(HashMap::new()));
         let message_buffer_ = message_buffer.clone();
-        thread::spawn(move|| loop{ // write waiting cycle
-            if waiting_addr_list_.lock().unwrap().is_empty(){
-                let (lock, cvar) = &*waiting_addr_cvar_;
+        thread::spawn(move|| loop{ // write delay cycle
+            if delay_write_list_.lock().unwrap().is_empty(){
+                let (lock, cvar) = &*delay_write_cvar_;
                 let mut _started = lock.lock().unwrap();
                 _started = cvar.wait(_started).unwrap();
             }
             std::thread::sleep(Duration::from_millis(settings::WRITE_MESS_TIMEOUT_MS));
 
-            let mut waiting_list_lock = waiting_addr_list_.lock().unwrap();
-            for addr in &waiting_list_lock.clone(){
+            let mut delay_write_lock = delay_write_list_.lock().unwrap();
+            for addr in &delay_write_lock.clone(){
                 send_mess_to_listener(epoll_fd, addr, &message_buffer_, &messages_, &streams_fd_);
             }
-            waiting_list_lock.clear();
+            delay_write_lock.clear();
         });
         Self{
             unique_name,
@@ -142,8 +142,8 @@ impl Sender {
             wakeup_fd,
             is_new_addr,
             ctime_ms: HashMap::new(),
-            waiting_addr_list,
-            waiting_addr_cvar,
+            delay_write_list,
+            delay_write_cvar,
         }
     }
     
@@ -189,10 +189,10 @@ impl Sender {
             *self.ctime_ms.get_mut(addr_to).unwrap() = common::current_time_ms();
             send_mess_to_listener(self.epoll_fd, addr_to, &self.message_buffer, &self.messages, &self.streams_fd);
         }else{
-            let is_first = self.waiting_addr_list.lock().unwrap().is_empty();
-            self.waiting_addr_list.lock().unwrap().insert(addr_to.to_string());
+            let is_first = self.delay_write_list.lock().unwrap().is_empty();
+            self.delay_write_list.lock().unwrap().insert(addr_to.to_string());
             if is_first{
-                let (lock, cvar) = &*self.waiting_addr_cvar;
+                let (lock, cvar) = &*self.delay_write_cvar;
                 *lock.lock().unwrap() = true;
                 cvar.notify_one();
             }
@@ -232,7 +232,7 @@ fn send_mess_to_listener(epoll_fd: RawFd, addr_to: &str,
                            streams_fd: &Arc<Mutex<HashMap<String, RawFd>>>){
     let buff = message_buffer.lock().unwrap().get_mut(addr_to).unwrap().take();
     if let None = buff{
-        return; // already send from waiting cycle
+        return; // already send from delay write cycle
     }
     if let Ok(mut mess_lock) = messages.lock(){
         if let Some(mess_for_send) = mess_lock.get_mut(addr_to).unwrap().as_mut(){
