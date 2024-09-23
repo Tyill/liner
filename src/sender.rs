@@ -223,6 +223,19 @@ impl Sender {
             print_error!(format!("couldn't db.get_listener_unique_name {}", addr_to));
             return false;
         }
+        match db.load_messages_for_sender(&listener_name, &listener_topic){
+            Ok(mut mess_from_db) =>{
+                if let Ok(mut mess_lock) = messages.lock(){
+                    if let Some(mut mess_for_send) = mess_lock.get_mut(&addr.address).unwrap().take(){
+                        mess_from_db.append(&mut mess_for_send);
+                    }
+                    *mess_lock.get_mut(&addr.address).unwrap() = Some(mess_from_db);
+                }
+            },
+            Err(err)=>{
+                print_error!(&format!("db.load_messages_for_sender, {} {}", addr.address, err));
+            }
+        }
         let last_mess_num = db.get_last_mess_number_for_sender(&listener_name, &listener_topic);
         if let Ok(last_mess_num) = last_mess_num{
             self.last_mess_number.insert(addr_to.to_string(), last_mess_num);
@@ -324,20 +337,6 @@ fn append_streams(epoll_fd: RawFd,
                                                        is_active: false, is_close: false};
                 streams.insert(wstream.stream.as_raw_fd(), Arc::new(Mutex::new(wstream)));
                 add_write_stream(epoll_fd, stm_fd);
-
-                match db.lock().unwrap().load_messages_for_sender(&listener_name, &addr.listener_topic){
-                    Ok(mut mess_from_db) =>{
-                        if let Ok(mut mess_lock) = messages.lock(){
-                            if let Some(mut mess_for_send) = mess_lock.get_mut(&addr.address).unwrap().take(){
-                                mess_from_db.append(&mut mess_for_send);
-                            }
-                            *mess_lock.get_mut(&addr.address).unwrap() = Some(mess_from_db);
-                        }
-                    },
-                    Err(err)=>{
-                        print_error!(&format!("db.load_messages_for_sender, {} {}", addr.address, err));
-                    }
-                }
                 streams_fd.lock().unwrap().insert(addr.address.clone(), stm_fd);
             },
             Err(err)=>{
