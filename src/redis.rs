@@ -1,4 +1,4 @@
-use crate::message::Message;
+use crate::{message::Message, print_error};
 
 use redis::{Commands, ConnectionLike, RedisResult, ErrorKind};
 use std::collections::HashMap;
@@ -113,15 +113,20 @@ impl Connect {
 
     pub fn load_messages_for_sender(&mut self, listener_name: &str, listener_topic: &str)->RedisResult<Vec<Message>>{
         let conn = format!("{}_{}_{}_{}", self.unique_name, self.source_topic, listener_name, listener_topic);
-        println!("{}, {}, {}", listener_name, listener_topic, conn);
         let dbconn = self.get_dbconn()?; 
         let llen: Option<usize> = dbconn.llen(&format!("connection_{}:messages", conn.clone()))?;
+        let mut out = Vec::new();
         if let Some(llen) = llen{
-            let ret = dbconn.lpop(&format!("connection_{}:messages", conn), core::num::NonZeroUsize::new(llen))?;
-            println!("ret");
-        }
-        let res = Vec::new();
-        Ok(res)
+            let buff: Vec<Vec<u8>> = dbconn.lpop(&format!("connection_{}:messages", conn), core::num::NonZeroUsize::new(llen))?;
+            for b in buff{
+                if let Some(mess) = Message::from_stream(&mut &b[..]){
+                    out.push(mess);
+                }else{
+                    print_error!("!Message::from_stream");
+                }
+            }
+        }        
+        Ok(out)
     }
           
     fn get_dbconn(&mut self)->RedisResult<&mut redis::Connection>{

@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, Condvar};
 use std::collections::{HashMap, HashSet};
 use std::thread;
 use std::os::unix::io::{AsRawFd, RawFd};
-use std::io::{BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 
 
 #[allow(unused_macros)]
@@ -109,7 +109,7 @@ impl Sender {
                         }
                     }               
                 }
-                close_streams(&messages_, &db);
+                close_streams(&messages_, &mut streams, &db);
             }else{
                 print_error!(format!("couldn't redis::Connect"));
             }
@@ -474,22 +474,27 @@ fn wakeupfd_create(epoll_fd: RawFd)->RawFd{
 }
 fn wakeupfd_notify(event_fd: RawFd){
     let b: u64 = 1;
-    if let Err(err) = syscall!(write(event_fd, &b as *const u64 as *const c_void, std::mem::size_of::<u64>())){
-        print_error!(&format!("{}", err));
-    }  
+    syscall!(write(event_fd, &b as *const u64 as *const c_void, std::mem::size_of::<u64>())).expect("couldn't wakeupfd_notify");
 }
 fn wakeupfd_reset(event_fd: i32){
     let b: u64 = 0;
-    if let Err(err) = syscall!(read(event_fd, &b as *const u64 as *mut c_void, std::mem::size_of::<u64>())){
-        print_error!(&format!("{}", err));
-    }
+    syscall!(read(event_fd, &b as *const u64 as *mut c_void, std::mem::size_of::<u64>())).expect("couldn't wakeupfd_reset");
 }
 fn remove_write_stream(epoll_fd: i32, fd: RawFd){
     syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())).expect("couldn't remove_write_stream");   
 }
 
 fn close_streams(messages: &Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>,
+                 streams: &mut HashMap<RawFd, Arc<Mutex<WriteStream>>>,
                  db: &Arc<Mutex<redis::Connect>>){
+    for stream in streams.values(){
+        if let Ok(mut stream) = stream.lock(){
+            stream.is_close = true;
+            while stream.is_active {
+                thread::yield_now();
+            }
+        }
+    }
     for kv in messages.lock().unwrap().deref_mut(){
         if let Some(mess_for_send) = kv.1.take(){
             if mess_for_send.is_empty(){

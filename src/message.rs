@@ -56,8 +56,14 @@ impl Message {
     pub fn to_stream<T>(&self, stream: &mut T)->bool 
         where T: Write
     {
-        let all_size = self.topic_to.len() + self.topic_from.len() + self.sender_name.len() + self.uuid.len() + std::mem::size_of::<i32>() * 4 +
-                              std::mem::size_of::<u64>() * 2 + self.data.len() + std::mem::size_of::<i32>();
+        let all_size = self.topic_to.len() + std::mem::size_of::<i32>() +
+                              self.topic_from.len() + std::mem::size_of::<i32>() +
+                              self.sender_name.len() + std::mem::size_of::<i32>() +
+                              self.uuid.len() + std::mem::size_of::<i32>() +
+                              std::mem::size_of::<u64>() + // timestamp
+                              std::mem::size_of::<u64>() + // number_mess 
+                              self.data.len() + std::mem::size_of::<i32>() + // data
+                              std::mem::size_of::<u8>(); // flags 
         let ok: bool = write_number(stream, all_size as i32) &&
                 write_string(stream, &self.topic_to) &&
                 write_string(stream, &self.topic_from) &&

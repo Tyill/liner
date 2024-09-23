@@ -41,7 +41,7 @@ fn main() {
     let uuid = CString::new("1234").unwrap();
    // loop {
         println!("{} begin send_to", current_time_ms());       
-        for _ in 0..1{
+        for _ in 0..0{
             liner::send_to(&mut c1, 
                 topic_2.as_ptr(),
                 uuid.as_ptr(),
