@@ -1,6 +1,6 @@
 use crate::message::Message;
 
-use redis::{Commands, ConnectionLike, RedisResult};
+use redis::{Commands, ConnectionLike, RedisResult, ErrorKind};
 use std::collections::HashMap;
 
 pub struct Connect{
@@ -38,8 +38,23 @@ impl Connect {
     }
     pub fn set_source_topic(&mut self, topic: &str){
         self.source_topic = topic.to_string();
+    }    
+    pub fn get_addresses_of_topic(&mut self, topic: &str)->RedisResult<Vec<String>>{
+        if !self.topic_addr_cache.contains_key(topic){
+            self.init_addresses_of_topic(topic)?;
+        }
+        Ok(self.topic_addr_cache.get(topic).unwrap().to_vec())
     }
-    pub fn init_addresses_of_topic(&mut self, topic: &str)->RedisResult<()>{
+    pub fn get_listener_unique_name(&mut self, topic: &str, address: &str)->RedisResult<String>{
+        if !self.topic_addr_cache.contains_key(topic){
+            self.init_addresses_of_topic(topic)?;
+        }
+        if self.unique_name_cache.contains_key(address){
+            return Ok(self.unique_name_cache[address].to_string());
+        }
+        Err((ErrorKind::TypeError, "!unique_name_cache.contains_key").into())
+    }
+    fn init_addresses_of_topic(&mut self, topic: &str)->RedisResult<()>{
         let dbconn = self.get_dbconn()?; 
         let addrs_names: Vec<(String, String)> = dbconn.hgetall(&format!("topic:{}:addr", topic))?;
         let mut addrs: Vec<String> = Vec::new();
@@ -49,24 +64,6 @@ impl Connect {
         }            
         self.topic_addr_cache.insert(topic.to_string(), addrs);
         Ok(())
-    }
-    pub fn get_addresses_of_topic(&mut self, topic: &str)->RedisResult<Vec<String>>{
-        if !self.topic_addr_cache.contains_key(topic){
-            self.init_addresses_of_topic(topic)?;
-        }
-        Ok(self.topic_addr_cache.get(topic).unwrap().to_vec())
-    }
-    pub fn get_listener_by_address(&self, address: &str)->Option<(String, String)>{
-        let mut listener_topic = String::new();
-        for topic in &self.topic_addr_cache{
-            if topic.1.contains(&address.to_string()){
-                listener_topic = topic.0.to_string();
-            }
-        }
-        if self.unique_name_cache.contains_key(address){
-            return Some((listener_topic, self.unique_name_cache[address].to_string()));
-        }
-        None
     }
    
     pub fn set_last_mess_number_from_listener(&mut self, sender_name: &str, sender_topic: &str, val: u64)->RedisResult<()>{
@@ -116,8 +113,9 @@ impl Connect {
 
     pub fn load_messages_for_sender(&mut self, listener_name: &str, listener_topic: &str)->RedisResult<Vec<Message>>{
         let conn = format!("{}_{}_{}_{}", self.unique_name, self.source_topic, listener_name, listener_topic);
+        println!("{}, {}, {}", listener_name, listener_topic, conn);
         let dbconn = self.get_dbconn()?; 
-        let llen: Option<usize> = dbconn.llen(&format!("connection_{}:messages", conn))?;
+        let llen: Option<usize> = dbconn.llen(&format!("connection_{}:messages", conn.clone()))?;
         if let Some(llen) = llen{
             let ret = dbconn.lpop(&format!("connection_{}:messages", conn), core::num::NonZeroUsize::new(llen))?;
             println!("ret");

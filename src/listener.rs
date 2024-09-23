@@ -120,7 +120,7 @@ fn read_stream(epoll_fd: RawFd,
                db: Arc<Mutex<redis::Connect>>){
     if let Some(stream) = streams.get(&stream_fd){        
         if let Ok(mut stream) = stream.try_lock(){
-            if !stream.is_active{
+            if !stream.is_active && false{
                 stream.is_active = true;
             }else{
                 return;
