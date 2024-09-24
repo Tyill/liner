@@ -1,6 +1,7 @@
 use crate::message::Message;
 use crate::redis;
 use crate::print_error;
+use crate::redis::Connect;
 use crate::settings;
 use crate::common;
 
@@ -46,15 +47,15 @@ struct Address{
 }
 
 pub struct Sender{
-    epoll_fd: i32,
+    epoll_fd: RawFd,
+    wakeup_fd: RawFd,
     unique_name: String,
     addrs_for: HashSet<String>,
     addrs_new: Arc<Mutex<Vec<Address>>>,
     message_buffer: Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>, // key - addr
     messages: Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>, // key - addr
     last_mess_number: HashMap<String, u64>,              
-    streams_fd: Arc<Mutex<HashMap<String, RawFd>>>,
-    wakeup_fd: RawFd,
+    streams_fd: Arc<Mutex<HashMap<String, RawFd>>>,    
     is_new_addr: Arc<Mutex<bool>>,
     is_close: Arc<Mutex<bool>>,
     ctime_ms: HashMap<String, u64>, // key - addr
@@ -78,6 +79,7 @@ impl Sender {
         let is_new_addr: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
         let is_new_addr_ = is_new_addr.clone();
         let unique_name_ = unique_name.clone();
+      
         let stream_thread = thread::spawn(move|| {
             let mut streams: HashMap<RawFd, Arc<Mutex<WriteStream>>> = HashMap::new();
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
@@ -88,7 +90,7 @@ impl Sender {
                 loop{ // stream cycle
                     if check_available_stream(&is_new_addr_, &mut prev_time) {
                         append_streams(epoll_fd, &mut addrs_new_, &mut streams, 
-                                       &mut streams_fd_, &messages_, &db);
+                                           &mut streams_fd_, &messages_, &db);
                     }
                     if !wait(epoll_fd, &mut events){
                         break;
@@ -100,7 +102,7 @@ impl Sender {
                                 wakeupfd_reset(wakeup_fd);
                             }
                         }else if ev.events as i32 & libc::EPOLLOUT > 0{
-                            write_stream(epoll_fd, stream_fd, &streams, messages_.clone(), db.clone());
+                            write_stream(stream_fd, &streams, messages_.clone(), db.clone());
                         }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
                             remove_stream(epoll_fd, stream_fd, &mut streams, &streams_fd_,
                                           &messages_, &addrs_new_, &db);
@@ -222,34 +224,59 @@ impl Sender {
         }else{
             print_error!(format!("couldn't db.get_listener_unique_name {}", addr_to));
             return false;
-        }
-        match db.load_messages_for_sender(&listener_name, &listener_topic){
-            Ok(mut mess_from_db) =>{
-                if let Ok(mut mess_lock) = messages.lock(){
-                    if let Some(mut mess_for_send) = mess_lock.get_mut(&addr.address).unwrap().take(){
-                        mess_from_db.append(&mut mess_for_send);
-                    }
-                    *mess_lock.get_mut(&addr.address).unwrap() = Some(mess_from_db);
-                }
-            },
-            Err(err)=>{
-                print_error!(&format!("db.load_messages_for_sender, {} {}", addr.address, err));
-            }
-        }
+        }        
         let last_mess_num = db.get_last_mess_number_for_sender(&listener_name, &listener_topic);
         if let Ok(last_mess_num) = last_mess_num{
             self.last_mess_number.insert(addr_to.to_string(), last_mess_num);
         }else {
             if let Err(err) = db.init_last_mess_number_from_sender(&listener_name, listener_topic){            
-                print_error!(&format!("error init_last_mess_number_from_sender from db: {}", err));
+                print_error!(&format!("init_last_mess_number_from_sender from db: {}", err));
                 return false;
             }
             self.last_mess_number.insert(addr_to.to_string(), 0);
         }            
+        if let Ok(last_mess) = db.load_last_message_for_sender(&listener_name, &listener_topic){
+            if let Some(mess) = last_mess{
+                if mess.number_mess > self.last_mess_number[addr_to]{
+                    *self.last_mess_number.get_mut(addr_to).unwrap() = mess.number_mess;
+                }
+            }
+        }else {
+            print_error!(&format!("db.load_last_message_for_sender"));
+        }
+        if let Err(err) = db.save_listener_for_sender(addr_to, listener_topic){
+            print_error!(&format!("db.save_listener_for_sender {}", err));
+        }
+
         self.messages.lock().unwrap().insert(addr_to.to_string(), Some(Vec::new()));
         self.message_buffer.lock().unwrap().insert(addr_to.to_string(), Some(Vec::new()));
         self.ctime_ms.insert(addr_to.to_string(), common::current_time_ms());
         return true;
+    }
+
+    pub fn load_prev_connects(&mut self, db: &mut Connect){
+       
+        let mut prev_conns: Vec<Address> = Vec::new();
+        match db.get_listeners_of_sender() {
+            Ok(addr_topic) => {
+                for t in addr_topic{
+                    prev_conns.push(Address{address: t.0, listener_topic: t.1, is_new_addr: true });
+                }
+            },
+            Err(err)=>{
+                print_error!(&format!("db.get_listeners_of_sender {}", err));
+            }
+        }       
+        for a in prev_conns{
+            self.addrs_for.insert(a.address.clone());
+            if self.append_new_state(db, &a.address, &a.listener_topic){
+                self.addrs_new.lock().unwrap().push(a);
+            }            
+        }
+        if !self.addrs_new.lock().unwrap().is_empty(){
+            *self.is_new_addr.lock().unwrap() = true;
+            wakeupfd_notify(self.wakeup_fd);
+        }   
     }
 }
 
@@ -287,7 +314,7 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
         epoll_fd,
         events.as_mut_ptr() as *mut libc::epoll_event,
         settings::EPOLL_LISTEN_EVENTS_COUNT as i32,
-        -1,
+        settings::CHECK_AVAILABLE_STREAM_TIMEOUT_MS as i32,
     )){
         Ok(ready_count)=>{
             unsafe { events.set_len(ready_count as usize) };
@@ -330,6 +357,21 @@ fn append_streams(epoll_fd: RawFd,
                 }
                 stream.set_nonblocking(true).expect("couldn't stream set_nonblocking");
                 let stm_fd = stream.as_raw_fd();
+
+                match db.lock().unwrap().load_messages_for_sender(&listener_name, &addr.listener_topic){
+                    Ok(mut mess_from_db) =>{
+                        if let Ok(mut mess_lock) = messages.lock(){
+                            if let Some(mut mess_for_send) = mess_lock.get_mut(&addr.address).unwrap().take(){
+                                mess_from_db.append(&mut mess_for_send);
+                            }
+                            *mess_lock.get_mut(&addr.address).unwrap() = Some(mess_from_db);
+                        }
+                    },
+                    Err(err)=>{
+                        print_error!(&format!("db.load_messages_for_sender, {} {}", addr.address, err));
+                    }
+                }
+
                 let wstream = WriteStream{address: addr.address.clone(),
                                                        listener_topic: addr.listener_topic.clone(), 
                                                        listener_name: listener_name.clone(),
@@ -353,8 +395,7 @@ fn append_streams(epoll_fd: RawFd,
     *addrs.lock().unwrap() = addrs_lost;
 }
 
-fn write_stream(epoll_fd: RawFd,
-                stream_fd: RawFd,
+fn write_stream(stream_fd: RawFd,
                 streams: &HashMap<RawFd, Arc<Mutex<WriteStream>>>, 
                 messages: Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>,
                 db: Arc<Mutex<redis::Connect>>){
@@ -367,7 +408,6 @@ fn write_stream(epoll_fd: RawFd,
                 return;
             }
         }else{
-            continue_write_stream(epoll_fd, stream_fd);
             return;
         }
         rayon::spawn(move || {
@@ -450,10 +490,14 @@ fn remove_stream(epoll_fd: i32,
 }
 
 fn add_write_stream(epoll_fd: i32, fd: RawFd){
-    regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD).expect("couldn't add_write_stream");
+    if let Err(err) = regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD){
+        print_error!(format!("couldn't add_write_stream, {}", err));
+    }
 }
 fn continue_write_stream(epoll_fd: i32, fd: RawFd){
-    regist_event(epoll_fd, fd, libc::EPOLL_CTL_MOD).expect("couldn't continue_write_stream");
+    if let Err(err) = regist_event(epoll_fd, fd, libc::EPOLL_CTL_MOD){
+        print_error!(format!("couldn't continue_write_stream, {}", err));
+    }
 }
 fn regist_event(epoll_fd: i32, fd: RawFd, ctl: i32)-> io::Result<i32> {
     let mut event = libc::epoll_event {
@@ -473,14 +517,20 @@ fn wakeupfd_create(epoll_fd: RawFd)->RawFd{
 }
 fn wakeupfd_notify(event_fd: RawFd){
     let b: u64 = 1;
-    syscall!(write(event_fd, &b as *const u64 as *const c_void, std::mem::size_of::<u64>())).expect("couldn't wakeupfd_notify");
+    if let Err(err) = syscall!(write(event_fd, &b as *const u64 as *const c_void, std::mem::size_of::<u64>())){
+        print_error!(format!("couldn't wakeupfd_notify, {}", err));
+    }
 }
 fn wakeupfd_reset(event_fd: i32){
     let b: u64 = 0;
-    syscall!(read(event_fd, &b as *const u64 as *mut c_void, std::mem::size_of::<u64>())).expect("couldn't wakeupfd_reset");
+    if let Err(err) = syscall!(read(event_fd, &b as *const u64 as *mut c_void, std::mem::size_of::<u64>())){
+        print_error!(format!("couldn't wakeupfd_reset, {}", err));
+    }
 }
 fn remove_write_stream(epoll_fd: i32, fd: RawFd){
-    syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())).expect("couldn't remove_write_stream");   
+    if let Err(err) = syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())){  
+        print_error!(format!("couldn't remove_write_stream, {}", err));
+    }
 }
 
 fn close_streams(messages: &Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>,

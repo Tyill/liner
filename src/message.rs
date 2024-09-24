@@ -62,8 +62,8 @@ impl Message {
                               self.uuid.len() + std::mem::size_of::<i32>() +
                               std::mem::size_of::<u64>() + // timestamp
                               std::mem::size_of::<u64>() + // number_mess 
-                              self.data.len() + std::mem::size_of::<i32>() + // data
-                              std::mem::size_of::<u8>(); // flags 
+                              std::mem::size_of::<u8>() +  // flags 
+                              self.data.len() + std::mem::size_of::<i32>(); // data
         let ok: bool = write_number(stream, all_size as i32) &&
                 write_string(stream, &self.topic_to) &&
                 write_string(stream, &self.topic_from) &&

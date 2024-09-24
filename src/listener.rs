@@ -5,6 +5,8 @@ use crate::print_error;
 
 use std::collections::HashMap;
 use std::io::Read;
+use std::os::raw::c_void;
+use std::thread::JoinHandle;
 use std::{thread, sync::mpsc};
 use std::net::{TcpStream, TcpListener};
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -27,17 +29,21 @@ macro_rules! syscall {
 struct ReadStream{
     stream: TcpStream,
     is_active: bool,
+    is_close: bool
 }
 
 pub struct Listener{
-    _epoll_fd: i32,    
+    epoll_fd: RawFd,
+    wakeup_fd: RawFd,
+    stream_thread: Option<JoinHandle<()>>,
 }
 
 impl Listener {
     pub fn new(listener: TcpListener, tx: mpsc::Sender<Message>, 
                unique_name: String, redis_path: String, source_topic: String)->Listener{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
-        thread::spawn(move|| {
+        let wakeup_fd = wakeupfd_create(epoll_fd);
+        let stream_thread = thread::spawn(move|| {
             listener.set_nonblocking(true).expect("couldn't listener set_nonblocking");
             let listener_fd = listener.as_raw_fd();
             regist_event(epoll_fd, listener_fd, libc::EPOLL_CTL_ADD).expect("couldn't event regist");
@@ -55,7 +61,11 @@ impl Listener {
                         if stream_fd == listener_fd{
                             listener_accept(epoll_fd, &mut streams, &listener);
                         }else if ev.events as i32 & libc::EPOLLIN > 0{
-                            read_stream(epoll_fd, stream_fd, &streams, tx.clone(), db.clone());
+                            if stream_fd == wakeup_fd{
+                                wakeupfd_reset(wakeup_fd);
+                            }else{
+                                read_stream(epoll_fd, stream_fd, &streams, tx.clone(), db.clone());
+                            }
                         }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
                             remove_read_stream(epoll_fd, stream_fd);
                             streams.remove(&stream_fd);
@@ -64,16 +74,16 @@ impl Listener {
                         }
                     }
                 }
+                close_streams(&mut streams);
             }
         });
         Self{
-            _epoll_fd: epoll_fd,
+            epoll_fd,
+            wakeup_fd,
+            stream_thread: Some(stream_thread),
         }
-    }
-    
-    pub fn _close(&self) {
-        let _ = syscall!(close(self._epoll_fd));
-    }
+    }   
+   
 }
 
 fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
@@ -105,7 +115,7 @@ fn listener_accept(epoll_fd: RawFd,
         Ok((stream, _addr)) => {
             stream.set_nonblocking(true).expect("couldn't listener set_nonblocking");
             let stream_fd = stream.as_raw_fd();
-            streams.insert(stream_fd, Arc::new(Mutex::new(ReadStream{stream, is_active: false})));    
+            streams.insert(stream_fd, Arc::new(Mutex::new(ReadStream{stream, is_active: false, is_close: false})));    
             add_read_stream(epoll_fd, stream_fd);
         }
         Err(err) => print_error!(&format!("couldn't listener accept: {}", err)),
@@ -120,7 +130,7 @@ fn read_stream(epoll_fd: RawFd,
                db: Arc<Mutex<redis::Connect>>){
     if let Some(stream) = streams.get(&stream_fd){        
         if let Ok(mut stream) = stream.try_lock(){
-            if !stream.is_active && false{
+            if !stream.is_active && !stream.is_close{
                 stream.is_active = true;
             }else{
                 return;
@@ -175,10 +185,14 @@ fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, topi
 }
 
 fn add_read_stream(epoll_fd: i32, fd: RawFd){
-    regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD).expect("couldn't add_read_stream");
+    if let Err(err) = regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD){
+        print_error!(format!("couldn't add_read_stream, {}", err));
+    }
 }    
 fn continue_read_stream(epoll_fd: i32, fd: RawFd){
-    regist_event(epoll_fd, fd, libc::EPOLL_CTL_MOD).expect("couldn't continue_read_stream");
+    if let Err(err) = regist_event(epoll_fd, fd, libc::EPOLL_CTL_MOD){
+        print_error!(format!("couldn't continue_read_stream, {}", err));
+    }
 }
 fn regist_event(epoll_fd: i32, fd: RawFd, ctl: i32)-> io::Result<i32> {
     let mut event = libc::epoll_event {
@@ -188,5 +202,51 @@ fn regist_event(epoll_fd: i32, fd: RawFd, ctl: i32)-> io::Result<i32> {
     syscall!(epoll_ctl(epoll_fd, ctl, fd, &mut event))
 }
 fn remove_read_stream(epoll_fd: i32, fd: RawFd){
-    syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())).expect("couldn't continue_read_stream");  
+    if let Err(err) = syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())){
+        print_error!(format!("couldn't remove_read_stream, {}", err));
+    }
+}
+
+fn wakeupfd_create(epoll_fd: RawFd)->RawFd{
+    let event_fd = syscall!(eventfd(0, 0)).expect("couldn't eventfd");
+    let mut event = libc::epoll_event {
+        events: (libc::EPOLLIN) as u32,
+        u64: event_fd as u64,
+    };
+    syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, event_fd, &mut event)).expect("couldn't eventfd_create");
+    event_fd
+}
+fn wakeupfd_notify(event_fd: RawFd){
+    let b: u64 = 1;
+    if let Err(err) = syscall!(write(event_fd, &b as *const u64 as *const c_void, std::mem::size_of::<u64>())){
+        print_error!(format!("couldn't wakeupfd_notify, {}", err));
+    }
+}
+fn wakeupfd_reset(event_fd: i32){
+    let b: u64 = 0;
+    if let Err(err) = syscall!(read(event_fd, &b as *const u64 as *mut c_void, std::mem::size_of::<u64>())){
+        print_error!(format!("couldn't wakeupfd_reset, {}", err));
+    }
+}
+
+fn close_streams(streams: &mut HashMap<RawFd, Arc<Mutex<ReadStream>>>){
+    for stream in streams.values(){
+        if let Ok(mut stream) = stream.lock(){
+            stream.is_close = true;
+            while stream.is_active {
+                thread::yield_now();
+            }
+        }
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        
+        syscall!(close(self.epoll_fd)).expect("couldn't close epoll");
+        wakeupfd_notify(self.wakeup_fd);
+        if let Err(err) = self.stream_thread.take().unwrap().join(){
+            print_error!(&format!("stream_thread.join, {:?}", err));
+        }
+    }
 }

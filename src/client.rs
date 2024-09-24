@@ -65,6 +65,8 @@ impl Client {
         self.topic = topic.to_string();      
         self.listener = Some(Listener::new(listener, tx_prodr, self.unique_name.clone(), self.db.redis_path(), topic.to_string()));
         self.sender = Some(Sender::new(self.unique_name.clone(), self.db.redis_path(), topic.to_string()));
+        self.sender.as_mut().unwrap().load_prev_connects(&mut self.db);
+        
         self.is_run = true;
 
         return true;
@@ -108,7 +110,7 @@ impl Drop for Client {
         if !self.is_run{
             return;
         }
-        drop(self.sender.take().unwrap());
-        
+        drop(self.sender.take().unwrap());      
+        drop(self.listener.take().unwrap());        
     }
 }

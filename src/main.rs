@@ -39,18 +39,18 @@ fn main() {
 
     let array = vec![0; 100];
     let uuid = CString::new("1234").unwrap();
-   // loop {
+    loop {
         println!("{} begin send_to", current_time_ms());       
-        for _ in 0..0{
+        for _ in 0..10000{
             liner::send_to(&mut c1, 
                 topic_2.as_ptr(),
                 uuid.as_ptr(),
-                array.as_ptr(), array.len(), false);
+                array.as_ptr(), array.len(), true);
         }
         println!("{} end send_to", current_time_ms());       
       
         thread::sleep(time::Duration::from_millis(1000));
-    //}
+    }
 }
 
 fn current_time_ms()->u64{ 
