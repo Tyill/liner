@@ -9,6 +9,7 @@ use std::net::TcpListener;
 use std::sync::Mutex;
 use std::{thread, sync::mpsc};
 use std::collections::HashMap;
+use std::thread::JoinHandle;
 
 pub struct Client{
     unique_name: String,
@@ -19,6 +20,7 @@ pub struct Client{
     last_send_index: HashMap<String, usize>,
     is_run: bool,
     mtx: Mutex<()>,
+    stream_thread: Option<JoinHandle<()>>,
 }
 
 impl Client {
@@ -34,6 +36,7 @@ impl Client {
                 last_send_index: HashMap::new(),
                 is_run: false,
                 mtx: Mutex::new(()),
+                stream_thread: None,
             }
         )
     }
@@ -53,20 +56,20 @@ impl Client {
             return false;
         }
         let (tx_prodr, rx_prodr) = mpsc::channel::<Message>();
-        thread::spawn(move||{ 
+        let stream_thread = thread::spawn(move||{ 
             for m in rx_prodr.iter(){
                 receive_cb(m.topic_to.as_ptr() as *const i8,
-                           m.topic_from.as_ptr() as *const i8, 
-                           m.uuid.as_ptr() as *const i8, 
-                           m.timestamp, 
-                           m.data.as_ptr(), m.data.len());
+                        m.topic_from.as_ptr() as *const i8, 
+                        m.uuid.as_ptr() as *const i8, 
+                        m.timestamp, 
+                        m.data.as_ptr(), m.data.len());
             }
         });  
         self.topic = topic.to_string();      
         self.listener = Some(Listener::new(listener, tx_prodr, self.unique_name.clone(), self.db.redis_path(), topic.to_string()));
         self.sender = Some(Sender::new(self.unique_name.clone(), self.db.redis_path(), topic.to_string()));
         self.sender.as_mut().unwrap().load_prev_connects(&mut self.db);
-        
+        self.stream_thread = Some(stream_thread);
         self.is_run = true;
 
         return true;
@@ -111,6 +114,10 @@ impl Drop for Client {
             return;
         }
         drop(self.sender.take().unwrap());      
-        drop(self.listener.take().unwrap());        
+        drop(self.listener.take().unwrap());      
+    
+        if let Err(err) = self.stream_thread.take().unwrap().join(){
+            print_error!(&format!("stream_thread.join, {:?}", err));
+        }  
     }
 }

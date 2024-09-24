@@ -348,13 +348,7 @@ fn append_streams(epoll_fd: RawFd,
             return;
         }
         match TcpStream::connect(&addr.address){
-            Ok(stream)=>{               
-                let mut last_send_mess_number: u64 = 0;
-                if let Ok(num) = db.lock().unwrap().get_last_mess_number_for_sender(&listener_name, &addr.listener_topic){
-                    last_send_mess_number = num;
-                }else{
-                    print_error!(format!("couldn't db.get_last_mess_number_for_sender {}", addr.address));
-                }
+            Ok(stream)=>{
                 stream.set_nonblocking(true).expect("couldn't stream set_nonblocking");
                 let stm_fd = stream.as_raw_fd();
 
@@ -371,7 +365,12 @@ fn append_streams(epoll_fd: RawFd,
                         print_error!(&format!("db.load_messages_for_sender, {} {}", addr.address, err));
                     }
                 }
-
+                let mut last_send_mess_number: u64 = 0;
+                if let Ok(num) = db.lock().unwrap().get_last_mess_number_for_sender(&listener_name, &addr.listener_topic){
+                    last_send_mess_number = num;
+                }else{
+                    print_error!(format!("couldn't db.get_last_mess_number_for_sender {}", addr.address));
+                }
                 let wstream = WriteStream{address: addr.address.clone(),
                                                        listener_topic: addr.listener_topic.clone(), 
                                                        listener_name: listener_name.clone(),
@@ -385,9 +384,7 @@ fn append_streams(epoll_fd: RawFd,
                 addrs_lost.push(addr.clone());
                 print_error!(&format!("tcp connect, {} {}", err, addr.address));
                 if let Some(mess) = messages.lock().unwrap().get_mut(&addr.address).unwrap().take(){
-                    if let Err(err) = db.lock().unwrap().save_messages_from_sender(&listener_name, &addr.listener_topic, mess){
-                        print_error!(&format!("db.save_messages_from_sender, {} {}", addr.address, err));
-                    }
+                    save_mess_to_db(mess, db, &listener_name, &addr.listener_topic);
                 }
             }
         }
@@ -481,12 +478,28 @@ fn remove_stream(epoll_fd: i32,
 
         let mess = messages.lock().unwrap().get_mut(&address).unwrap().take();
         if let Some(mess) = mess{
-            if let Err(err) = db.lock().unwrap().save_messages_from_sender(&listener_name, &listener_topic, mess){
-                print_error!(&format!("db.save_messages_from_sender, {}", err));
-            }
+            save_mess_to_db(mess, db, &listener_name, &listener_topic);            
         }
         addrs_new.lock().unwrap().push(Address{address, listener_topic, is_new_addr: false});
     }     
+}
+
+fn save_mess_to_db(mess: Vec<Message>, db: &Arc<Mutex<redis::Connect>>, listener_name: &str, listener_topic: &str){
+    let mut last_send_mess_number: u64 = 0;
+    if let Ok(num) = db.lock().unwrap().get_last_mess_number_for_sender(&listener_name, listener_topic){
+        last_send_mess_number = num;
+    }else{
+        print_error!(format!("couldn't db.get_last_mess_number_for_sender, {}:{}", listener_name, listener_topic));
+    }
+    let mess: Vec<Message> = mess.into_iter()
+                                 .filter(|m|
+                                        m.at_least_once_delivery() && m.number_mess > last_send_mess_number)
+                                 .collect();
+    if !mess.is_empty(){
+        if let Err(err) = db.lock().unwrap().save_messages_from_sender(listener_name, listener_topic, mess){
+            print_error!(&format!("db.save_messages_from_sender, {}:{}, err {}", listener_name, listener_topic, err));
+        }
+    }
 }
 
 fn add_write_stream(epoll_fd: i32, fd: RawFd){
@@ -558,9 +571,7 @@ fn close_streams(messages: &Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>,
                 print_error!(&format!("db.get_listener_unique_name, {}", addr));
                 continue;
             }
-            if let Err(err) = db.lock().unwrap().save_messages_from_sender(&listener_name, &listener_topic, mess_for_send){
-                print_error!(&format!("db.save_messages_from_sender, {}", err));
-            }
+            save_mess_to_db(mess_for_send, db, &listener_name, &listener_topic);            
         }
     }
 }

@@ -39,9 +39,9 @@ fn main() {
 
     let array = vec![0; 100];
     let uuid = CString::new("1234").unwrap();
-    loop {
+    ////loop {
         println!("{} begin send_to", current_time_ms());       
-        for _ in 0..10000{
+        for _ in 0..100{
             liner::send_to(&mut c1, 
                 topic_2.as_ptr(),
                 uuid.as_ptr(),
@@ -49,8 +49,8 @@ fn main() {
         }
         println!("{} end send_to", current_time_ms());       
       
-        thread::sleep(time::Duration::from_millis(1000));
-    }
+        thread::sleep(time::Duration::from_millis(100000));
+   // }
 }
 
 fn current_time_ms()->u64{ 
@@ -59,29 +59,3 @@ fn current_time_ms()->u64{
     .unwrap()
     .as_millis() as u64
 }
-
-// use std::sync::{Arc, Mutex};
-
-// fn main() {
-//     let num_of_threads = 4;
-//     let mut array_of_threads = vec![];
-//     let counter = Arc::new(Mutex::new(false));
-
-//     for id in 0..num_of_threads {
-//         let counter_clone = counter.clone();
-//         array_of_threads.push(std::thread::spawn(move || print_lots(id, counter_clone)));
-//     }
-
-//     for t in array_of_threads {
-//         t.join().expect("Thread join failure");
-//     }
-// }
-
-// fn print_lots(id: u32, c: Arc<Mutex<bool>>) {
-//     println!("Begin [{}]", id);
-//     let _guard = c.lock().unwrap();
-//     for _i in 0..1000 {
-//         print!("{} ", id);
-//     }
-//     println!("\nEnd [{}]", id);
-// }
