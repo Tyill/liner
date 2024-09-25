@@ -40,7 +40,8 @@ impl Message {
         where T: Read
     {
         let indata = read_stream(stream);
-        if indata.len() == 0{
+        if indata.len() != 60{
+            println!("indata.len() != 60 {}", indata.len());
             return None;
         }
         let (topic_to, indata) = get_string(&indata);
@@ -64,6 +65,9 @@ impl Message {
                               std::mem::size_of::<u64>() + // number_mess 
                               std::mem::size_of::<u8>() +  // flags 
                               self.data.len() + std::mem::size_of::<i32>(); // data
+        if all_size != 60{
+            println!(" all_size != 60");
+        }
         let ok: bool = write_number(stream, all_size as i32) &&
                 write_string(stream, &self.topic_to) &&
                 write_string(stream, &self.topic_from) &&
@@ -73,6 +77,9 @@ impl Message {
                 write_number(stream, self.number_mess) && 
                 write_number(stream, self.flags) && 
                 write_bytes(stream, &self.data);
+        if !ok{
+            println!(" !ok");
+        }
         return ok;
     }
     pub fn at_least_once_delivery(&self)->bool{

@@ -37,20 +37,20 @@ fn main() {
     let localhost = CString::new("localhost:2256").unwrap();
     liner::run(&mut c2, topic_2.as_ptr(), localhost.as_ptr(), cb2);
 
-    let array = vec![0; 100];
+    let array = vec![0; 10];
     let uuid = CString::new("1234").unwrap();
-    ////loop {
+    loop {
         println!("{} begin send_to", current_time_ms());       
-        for _ in 0..100{
-            liner::send_to(&mut c1, 
+        for _ in 0..100000{
+            liner::send_to(&mut c1,   
                 topic_2.as_ptr(),
                 uuid.as_ptr(),
                 array.as_ptr(), array.len(), true);
         }
         println!("{} end send_to", current_time_ms());       
       
-        thread::sleep(time::Duration::from_millis(100000));
-   // }
+        thread::sleep(time::Duration::from_millis(1000));
+   }
 }
 
 fn current_time_ms()->u64{ 

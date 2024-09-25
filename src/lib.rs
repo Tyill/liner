@@ -56,15 +56,47 @@ pub extern "C" fn send_to(client: &mut Box<Option<Client>>,
 }
 
 #[no_mangle]
-pub extern "C" fn delete_client(c: Box<Option<Client>>){
-    drop(c.unwrap());
+pub extern "C" fn send_all(client: &mut Box<Option<Client>>,
+                          topic: *const i8,
+                          uuid: *const i8,
+                          data: *const u8, data_size: usize,
+                          at_least_once_delivery: bool)->bool{
+    unsafe {
+        let topic = CStr::from_ptr(topic).to_str().unwrap();
+        let uuid = CStr::from_ptr(uuid).to_str().unwrap();       
+        let data = std::slice::from_raw_parts(data, data_size);
+
+        let c = client.as_mut();
+        c.as_mut().unwrap().send_all(topic, uuid, data, at_least_once_delivery)
+    }    
 }
 
 #[no_mangle]
-pub extern "C" fn set_internal_thread_pool_size(_client: &mut Box<Option<Client>>, _num: u32){
-    
+pub extern "C" fn subscribe(client: &mut Box<Option<Client>>,
+                          topic: *const i8)->bool{
+    unsafe {
+        let topic = CStr::from_ptr(topic).to_str().unwrap();
+        
+        let c = client.as_mut();
+        c.as_mut().unwrap().subscribe(topic)
+    }    
 }
 
+#[no_mangle]
+pub extern "C" fn unsubscribe(client: &mut Box<Option<Client>>,
+                          topic: *const i8)->bool{
+    unsafe {
+        let topic = CStr::from_ptr(topic).to_str().unwrap();
+        
+        let c = client.as_mut();
+        c.as_mut().unwrap().unsubscribe(topic)
+    }    
+}
+
+#[no_mangle]
+pub extern "C" fn delete_client(c: Box<Option<Client>>){
+    drop(c.unwrap());
+}
 
 
 #[macro_export]

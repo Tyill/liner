@@ -51,9 +51,12 @@ where
         match stream.read(&mut buff[offs..rsz]) {
             Ok(n) => {                
                 if msz == 0 {
-                    offs += n;
+                    offs += n;                   
                     if offs == 4{
-                        msz = i32::from_be_bytes(u8_4(&buff[0..4]));                        
+                        msz = i32::from_be_bytes(u8_4(&buff[0..4])); 
+                        if msz != 60{
+                            println!(" msz != 60 {}, n {}",  msz, n);
+                        }      
                         assert!(msz > 0);
                         indata.reserve(msz as usize);
                         offs = 0;

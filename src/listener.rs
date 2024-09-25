@@ -161,7 +161,7 @@ fn read_stream(epoll_fd: RawFd,
             }
             set_last_mess_number(&db, &sender_name, &sender_topic, last_mess_num);
             stream.is_active = false;
-            continue_read_stream(epoll_fd, stream_fd);            
+            continue_read_stream(epoll_fd, stream_fd);  
         });
     }
 }

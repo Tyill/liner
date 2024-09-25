@@ -105,6 +105,101 @@ impl Client {
         *self.last_send_index.get_mut(topic).unwrap() = index + 1;
         return ok;
     }
+
+    pub fn send_all(&mut self, topic: &str, uuid: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
+        let _lock = self.mtx.lock();
+        if !self.is_run{
+            return false;
+        }
+        let addresses = self.db.get_addresses_of_topic(topic);
+        if let Err(err) = addresses{
+            print_error!(&format!("{}", err));
+            return false           
+        }
+        let addresses = addresses.unwrap();
+        if addresses.len() == 0{
+            print_error!(&format!("not found addr for topic {}", topic));
+            return false;
+        }       
+        if !self.last_send_index.contains_key(topic){
+            self.last_send_index.insert(topic.to_string(), 0);
+        }
+        let mut index = self.last_send_index[topic];
+        if index >= addresses.len(){
+            index = 0;
+        }
+        let addr = &addresses[index];
+        let ok = self.sender
+        .as_mut().unwrap().send_to(&mut self.db, addr, 
+                                topic, &self.topic, uuid, data, at_least_once_delivery);
+
+        *self.last_send_index.get_mut(topic).unwrap() = index + 1;
+        return ok;
+    }
+
+    pub fn subscribe(&mut self, topic: &str) -> bool {
+        return true;
+        // let _lock = self.mtx.lock();
+        // if !self.is_run{
+        //     return false;
+        // }
+        // let addresses = self.db.get_addresses_of_topic(topic);
+        // if let Err(err) = addresses{
+        //     print_error!(&format!("{}", err));
+        //     return false           
+        // }
+        // let addresses = addresses.unwrap();
+        // if addresses.len() == 0{
+        //     print_error!(&format!("not found addr for topic {}", topic));
+        //     return false;
+        // }       
+        // if !self.last_send_index.contains_key(topic){
+        //     self.last_send_index.insert(topic.to_string(), 0);
+        // }
+        // let mut index = self.last_send_index[topic];
+        // if index >= addresses.len(){
+        //     index = 0;
+        // }
+        // let addr = &addresses[index];
+        // let ok = self.sender
+       // .as_mut().unwrap().send_to(&mut self.db, addr, 
+      //                          topic, &self.topic, uuid, data, at_least_once_delivery);
+
+      //  *self.last_send_index.get_mut(topic).unwrap() = index + 1;
+       // return ok;
+    }
+
+    pub fn unsubscribe(&mut self, topic: &str) -> bool {
+        return true;
+        // let _lock = self.mtx.lock();
+        // if !self.is_run{
+        //     return false;
+        // }
+        // let addresses = self.db.get_addresses_of_topic(topic);
+        // if let Err(err) = addresses{
+        //     print_error!(&format!("{}", err));
+        //     return false           
+        // }
+        // let addresses = addresses.unwrap();
+        // if addresses.len() == 0{
+        //     print_error!(&format!("not found addr for topic {}", topic));
+        //     return false;
+        // }       
+        // if !self.last_send_index.contains_key(topic){
+        //     self.last_send_index.insert(topic.to_string(), 0);
+        // }
+        // let mut index = self.last_send_index[topic];
+        // if index >= addresses.len(){
+        //     index = 0;
+        // }
+        // let addr = &addresses[index];
+        // let ok = self.sender
+        // .as_mut().unwrap().send_to(&mut self.db, addr, 
+        //                         topic, &self.topic, uuid, data, at_least_once_delivery);
+
+        // *self.last_send_index.get_mut(topic).unwrap() = index + 1;
+        // return ok;
+    }
 }
 
 impl Drop for Client {
