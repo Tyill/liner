@@ -1,4 +1,3 @@
-use liner;
 use std::time::SystemTime;
 use std::ffi::CString;
 use std::{thread, time};
@@ -20,28 +19,30 @@ extern "C" fn cb2(_to: *const i8, _from: *const i8, _uuid: *const i8, _timestamp
   //  }
 }
 
-fn main() {
+fn  main() {
+    unsafe {
     let unique1 = CString::new("unique1").unwrap();
+    let unique2 = CString::new("unique2").unwrap();
     let dbpath = CString::new("redis://127.0.0.1/").unwrap();
-    let mut c1 = liner::new_client(unique1.as_ptr(), dbpath.as_ptr());
-
-    let topic_1 = CString::new("1").unwrap();
-    let localhost = CString::new("localhost:2255").unwrap();
-    liner::run(&mut c1, topic_1.as_ptr(), localhost.as_ptr(), cb1);
-
-     let unique2 = CString::new("unique2").unwrap();
-     let dbpath = CString::new("redis://127.0.0.1/").unwrap();
-     let mut c2 = liner::new_client(unique2.as_ptr(), dbpath.as_ptr());
 
     let topic_2 = CString::new("2").unwrap();
     let localhost = CString::new("localhost:2256").unwrap();
+    let mut c2 = liner::new_client(unique2.as_ptr(), dbpath.as_ptr());
     liner::run(&mut c2, topic_2.as_ptr(), localhost.as_ptr(), cb2);
 
-    let array = vec![0; 10];
+    thread::sleep(time::Duration::from_millis(1000));
+
+    let topic_1 = CString::new("1").unwrap();
+    let localhost = CString::new("localhost:2255").unwrap();
+    let mut c1 = liner::new_client(unique1.as_ptr(), dbpath.as_ptr());
+    liner::run(&mut c1, topic_1.as_ptr(), localhost.as_ptr(), cb1);
+    
+       
+    let array = [0; 100];
     let uuid = CString::new("1234").unwrap();
-    loop {
+    for _ in 0..10{
         println!("{} begin send_to", current_time_ms());       
-        for _ in 0..100000{
+        for _ in 0..10000{
             liner::send_to(&mut c1,   
                 topic_2.as_ptr(),
                 uuid.as_ptr(),
@@ -51,6 +52,7 @@ fn main() {
       
         thread::sleep(time::Duration::from_millis(1000));
    }
+}
 }
 
 fn current_time_ms()->u64{ 

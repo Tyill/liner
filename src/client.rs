@@ -25,7 +25,7 @@ pub struct Client{
 
 impl Client {
     pub fn new(unique_name: &str, redis_path: &str) -> Option<Client> {
-        let db = redis::Connect::new(&unique_name, redis_path).ok()?;
+        let db = redis::Connect::new(unique_name, redis_path).ok()?;
         Some(
             Self{
                 unique_name: unique_name.to_string(),
@@ -51,7 +51,7 @@ impl Client {
             return false;        
         }
         let listener = listener.unwrap();
-        if let Err(err) = self.db.regist_topic(topic, &localhost){
+        if let Err(err) = self.db.regist_topic(topic, localhost){
             print_error!(&format!("{}", err));
             return false;
         }
@@ -72,7 +72,7 @@ impl Client {
         self.stream_thread = Some(stream_thread);
         self.is_run = true;
 
-        return true;
+        true
     }
 
     pub fn send_to(&mut self, topic: &str, uuid: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
@@ -86,7 +86,7 @@ impl Client {
             return false           
         }
         let addresses = addresses.unwrap();
-        if addresses.len() == 0{
+        if addresses.is_empty(){
             print_error!(&format!("not found addr for topic {}", topic));
             return false;
         }       
@@ -103,7 +103,7 @@ impl Client {
                                    topic, &self.topic, uuid, data, at_least_once_delivery);
 
         *self.last_send_index.get_mut(topic).unwrap() = index + 1;
-        return ok;
+        ok
     }
 
     pub fn send_all(&mut self, topic: &str, uuid: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
@@ -117,7 +117,7 @@ impl Client {
             return false           
         }
         let addresses = addresses.unwrap();
-        if addresses.len() == 0{
+        if addresses.is_empty(){
             print_error!(&format!("not found addr for topic {}", topic));
             return false;
         }       
@@ -134,11 +134,11 @@ impl Client {
                                 topic, &self.topic, uuid, data, at_least_once_delivery);
 
         *self.last_send_index.get_mut(topic).unwrap() = index + 1;
-        return ok;
+        ok
     }
 
-    pub fn subscribe(&mut self, topic: &str) -> bool {
-        return true;
+    pub fn subscribe(&mut self, _topic: &str) -> bool {
+        true
         // let _lock = self.mtx.lock();
         // if !self.is_run{
         //     return false;
@@ -169,8 +169,8 @@ impl Client {
        // return ok;
     }
 
-    pub fn unsubscribe(&mut self, topic: &str) -> bool {
-        return true;
+    pub fn unsubscribe(&mut self, _topic: &str) -> bool {
+        true
         // let _lock = self.mtx.lock();
         // if !self.is_run{
         //     return false;

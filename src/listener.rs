@@ -89,7 +89,7 @@ impl Listener {
 fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
     match syscall!(epoll_wait(
         epoll_fd,
-        events.as_mut_ptr() as *mut libc::epoll_event,
+        events.as_mut_ptr(),
         settings::EPOLL_LISTEN_EVENTS_COUNT as i32,
         -1,
     )){
@@ -97,13 +97,13 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
             unsafe { 
                 events.set_len(ready_count as usize)
             };
-            return true;
+            true
         },
         Err(err)=>{
             unsafe {
                 events.set_len(0); 
             };            
-            return err.kind() == std::io::ErrorKind::Interrupted; 
+            err.kind() == std::io::ErrorKind::Interrupted 
         }
     }    
 }
@@ -143,14 +143,17 @@ fn read_stream(epoll_fd: RawFd,
         rayon::spawn(move || {
             let mut stream = stream.lock().unwrap();
             let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.stream.by_ref());
+            
+           // let mut buf: Vec<u8> = Vec::new();
+           // reader.read_to_end(&mut buf); 
             let mut last_mess_num: u64 = 0;
             let mut sender_name = String::new();
             let mut sender_topic = String::new();
             while let Some(mess) = Message::from_stream(reader.by_ref()){
                 if last_mess_num == 0{
                     last_mess_num = get_last_mess_number(&db, &mess.sender_name, &mess.topic_from);
-                    sender_name = mess.sender_name.clone();
-                    sender_topic = mess.topic_from.clone();
+                    sender_name.clone_from(&mess.sender_name);
+                    sender_topic.clone_from(&mess.topic_from);
                 }
                 if mess.number_mess > last_mess_num{
                     last_mess_num = mess.number_mess;
@@ -167,7 +170,7 @@ fn read_stream(epoll_fd: RawFd,
 }
 
 fn set_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, topic_from: &str, last_mess_num: u64){
-    if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(&sender_name, &topic_from, last_mess_num){
+    if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(sender_name, topic_from, last_mess_num){
         print_error!(&format!("couldn't db.set_last_mess_number: {}", err));
     }
 }
@@ -233,9 +236,6 @@ fn close_streams(streams: &mut HashMap<RawFd, Arc<Mutex<ReadStream>>>){
     for stream in streams.values(){
         if let Ok(mut stream) = stream.lock(){
             stream.is_close = true;
-            while stream.is_active {
-                thread::yield_now();
-            }
         }
     }
 }

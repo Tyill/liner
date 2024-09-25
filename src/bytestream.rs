@@ -7,21 +7,21 @@ pub fn get_string(indata: &[u8])->(String, &[u8])
     let mut offs = 0;
     let sz: usize = i32::from_be_bytes(u8_4(&indata[0..4])) as usize;               offs += 4;
     let to = String::from_utf8_lossy(&indata[offs..offs + sz]).to_string(); offs += sz;
-    return (to, &indata[offs..]);
+    (to, &indata[offs..])
 }
 
 pub fn get_u64(indata: &[u8])->(u64, &[u8])
 {
     let offs = std::mem::size_of::<u64>();
     let to = u64::from_be_bytes(u8_8(&indata[..offs]));
-    return (to, &indata[offs..]);
+    (to, &indata[offs..])
 }
 
 pub fn get_u8(indata: &[u8])->(u8, &[u8])
 {
     let offs = std::mem::size_of::<u8>();
     let to = indata[0];
-    return (to, &indata[offs..]);
+    (to, &indata[offs..])
 }
 
 pub fn get_array(indata: &[u8])->(&[u8], &[u8])
@@ -29,7 +29,7 @@ pub fn get_array(indata: &[u8])->(&[u8], &[u8])
     let mut offs = 0;
     let sz: usize = i32::from_be_bytes(u8_4(&indata[0..4])) as usize; offs += 4;
     let to = &indata[offs..offs + sz]; offs += sz;
-    return (to, &indata[offs..]);
+    (to, &indata[offs..])
 }
 
 
@@ -54,9 +54,9 @@ where
                     offs += n;                   
                     if offs == 4{
                         msz = i32::from_be_bytes(u8_4(&buff[0..4])); 
-                        if msz != 60{
-                            println!(" msz != 60 {}, n {}",  msz, n);
-                        }      
+                        // if msz != 51{
+                        //     println!(" msz != 51 {}, n {}",  msz, n);
+                        // }      
                         assert!(msz > 0);
                         indata.reserve(msz as usize);
                         offs = 0;
@@ -85,7 +85,7 @@ where
             }
         }
     }
-    return indata;
+    indata
 }
 
 fn u8_4(b: &[u8]) -> [u8; 4] {
@@ -101,9 +101,7 @@ where
 {
     let str = str.as_bytes();
     let str_size = (str.len() as i32).to_be_bytes();
-    let ok = write_stream(stream, &str_size) &
-                   write_stream(stream, &str);
-    return ok;
+    write_stream(stream, &str_size) && write_stream(stream, str)
 }
 
 pub fn write_number<T, U>(stream: &mut T, v: U)->bool
@@ -111,8 +109,7 @@ where
     T: Write,
     U: ToBeBytes,
 {
-    let ok = write_stream(stream, v.to_be_bytes().as_ref());
-    return ok;
+    write_stream(stream, v.to_be_bytes().as_ref())
 }
 pub trait ToBeBytes {
     type ByteArray: AsRef<[u8]>;
@@ -142,9 +139,7 @@ where
     T: Write,
 {
     let data_size = (data.len() as i32).to_be_bytes();
-    let ok = write_stream(stream, &data_size) &
-                   write_stream(stream, &data);
-    return ok;
+    write_stream(stream, &data_size) && write_stream(stream, data)
 }
 
 fn write_stream<T>(stream: &mut T, data: &[u8])->bool
@@ -171,5 +166,5 @@ where
             },            
         }
     }
-    return wsz == dsz;
+    wsz == dsz
 }

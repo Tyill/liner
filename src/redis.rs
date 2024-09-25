@@ -27,7 +27,7 @@ impl Connect {
         })
     }    
     pub fn redis_path(&self)->String{
-        return self.conn_str.clone();
+        self.conn_str.clone()
     }
     pub fn set_source_topic(&mut self, topic: &str){
         self.source_topic = topic.to_string();
@@ -82,11 +82,7 @@ impl Connect {
         let key = format!("{}:{}:{}:{}", sender_name, sender_topic, self.unique_name, self.source_topic);
         let dbconn = self.get_dbconn()?;
         dbconn.set(&format!("connection:{}:mess_number", key), val)?;
-        if self.last_mess_number.contains_key(&key){
-            *self.last_mess_number.get_mut(&key).unwrap() = val;
-        }else{
-            self.last_mess_number.insert(key, val);
-        }
+        self.last_mess_number.insert(key, val);
         Ok(())
     }  
     pub fn get_last_mess_number_for_listener(&mut self, sender_name: &str, sender_topic: &str)->RedisResult<u64>{

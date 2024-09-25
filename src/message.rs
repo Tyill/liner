@@ -40,8 +40,11 @@ impl Message {
         where T: Read
     {
         let indata = read_stream(stream);
-        if indata.len() != 60{
-            println!("indata.len() != 60 {}", indata.len());
+        // if indata.len() != 51 && indata.len() > 0{
+        //     println!("indata.len() != 51 {}", indata.len());
+        //     return None;
+        // }
+        if indata.is_empty(){
             return None;
         }
         let (topic_to, indata) = get_string(&indata);
@@ -65,22 +68,21 @@ impl Message {
                               std::mem::size_of::<u64>() + // number_mess 
                               std::mem::size_of::<u8>() +  // flags 
                               self.data.len() + std::mem::size_of::<i32>(); // data
-        if all_size != 60{
-            println!(" all_size != 60");
-        }
-        let ok: bool = write_number(stream, all_size as i32) &&
-                write_string(stream, &self.topic_to) &&
-                write_string(stream, &self.topic_from) &&
-                write_string(stream, &self.sender_name) &&
-                write_string(stream, &self.uuid) &&
-                write_number(stream, self.timestamp) && 
-                write_number(stream, self.number_mess) && 
-                write_number(stream, self.flags) && 
-                write_bytes(stream, &self.data);
-        if !ok{
-            println!(" !ok");
-        }
-        return ok;
+        // if all_size != 51{
+        //     println!(" all_size != 51");
+        // }
+        write_number(stream, all_size as i32) &&
+        write_string(stream, &self.topic_to) &&
+        write_string(stream, &self.topic_from) &&
+        write_string(stream, &self.sender_name) &&
+        write_string(stream, &self.uuid) &&
+        write_number(stream, self.timestamp) && 
+        write_number(stream, self.number_mess) && 
+        write_number(stream, self.flags) && 
+        write_bytes(stream, &self.data)
+        // if !ok{
+        //     println!(" !ok");
+        // }
     }
     pub fn at_least_once_delivery(&self)->bool{
         self.flags & mess_flags::AT_LEAST_ONCE_DELIVERY > 0

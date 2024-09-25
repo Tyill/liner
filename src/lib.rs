@@ -10,9 +10,9 @@ use crate::client::Client;
 
 use std::ffi::CStr;
 
-
+/// # Safety
 #[no_mangle]
-pub extern "C" fn new_client(unique_name: *const i8,
+pub unsafe extern "C" fn new_client(unique_name: *const i8,
                        redis_path: *const i8,
                        )->Box<Option<Client>>{
     unsafe{
@@ -25,8 +25,9 @@ pub extern "C" fn new_client(unique_name: *const i8,
 
 type UCback = extern "C" fn(to: *const i8, from: *const i8, uuid: *const i8, timestamp: u64, data: *const u8, dsize: usize);
 
+/// # Safety
 #[no_mangle]
-pub extern "C" fn run(client: &mut Box<Option<Client>>, 
+pub unsafe extern "C" fn run(client: &mut Box<Option<Client>>, 
                       topic: *const i8, 
                       localhost: *const i8,
                       receive_cb: UCback)->bool{
@@ -38,9 +39,9 @@ pub extern "C" fn run(client: &mut Box<Option<Client>>,
         c.as_mut().unwrap().run(topic, localhost, receive_cb)
     }
 }
-
+/// # Safety
 #[no_mangle]
-pub extern "C" fn send_to(client: &mut Box<Option<Client>>,
+pub unsafe extern "C" fn send_to(client: &mut Box<Option<Client>>,
                           topic: *const i8,
                           uuid: *const i8,
                           data: *const u8, data_size: usize,
@@ -54,9 +55,9 @@ pub extern "C" fn send_to(client: &mut Box<Option<Client>>,
         c.as_mut().unwrap().send_to(topic, uuid, data, at_least_once_delivery)
     }    
 }
-
+/// # Safety
 #[no_mangle]
-pub extern "C" fn send_all(client: &mut Box<Option<Client>>,
+pub unsafe extern "C" fn send_all(client: &mut Box<Option<Client>>,
                           topic: *const i8,
                           uuid: *const i8,
                           data: *const u8, data_size: usize,
@@ -70,9 +71,9 @@ pub extern "C" fn send_all(client: &mut Box<Option<Client>>,
         c.as_mut().unwrap().send_all(topic, uuid, data, at_least_once_delivery)
     }    
 }
-
+/// # Safety
 #[no_mangle]
-pub extern "C" fn subscribe(client: &mut Box<Option<Client>>,
+pub unsafe extern "C" fn subscribe(client: &mut Box<Option<Client>>,
                           topic: *const i8)->bool{
     unsafe {
         let topic = CStr::from_ptr(topic).to_str().unwrap();
@@ -81,16 +82,14 @@ pub extern "C" fn subscribe(client: &mut Box<Option<Client>>,
         c.as_mut().unwrap().subscribe(topic)
     }    
 }
-
+/// # Safety
 #[no_mangle]
-pub extern "C" fn unsubscribe(client: &mut Box<Option<Client>>,
+pub unsafe extern "C" fn unsubscribe(client: &mut Box<Option<Client>>,
                           topic: *const i8)->bool{
-    unsafe {
-        let topic = CStr::from_ptr(topic).to_str().unwrap();
-        
-        let c = client.as_mut();
-        c.as_mut().unwrap().unsubscribe(topic)
-    }    
+    let topic = CStr::from_ptr(topic).to_str().unwrap();
+    
+    let c = client.as_mut();
+    c.as_mut().unwrap().unsubscribe(topic)
 }
 
 #[no_mangle]
