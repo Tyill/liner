@@ -6,6 +6,7 @@ mod listener;
 mod sender;
 mod settings;
 mod common;
+mod memarena;
 use crate::client::Client;
 
 use std::ffi::CStr;

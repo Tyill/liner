@@ -8,32 +8,35 @@ mod mess_flags {
     pub const _COMPRESS: u8 = 0x01;
     pub const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
 }
-pub struct Message {
-    pub topic_to: String,
-    pub topic_from: String,
-    pub sender_name: String,
-    pub uuid: String,
-    pub timestamp: u64,
-    pub number_mess: u64,
-    pub flags: u8,
-    pub data: Vec<u8>,
+pub struct Message<'a>{
+    pub topic_to: &'a[u8],    
+    pub topic_from: &'a[u8],
+    pub sender_name: &'a[u8],
+    pub uuid: &'a[u8],
+    pub timestamp: &'a[u8],
+    pub number_mess: &'a[u8],
+    pub flags: &'a[u8],
+    pub data: &'a[u8],
+
+    buf: Vec<u8>,
 }
 
-impl Message {
-    pub fn new(to: &str, from: &str, sender_name: &str, uuid: &str, number_mess: u64, data: &[u8], at_least_once_delivery: bool) -> Message {
+impl <'b>Message<'b> {
+    pub fn new(to: &'b str, from: &str, sender_name: &str, uuid: &str, number_mess: u64, data: &[u8], at_least_once_delivery: bool) -> Message {
         let mut flags = 0;
         if at_least_once_delivery{
             flags |= mess_flags::AT_LEAST_ONCE_DELIVERY;
         }
         Self {
-            topic_to: to.to_string(),
-            topic_from: from.to_string(),
-            sender_name: sender_name.to_string(),
-            uuid: uuid.to_string(),
-            timestamp: common::current_time_ms(),
+            topic_to: to.as_bytes(),
+            topic_from: from.as_bytes(),
+            sender_name: sender_name.as_bytes(),
+            uuid: uuid.as_bytes(),
+            timestamp: common::current_time_ms().as_bytes(),
             number_mess,
             flags,
             data: data.to_owned(),
+            buf: Vec::new()
         }
     }    
     pub fn from_stream<T>(stream: &mut T) -> Option<Message>
