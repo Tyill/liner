@@ -19,7 +19,7 @@ pub struct Message {
     pub data: Vec<u8>,
 }
 
-impl Message {
+impl Message { 
     pub fn new(to: &str, from: &str, sender_name: &str, uuid: &str, number_mess: u64, data: &[u8], at_least_once_delivery: bool) -> Message {
         let mut flags = 0;
         if at_least_once_delivery{

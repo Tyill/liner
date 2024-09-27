@@ -37,7 +37,7 @@ struct WriteStream{
     last_send_mess_number: u64,
     is_active: bool,
     is_close: bool,
-}
+} 
 
 #[derive(Clone)]
 struct Address{
