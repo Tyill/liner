@@ -1,47 +1,70 @@
 use crate::bytestream::{read_stream, get_string, get_u64, get_u8, get_array,
                         write_string, write_number, write_bytes};
-use crate::memarea::Memarea;
-use std::cell::{RefCell, RefMut};
 use crate::common;
-
+use crate::mempool::{Mempool, Span};
 use std::io::{Write, Read};
-use std::marker;
 
-mod mess_flags {
-    pub const _COMPRESS: u8 = 0x01;
-    pub const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
+const _COMPRESS: u8 = 0x01;
+const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
+
+pub struct Message{
+    all: Span,
+    topic_to: Span,
+    topic_from: Span,
+    sender_name: Span,
+    uuid: Span,
+    timestamp: Span,
+    number_mess: Span,
+    flags: Span,
+    data: Span,
 }
 
-
-
-pub struct Message<'a>{
-    topic_to: &'a [u8],
-    topic_from: &'a[u8],
-    // sender_name: &'a[u8],
-    // uuid: &'a[u8],
-    // timestamp: &'a[u8],
-    // number_mess: &'a[u8],
-    // flags: &'a[u8],
-    // data: &'a[u8],
-}
-
-impl Message<'_>{
-    pub fn new<'a>(memarea: &'a mut Memarea, to: &str, from: &str, sender_name: &str, uuid: &str, number_mess: u64, data: &[u8], at_least_once_delivery: bool) -> Message<'a> {
+impl Message{
+    pub fn new(mempool: &mut Mempool, to: &str, from: &str, sender_name: &str, uuid: &str, number_mess: u64, data: &[u8], at_least_once_delivery: bool) -> Message {
         let mut flags = 0;
         if at_least_once_delivery{
-            flags |= mess_flags::AT_LEAST_ONCE_DELIVERY;
+            flags |= AT_LEAST_ONCE_DELIVERY;
         }
-        let rr = memarea.alloc_str(from);
-        Message{
-            topic_to: memarea.alloc_str(to),
-            topic_from: rr,
-            //  sender_name: memarea.borrow_mut().alloc_str(sender_name),
-            //  uuid: memarea.borrow_mut().alloc_str(uuid),
-            //  timestamp: memarea.borrow_mut().alloc_num(common::current_time_ms()),
-            //  number_mess: memarea.borrow_mut().alloc_num(number_mess),
-            //  flags: memarea.borrow_mut().alloc_num(flags),
-            //  data: memarea.borrow_mut().alloc_array(data),
-        }
+        let to_len = to.len() + std::mem::size_of::<i32>();
+        let from_len = from.len() + std::mem::size_of::<i32>();
+        let sender_name_len = sender_name.len() + std::mem::size_of::<i32>();
+        let uuid_len = uuid.len() + std::mem::size_of::<i32>();
+        let data_len = data.len() + std::mem::size_of::<i32>();
+
+        let all_size = std::mem::size_of::<i32>() +  // all_size
+            to_len  +
+            from_len  +
+            sender_name_len +
+            uuid_len + 
+            std::mem::size_of::<u64>() +                    // timestamp
+            std::mem::size_of::<u64>() +                    // number_mess 
+            std::mem::size_of::<u8>() +                     // flags 
+            data_len;                                       // data
+
+        let all = mempool.alloc(all_size);
+        let mut offs: usize = std::mem::size_of::<i32>();
+    
+        let mess = Self{
+            all: all.clone(),
+            topic_to:    Span::new_with_offs(offs, to_len, &mut offs),
+            topic_from:  Span::new_with_offs(offs, from_len, &mut offs),
+            sender_name: Span::new_with_offs(offs, sender_name_len, &mut offs),
+            uuid:        Span::new_with_offs(offs, uuid_len, &mut offs),
+            timestamp:   Span::new_with_offs(offs, std::mem::size_of::<u64>(), &mut offs),
+            number_mess: Span::new_with_offs(offs, std::mem::size_of::<u64>(), &mut offs),
+            flags:       Span::new_with_offs(offs, std::mem::size_of::<u8>(), &mut offs),
+            data:        Span::new_with_offs(offs, data_len, &mut offs),
+        };
+        mempool.write_num(all.pos(), all_size as i32);
+        mempool.write_str(mess.topic_to.pos(), to);
+        mempool.write_str(mess.topic_from.pos(), from);
+        mempool.write_str(mess.sender_name.pos(), sender_name);
+        mempool.write_str(mess.uuid.pos(), uuid);
+        mempool.write_num(mess.timestamp.pos(), common::current_time_ms());
+        mempool.write_num(mess.number_mess.pos(), number_mess);
+        mempool.write_num(mess.number_mess.pos(), flags);
+        mempool.write_array(mess.data.pos(), data);
+        mess
     }    
     pub fn from_stream<T>(stream: &mut T) -> Option<Message>
         where T: Read
