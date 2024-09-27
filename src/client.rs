@@ -133,7 +133,7 @@ impl Client {
             return false;
         }
         if topic == self.topic{
-            print_error!("you can't delete your own topic");
+            print_error!("you can't subscribe on your own topic");
             return false;
         }
         if let Err(err) = self.db.regist_topic(topic){
@@ -149,7 +149,7 @@ impl Client {
             return false;
         }
         if topic == self.topic{
-            print_error!("you can't delete your own topic");
+            print_error!("you can't unsubscribe on your own topic");
             return false;
         }
         if let Err(err) = self.db.unregist_topic(topic){
