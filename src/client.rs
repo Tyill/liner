@@ -21,6 +21,7 @@ pub struct Client{
     is_run: bool,
     mtx: Mutex<()>,
     stream_thread: Option<JoinHandle<()>>,
+    address_topic: Vec<String>,
 }
 
 impl Client {
@@ -37,6 +38,7 @@ impl Client {
                 is_run: false,
                 mtx: Mutex::new(()),
                 stream_thread: None,
+                address_topic: Vec::new(),
             }
         )
     }
@@ -51,7 +53,9 @@ impl Client {
             return false;        
         }
         let listener = listener.unwrap();
-        if let Err(err) = self.db.regist_topic(topic, localhost){
+        self.db.set_source_topic(topic);
+        self.db.set_source_localhost(localhost);
+        if let Err(err) = self.db.regist_topic(topic){
             print_error!(&format!("{}", err));
             return false;
         }
@@ -80,13 +84,10 @@ impl Client {
         if !self.is_run{
             return false;
         }
-        let addresses = self.db.get_addresses_of_topic(topic);
-        if let Err(err) = addresses{
-            print_error!(&format!("{}", err));
+        if !get_address_topic(topic, &mut self.db, &mut self.address_topic){
             return false           
         }
-        let addresses = addresses.unwrap();
-        if addresses.is_empty(){
+        if self.address_topic.is_empty(){
             print_error!(&format!("not found addr for topic {}", topic));
             return false;
         }       
@@ -94,13 +95,13 @@ impl Client {
             self.last_send_index.insert(topic.to_string(), 0);
         }
         let mut index = self.last_send_index[topic];
-        if index >= addresses.len(){
+        if index >= self.address_topic.len(){
             index = 0;
         }
-        let addr = &addresses[index];
+        let addr = &self.address_topic[index];
         let ok = self.sender
         .as_mut().unwrap().send_to(&mut self.db, addr, 
-                                   topic, &self.topic, uuid, data, at_least_once_delivery);
+                                topic, &self.topic, uuid, data, at_least_once_delivery);
 
         *self.last_send_index.get_mut(topic).unwrap() = index + 1;
         ok
@@ -111,95 +112,68 @@ impl Client {
         if !self.is_run{
             return false;
         }
-        let addresses = self.db.get_addresses_of_topic(topic);
-        if let Err(err) = addresses{
-            print_error!(&format!("{}", err));
+        if !get_address_topic(topic, &mut self.db, &mut self.address_topic){
             return false           
         }
-        let addresses = addresses.unwrap();
-        if addresses.is_empty(){
+        if self.address_topic.is_empty(){
             print_error!(&format!("not found addr for topic {}", topic));
             return false;
         }       
-        if !self.last_send_index.contains_key(topic){
-            self.last_send_index.insert(topic.to_string(), 0);
+        let mut ok = false;
+        for addr in &self.address_topic{
+            ok &= self.sender.as_mut().unwrap().send_to(&mut self.db, addr, 
+                                    topic, &self.topic, uuid, data, at_least_once_delivery);
         }
-        let mut index = self.last_send_index[topic];
-        if index >= addresses.len(){
-            index = 0;
-        }
-        let addr = &addresses[index];
-        let ok = self.sender
-        .as_mut().unwrap().send_to(&mut self.db, addr, 
-                                topic, &self.topic, uuid, data, at_least_once_delivery);
-
-        *self.last_send_index.get_mut(topic).unwrap() = index + 1;
         ok
     }
 
-    pub fn subscribe(&mut self, _topic: &str) -> bool {
-        true
-        // let _lock = self.mtx.lock();
-        // if !self.is_run{
-        //     return false;
-        // }
-        // let addresses = self.db.get_addresses_of_topic(topic);
-        // if let Err(err) = addresses{
-        //     print_error!(&format!("{}", err));
-        //     return false           
-        // }
-        // let addresses = addresses.unwrap();
-        // if addresses.len() == 0{
-        //     print_error!(&format!("not found addr for topic {}", topic));
-        //     return false;
-        // }       
-        // if !self.last_send_index.contains_key(topic){
-        //     self.last_send_index.insert(topic.to_string(), 0);
-        // }
-        // let mut index = self.last_send_index[topic];
-        // if index >= addresses.len(){
-        //     index = 0;
-        // }
-        // let addr = &addresses[index];
-        // let ok = self.sender
-       // .as_mut().unwrap().send_to(&mut self.db, addr, 
-      //                          topic, &self.topic, uuid, data, at_least_once_delivery);
-
-      //  *self.last_send_index.get_mut(topic).unwrap() = index + 1;
-       // return ok;
+    pub fn subscribe(&mut self, topic: &str) -> bool {
+        let _lock = self.mtx.lock();
+        if !self.is_run{
+            return false;
+        }
+        if topic == self.topic{
+            print_error!("you can't delete your own topic");
+            return false;
+        }
+        if let Err(err) = self.db.regist_topic(topic){
+            print_error!(&format!("{}", err));
+            return false;
+        }        
+        return true;
     }
 
-    pub fn unsubscribe(&mut self, _topic: &str) -> bool {
-        true
-        // let _lock = self.mtx.lock();
-        // if !self.is_run{
-        //     return false;
-        // }
-        // let addresses = self.db.get_addresses_of_topic(topic);
-        // if let Err(err) = addresses{
-        //     print_error!(&format!("{}", err));
-        //     return false           
-        // }
-        // let addresses = addresses.unwrap();
-        // if addresses.len() == 0{
-        //     print_error!(&format!("not found addr for topic {}", topic));
-        //     return false;
-        // }       
-        // if !self.last_send_index.contains_key(topic){
-        //     self.last_send_index.insert(topic.to_string(), 0);
-        // }
-        // let mut index = self.last_send_index[topic];
-        // if index >= addresses.len(){
-        //     index = 0;
-        // }
-        // let addr = &addresses[index];
-        // let ok = self.sender
-        // .as_mut().unwrap().send_to(&mut self.db, addr, 
-        //                         topic, &self.topic, uuid, data, at_least_once_delivery);
-
-        // *self.last_send_index.get_mut(topic).unwrap() = index + 1;
-        // return ok;
+    pub fn unsubscribe(&mut self, topic: &str) -> bool {
+        let _lock = self.mtx.lock();
+        if !self.is_run{
+            return false;
+        }
+        if topic == self.topic{
+            print_error!("you can't delete your own topic");
+            return false;
+        }
+        if let Err(err) = self.db.unregist_topic(topic){
+            print_error!(&format!("{}", err));
+            return false;
+        }        
+        return true;
     }
+}
+
+fn get_address_topic(topic: &str, db: &mut redis::Connect, address_topic: &mut Vec<String>)->bool{
+    if address_topic.is_empty(){
+        let addresses = db.get_addresses_of_topic(topic);
+        if let Err(err) = addresses{
+            print_error!(&format!("{}", err));
+            return false;           
+        }
+        *address_topic = addresses.unwrap();
+        if address_topic.is_empty(){
+            print_error!(&format!("not found addr for topic {}", topic));
+            return false;
+        }  
+    }
+    true
 }
 
 impl Drop for Client {

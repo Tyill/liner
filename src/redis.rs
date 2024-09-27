@@ -6,6 +6,7 @@ use std::collections::HashMap;
 pub struct Connect{
     unique_name: String,
     source_topic: String,
+    source_localhost: String,
     conn_str: String,
     conn: redis::Connection,
     topic_addr_cache: HashMap<String, Vec<String>>, // key: topic, value: addrs
@@ -19,6 +20,7 @@ impl Connect {
         Ok(Connect{
             unique_name: unique_name.to_string(),
             source_topic: "".to_string(),
+            source_localhost: "".to_string(),
             conn_str: conn_str.to_string(),
             conn,
             topic_addr_cache: HashMap::new(),  
@@ -31,14 +33,26 @@ impl Connect {
     }
     pub fn set_source_topic(&mut self, topic: &str){
         self.source_topic = topic.to_string();
+    } 
+    pub fn set_source_localhost(&mut self, localhost: &str){
+        self.source_localhost = localhost.to_string();
     }    
-    pub fn regist_topic(&mut self, topic: &str, addr: &str)->RedisResult<()>{
-        self.source_topic = topic.to_string();
+    pub fn regist_topic(&mut self, topic: &str)->RedisResult<()>{
+        let localhost = self.source_localhost.to_string();
         let unique: String = self.unique_name.to_string();
         let dbconn = self.get_dbconn()?;
-        dbconn.hset(&format!("topic:{}:addr", topic), addr, unique)?;
+        dbconn.hset(&format!("topic:{}:addr", topic), localhost, unique)?;
+        self.init_addresses_of_topic(topic)?;
         Ok(())
     }
+    pub fn unregist_topic(&mut self, topic: &str)->RedisResult<()>{
+        let localhost = self.source_localhost.to_string();
+        let dbconn = self.get_dbconn()?;
+        dbconn.hdel(&format!("topic:{}:addr", topic), localhost)?;
+        self.init_addresses_of_topic(topic)?;
+        Ok(())
+    }
+       
     pub fn save_listener_for_sender(&mut self, listener_addr: &str, listener_topic: &str)->RedisResult<()>{
         let key = format!("{}:{}", self.unique_name, self.source_topic);
         let dbconn = self.get_dbconn()?;
