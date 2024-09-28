@@ -54,9 +54,6 @@ where
                     offs += n;                   
                     if offs == 4{
                         msz = i32::from_be_bytes(u8_4(&buff[0..4])); 
-                        // if msz != 51{
-                        //     println!(" msz != 51 {}, n {}",  msz, n);
-                        // }      
                         assert!(msz > 0);
                         indata.reserve(msz as usize);
                         offs = 0;
