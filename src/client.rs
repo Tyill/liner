@@ -62,11 +62,11 @@ impl Client {
         let (tx_prodr, rx_prodr) = mpsc::channel::<Message>();
         let stream_thread = thread::spawn(move||{ 
             for m in rx_prodr.iter(){
-                receive_cb(m.topic_to.as_ptr() as *const i8,
-                        m.topic_from.as_ptr() as *const i8, 
-                        m.uuid.as_ptr() as *const i8, 
-                        m.timestamp, 
-                        m.data.as_ptr(), m.data.len());
+                // receive_cb(m.topic_to.as_ptr() as *const i8,
+                //         m.topic_from.as_ptr() as *const i8, 
+                //         m.uuid.as_ptr() as *const i8, 
+                //         m.timestamp, 
+                //         m.data.as_ptr(), m.data.len());
             }
         });  
         self.topic = topic.to_string();      

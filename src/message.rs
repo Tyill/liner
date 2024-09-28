@@ -1,122 +1,104 @@
-use crate::bytestream::{read_stream, get_string, get_u64, get_u8, get_array,
-                        write_string, write_number, write_bytes};
-use crate::common;
+use crate::bytestream;
 use crate::mempool::{Mempool, Span};
 use std::io::{Write, Read};
 
 const _COMPRESS: u8 = 0x01;
 const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
 
-pub struct Message{
-    all: Span,
-    topic_to: Span,
-    topic_from: Span,
-    sender_name: Span,
-    uuid: Span,
-    timestamp: Span,
-    number_mess: Span,
-    flags: Span,
-    data: Span,
-}
+pub struct Message(Span);
+   // number_mess
+   // flags
+   // sender_topic
+   // sender_name
+   // uuid
+   // timestamp
+   // data
 
 impl Message{
-    pub fn new(mempool: &mut Mempool, to: &str, from: &str, sender_name: &str, uuid: &str, number_mess: u64, data: &[u8], at_least_once_delivery: bool) -> Message {
+    pub fn new(mempool: &mut Mempool, sender_topic: &str, sender_name: &str,
+               uuid: &str, number_mess: u64, data: &[u8], at_least_once_delivery: bool, timestamp: u64) -> Message {
         let mut flags = 0;
         if at_least_once_delivery{
             flags |= AT_LEAST_ONCE_DELIVERY;
         }
-        let mess = make_mess(mempool, to, from, sender_name, uuid, data);
-       
-        mempool.write_num(mess.all.pos(), mess.all.size() as i32);
-        mempool.write_str(mess.topic_to.pos(), to);
-        mempool.write_str(mess.topic_from.pos(), from);
-        mempool.write_str(mess.sender_name.pos(), sender_name);
-        mempool.write_str(mess.uuid.pos(), uuid);
-        mempool.write_num(mess.timestamp.pos(), common::current_time_ms());
-        mempool.write_num(mess.number_mess.pos(), number_mess);
-        mempool.write_num(mess.flags.pos(), flags);
-        mempool.write_array(mess.data.pos(), data);
-        mess
+        let all_len = std::mem::size_of::<u32>();
+        let number_mess_len = std::mem::size_of::<u64>();
+        let flags_len = std::mem::size_of::<u8>();
+        let sender_topic_len = sender_topic.len() + std::mem::size_of::<u32>();
+        let sender_name_len = sender_name.len() + std::mem::size_of::<u32>();
+        let uuid_len = uuid.len() + std::mem::size_of::<u32>();
+        let timestamp_len = std::mem::size_of::<u64>();
+        let data_len = data.len() + std::mem::size_of::<u32>();
+
+        let all_size = std::mem::size_of::<i32>() +                
+            number_mess_len +                 
+            flags_len +       
+            sender_topic_len  +
+            sender_name_len  +
+            uuid_len + 
+            timestamp_len +                    
+            data_len;                         
+
+        let all = mempool.alloc(all_size);
+        let number_mess_pos = all.pos() + all_len; 
+        let flags_pos = number_mess_pos + number_mess_len;
+        let sender_topic_pos = flags_pos + flags_len;
+        let sender_name_pos = sender_topic_pos + sender_topic_len;
+        let uuid_pos = sender_name_pos + sender_name_len;
+        let timestamp_pos = uuid_pos + uuid_len;
+        let data_pos = timestamp_pos + timestamp_len;
+                     
+        mempool.write_num(all.pos(), (all_size - all_len) as i32);
+        mempool.write_num(number_mess_pos, number_mess);
+        mempool.write_num(flags_pos, flags);
+        mempool.write_str(sender_topic_pos, sender_topic);
+        mempool.write_str(sender_name_pos, sender_name);
+        mempool.write_str(uuid_pos, uuid);
+        mempool.write_num(timestamp_pos, timestamp);
+        mempool.write_array(data_pos, data);
+
+        Message(all)
     }    
     pub fn from_stream<T>(mempool: &mut Mempool, stream: &mut T) -> Option<Message>
         where T: Read
     {
-        let indata = read_stream(stream);
+        let indata = bytestream::read_stream(stream);
         if indata.is_empty(){
             return None;
         }
         let all = mempool.alloc(indata.len() + std::mem::size_of::<u32>());
-        let mut offs: usize = std::mem::size_of::<i32>();
 
-
-    
-        make_mess(mempool, to, from, sender_name, uuid, data)
+        mempool.write_num(all.pos(), indata.len() as i32);
+        mempool.write_array(all.pos() + std::mem::size_of::<u32>(), &indata);
+              
+        Some(Message(all))
     }
-    pub fn to_stream<T>(&self, stream: &mut T)->bool 
+    pub fn to_stream<T>(&self, mempool: &Mempool, stream: &mut T)->bool 
         where T: Write
-    {
-        let all_size = self.all_size();
-        // if all_size != 51{
-        //     println!(" all_size != 51");
-        // }
-        write_number(stream, all_size as i32) &&
-        write_string(stream, &self.topic_to) &&
-        write_string(stream, &self.topic_from) &&
-        write_string(stream, &self.sender_name) &&
-        write_string(stream, &self.uuid) &&
-        write_number(stream, self.timestamp) && 
-        write_number(stream, self.number_mess) && 
-        write_number(stream, self.flags) && 
-        write_bytes(stream, &self.data)
-        // if !ok{
-        //     println!(" !ok");
-        // }
+    {        
+        bytestream::write_stream(stream, mempool.read_array(self.0.pos()))       
     }
-    pub fn at_least_once_delivery(&self)->bool{
-        self.flags[0] & mess_flags::AT_LEAST_ONCE_DELIVERY > 0
+    pub fn number_mess(&self, mempool: &Mempool)->u64{
+        let all_len = std::mem::size_of::<u32>(); 
+        mempool.read_u64(self.0.pos() + all_len)
     }
-
-    fn all_size(&self)->usize{
-        self.topic_to.len() + std::mem::size_of::<i32>() +
-        self.topic_from.len() + std::mem::size_of::<i32>() +
-        self.sender_name.len() + std::mem::size_of::<i32>() +
-        self.uuid.len() + std::mem::size_of::<i32>() +
-        std::mem::size_of::<u64>() + // timestamp
-        std::mem::size_of::<u64>() + // number_mess 
-        std::mem::size_of::<u8>() +  // flags 
-        self.data.len() + std::mem::size_of::<i32>() // data
+    pub fn at_least_once_delivery(&self, mempool: &Mempool)->bool{
+        let all_len = std::mem::size_of::<u32>();
+        let number_mess_len = std::mem::size_of::<u64>();        
+        mempool.read_u8(self.0.pos() + all_len + number_mess_len) & AT_LEAST_ONCE_DELIVERY > 0
     }
-}
-
-fn make_mess(mempool: &mut Mempool, to: &str, from: &str, sender_name: &str, uuid: &str, data: &[u8])->Message{
-    let to_len = to.len() + std::mem::size_of::<i32>();
-    let from_len = from.len() + std::mem::size_of::<i32>();
-    let sender_name_len = sender_name.len() + std::mem::size_of::<i32>();
-    let uuid_len = uuid.len() + std::mem::size_of::<i32>();
-    let data_len = data.len() + std::mem::size_of::<i32>();
-
-    let all_size = std::mem::size_of::<i32>() +  // all_size
-        to_len  +
-        from_len  +
-        sender_name_len +
-        uuid_len + 
-        std::mem::size_of::<u64>() +                    // timestamp
-        std::mem::size_of::<u64>() +                    // number_mess 
-        std::mem::size_of::<u8>() +                     // flags 
-        data_len;                                       // data
-
-    let all = mempool.alloc(all_size);
-    let mut offs: usize = std::mem::size_of::<i32>();
-
-    Message{
-        all: all.clone(),
-        topic_to:    Span::new_with_offs(offs, to_len, &mut offs),
-        topic_from:  Span::new_with_offs(offs, from_len, &mut offs),
-        sender_name: Span::new_with_offs(offs, sender_name_len, &mut offs),
-        uuid:        Span::new_with_offs(offs, uuid_len, &mut offs),
-        timestamp:   Span::new_with_offs(offs, std::mem::size_of::<u64>(), &mut offs),
-        number_mess: Span::new_with_offs(offs, std::mem::size_of::<u64>(), &mut offs),
-        flags:       Span::new_with_offs(offs, std::mem::size_of::<u8>(), &mut offs),
-        data:        Span::new_with_offs(offs, data_len, &mut offs),
+    pub fn sender_topic(&self, mempool: &Mempool)->String{
+        let all_len = std::mem::size_of::<u32>();
+        let number_mess_len = std::mem::size_of::<u64>(); 
+        let flags_len = std::mem::size_of::<u8>(); 
+        mempool.read_string(self.0.pos() + all_len + number_mess_len + flags_len)
+    }
+    pub fn sender_name(&self, mempool: &Mempool)->String{
+        let all_len = std::mem::size_of::<u32>();
+        let number_mess_len = std::mem::size_of::<u64>(); 
+        let flags_len = std::mem::size_of::<u8>(); 
+        let sender_topic_pos = self.0.pos() + all_len + number_mess_len + flags_len;
+        let sender_topic_len = mempool.read_u32(sender_topic_pos) + std::mem::size_of::<u32>() as u32;
+        mempool.read_string(sender_topic_pos + sender_topic_len as usize)
     }
 }
