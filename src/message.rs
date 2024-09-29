@@ -1,5 +1,5 @@
 use crate::bytestream;
-use crate::mempool::{Mempool, Span};
+use crate::mempool::Mempool;
 use std::io::{Write, Read};
 
 const _COMPRESS: u8 = 0x01;

@@ -1,25 +1,36 @@
 
+use std::collections::BTreeMap;
+
 pub struct Mempool{
     buff: Vec<u8>,
+    free_mem: BTreeMap<i32, MemSpan>, // key: size
+    pos_mem: BTreeMap<i32, MemSpan>, // key: pos
+    dirty_mem_count: i32,
 }
-pub struct Span{
-    pos: usize,
-    size: usize,
-}
-impl Span{
-    pub fn pos(&self)->usize{
-        self.pos
-    }
-    pub fn size(&self)->usize{
-        self.size
-    }
+
+struct MemSpan{
+    pos: i32,
+    pos_prev: i32, // another position with the same length
+    size: i32,
 }
 
 impl Mempool{
+    pub fn new()->Mempool{
+        Mempool{
+            buff: Vec::new(),
+            free_mem: BTreeMap::new(),
+        }
+    }
+
     pub fn alloc(&mut self, size: usize)->Span{
         let csz = self.buff.len();
         self.buff.resize(csz + size, 0);
         Span{pos: csz, size}
+    }
+    pub fn free(&mut self, pos: usize){
+        // let csz = self.buff.len();
+        // self.buff.resize(csz + size, 0);
+        // Span{pos: csz, size}
     }
     pub fn write_str(&mut self, mut pos: usize, value: &str){
         let _ = &self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
