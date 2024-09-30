@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, collections::HashSet, usize};
 pub struct Mempool{
     buff: Vec<u8>,
     pos_mem: BTreeMap<usize, MemSpan>, // key: pos
-    free_mem: BTreeMap<usize, HashSet<usize>>, // key: size, value: vec free pos
+    free_mem: BTreeMap<usize, HashSet<usize>>, // key: size, value: free pos
     resize_count: i32,
 }
 #[derive(Clone, Copy)]
