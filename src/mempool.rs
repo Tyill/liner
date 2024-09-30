@@ -3,15 +3,14 @@ use std::collections::BTreeMap;
 
 pub struct Mempool{
     buff: Vec<u8>,
-    free_mem: BTreeMap<i32, MemSpan>, // key: size
+    free_mem: BTreeMap<usize, MemSpan>, // key: size
     pos_mem: BTreeMap<i32, MemSpan>, // key: pos
-    dirty_mem_count: i32,
 }
 
 struct MemSpan{
     pos: i32,
-    pos_prev: i32, // another position with the same length
-    size: i32,
+    prev_pos: i32, // another position with the same length
+    size: usize,
 }
 
 impl Mempool{
@@ -19,18 +18,55 @@ impl Mempool{
         Mempool{
             buff: Vec::new(),
             free_mem: BTreeMap::new(),
+            pos_mem: BTreeMap::new(),
         }
     }
 
-    pub fn alloc(&mut self, size: usize)->Span{
-        let csz = self.buff.len();
-        self.buff.resize(csz + size, 0);
-        Span{pos: csz, size}
+    pub fn alloc(&mut self, mut req_size: usize)->usize{     
+        {
+            let keys: Vec<&usize> = self.free_mem.keys().collect();
+            let mut ix;
+            match keys.binary_search(&&req_size){   
+                Ok(ix_) =>{
+                    ix = ix_;
+                },
+                Err(ix_)=>{
+                    if ix_ == keys.len(){
+                        return self.new_mem(req_size);
+                    }
+                    ix = ix_;
+                }
+            }
+            let req_size_mem = req_size;
+            while ix < keys.len(){
+                req_size = *keys[ix];
+                let fmp = &self.free_mem[&req_size];
+                let mut cpos = fmp.pos;
+                let mut prev_pos = fmp.prev_pos;
+                while cpos < 0 && prev_pos >= 0{
+                    let pp = &self.pos_mem[&prev_pos];
+                    cpos = pp.pos;
+                    prev_pos = pp.prev_pos;
+                }
+                if cpos >= 0{
+                    break;
+                }else{
+                    ix += 1;
+                }
+            }
+            if ix == keys.len(){
+                return self.new_mem(req_size_mem);
+            }
+        }
+        let fmp = self.free_mem.get_mut(&req_size).unwrap();
+        let cpos = fmp.pos;
+        self.pos_mem.get_mut(&fmp.pos).unwrap().pos = -1;
+        fmp.pos = -1;
+        cpos as usize
     }
+    
     pub fn free(&mut self, pos: usize){
-        // let csz = self.buff.len();
-        // self.buff.resize(csz + size, 0);
-        // Span{pos: csz, size}
+      
     }
     pub fn write_str(&mut self, mut pos: usize, value: &str){
         let _ = &self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
@@ -64,6 +100,13 @@ impl Mempool{
         let sz: usize = i32::from_be_bytes(u8_4(&self.buff[pos.. pos + 4])) as usize;
         pos += std::mem::size_of::<u32>();
         &self.buff[pos.. pos + sz]
+    }
+
+    fn new_mem(&mut self, req_size: usize)->usize{
+        let csz = self.buff.len();
+        self.buff.resize(csz + req_size, 0);
+        self.pos_mem.insert(csz as i32, MemSpan{pos: csz as i32, prev_pos: 0, size: req_size});
+        csz
     }
 }
 

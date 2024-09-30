@@ -160,7 +160,7 @@ fn read_stream(epoll_fd: RawFd,
                     sender_topic.clone_from(&mess.sender_topic(&mempool));
                     last_mess_num = get_last_mess_number(&db, &sender_name, &sender_topic);                    
                 }
-                let number_mess = mess.number_mess(&mempool); 
+                let number_mess = mess.number_mess; 
                 if number_mess > last_mess_num{
                     last_mess_num = number_mess;
                     if let Err(err) = tx.send(mess){

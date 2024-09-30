@@ -250,7 +250,7 @@ impl Sender {
         let mempool = self.mempool.lock().unwrap().get_mut(addr_to).unwrap().clone();
         if let Ok(last_mess) = db.load_last_message_for_sender(&mut mempool.lock().unwrap(), &listener_name, listener_topic){
             if let Some(mess) = last_mess{
-                let mess_num = mess.number_mess(&mempool.lock().unwrap());
+                let mess_num = mess.number_mess;
                 if mess_num > self.last_mess_number[addr_to]{
                     *self.last_mess_number.get_mut(addr_to).unwrap() = mess_num;
                 }
@@ -450,7 +450,7 @@ fn write_stream(stream_fd: RawFd,
                     }   
                     let mess_for_send = mess_for_send.unwrap();
                     for mess in &mess_for_send{
-                        let num_mess = mess.number_mess(&mempool.lock().unwrap());
+                        let num_mess = mess.number_mess;
                         if last_send_mess_number < num_mess{
                             last_send_mess_number = num_mess;
                             if !mess.to_stream(&mempool.lock().unwrap(), &mut writer){
@@ -459,8 +459,8 @@ fn write_stream(stream_fd: RawFd,
                         }
                     }
                     for mess in mess_for_send{
-                        let num_mess = mess.number_mess(&mempool.lock().unwrap());
-                        let at_least_once_delivery = mess.at_least_once_delivery(&mempool.lock().unwrap());
+                        let num_mess = mess.number_mess;
+                        let at_least_once_delivery = mess.at_least_once_delivery();
                         if at_least_once_delivery && last_mess_number < num_mess{
                             buff.push(mess);
                         }
@@ -512,12 +512,12 @@ fn save_mess_to_db(mess: Vec<Message>, db: &Arc<Mutex<redis::Connect>>, listener
     }else{
         print_error!(format!("couldn't db.get_last_mess_number_for_sender, {}:{}", listener_name, listener_topic));
     }
-    let mempool = mempool.lock().unwrap().get(addr).unwrap().clone();
     let mess: Vec<Message> = mess.into_iter()
                                  .filter(|m|
-                                        m.at_least_once_delivery(&mempool.lock().unwrap()) &&
-                                        m.number_mess(&mempool.lock().unwrap()) > last_send_mess_number)
+                                        m.at_least_once_delivery() &&
+                                        m.number_mess > last_send_mess_number)
                                  .collect();
+    let mempool = mempool.lock().unwrap().get(addr).unwrap().clone();
     if !mess.is_empty(){
         if let Err(err) = db.lock().unwrap().save_messages_from_sender(&mempool.lock().unwrap(), listener_name, listener_topic, mess){
             print_error!(&format!("db.save_messages_from_sender, {}:{}, err {}", listener_name, listener_topic, err));
