@@ -1,24 +1,17 @@
 
-use std::{collections::BTreeMap, usize};
+use std::{collections::BTreeMap, collections::HashSet, usize};
 
 
 pub struct Mempool{
     buff: Vec<u8>,
     pos_mem: BTreeMap<usize, MemSpan>, // key: pos
-    free_mem: BTreeMap<usize, MemFreeSpan>, // key: size
+    free_mem: BTreeMap<usize, HashSet<usize>>, // key: size, value: vec free pos
+    resize_count: i32,
 }
 #[derive(Clone, Copy)]
 struct MemSpan{
     pos: usize,
     length: usize,
-    great_pos: usize, // another position with the great length
-    is_free: bool,
-    has_great: bool,
-}
-
-#[derive(Clone, Copy)]
-struct MemFreeSpan{
-    pos: usize,
 }
 
 impl Mempool{
@@ -27,44 +20,54 @@ impl Mempool{
             buff: Vec::new(),
             free_mem: BTreeMap::new(),
             pos_mem: BTreeMap::new(),
+            resize_count: 0,
         }
     }
-    pub fn alloc(&mut self, req_size: usize)->usize{     
-        let keys: Vec<&usize> = self.free_mem.keys().collect();
-        let mut ix;
-        match keys.binary_search(&&req_size){   
-            Ok(ix_) =>{
-                ix = ix_;
-            },
-            Err(ix_)=>{
-                if ix_ == keys.len(){
-                    return self.new_mem(req_size, usize::MAX, false);
+    pub fn resize_count(&self)->i32{
+    //    println!("buf len {} resize_count {} ", self.buff.len(), self.resize_count); 
+        self.resize_count       
+    }
+    pub fn alloc(&mut self, req_size: usize)->usize{    
+        let mut res_pos = usize::MAX;
+        let mut res_lengt = 0;
+        {
+            let keys: Vec<&usize> = self.free_mem.keys().collect();
+            let mut ix;
+            match keys.binary_search(&&req_size){   
+                Ok(ix_) =>{
+                    ix = ix_;
+                },
+                Err(ix_)=>{
+                    if ix_ == keys.len(){
+                        self.free_mem.insert(req_size, HashSet::new());
+                        return self.new_mem(req_size);
+                    }
+                    ix = ix_;
                 }
-                ix = ix_;
+            }
+            while ix < keys.len(){
+                let fm = &self.free_mem[keys[ix]];
+                if !fm.is_empty(){
+                    let pos = *fm.iter().next().unwrap();
+                    res_pos = pos;
+                    res_lengt = *keys[ix];
+                    break;
+                }else{
+                    ix += 1;
+                }
             }
         }
-        let ix_mem = ix;
-        while ix < keys.len(){
-            let fm = &self.free_mem[keys[ix]];
-            let mut pm = self.pos_mem[&fm.pos];
-            while !pm.is_free && pm.has_great{
-                pm = self.pos_mem[&pm.great_pos];
-            }
-            if pm.is_free{
-                self.pos_mem.get_mut(&pm.pos).unwrap().is_free = false;
-                return pm.pos;
-            }else{
-                ix += 1;
-            }
+        if res_pos < usize::MAX{
+            self.free_mem.get_mut(&res_lengt).unwrap().remove(&res_pos);
+            res_pos
+        }else{
+            self.new_mem(req_size)
         }
-        let fm = self.free_mem[keys[ix_mem]];
-        self.new_mem(req_size, fm.pos, true)
     }
     
     pub fn free(&mut self, pos: usize){
         let pm = self.pos_mem.get_mut(&pos).unwrap();
-        assert!(!pm.is_free);
-        pm.is_free = true;
+        self.free_mem.get_mut(&pm.length).unwrap().insert(pos);
     }
     pub fn write_str(&mut self, mut pos: usize, value: &str){
         let _ = &self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
@@ -103,13 +106,11 @@ impl Mempool{
         &self.buff[pos.. pos + sz]
     }
 
-    fn new_mem(&mut self, req_size: usize, great_pos: usize, has_great: bool)->usize{
+    fn new_mem(&mut self, req_size: usize)->usize{
         let csz = self.buff.len();
         self.buff.resize(csz + req_size, 0);
-        self.pos_mem.insert(csz, MemSpan{pos: csz, great_pos, length: req_size, is_free: false, has_great});
-        if !has_great{
-            self.free_mem.insert(req_size, MemFreeSpan{pos: csz});
-        }
+        self.pos_mem.insert(csz, MemSpan{pos: csz, length: req_size});
+        self.resize_count += 1;
         csz
     }
 }

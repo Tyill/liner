@@ -472,9 +472,11 @@ fn write_stream(stream_fd: RawFd,
                 if let Err(err) = writer.flush(){
                     print_error!(&format!("writer.flush, {}", err));
                 }
+                mempool.lock().unwrap().resize_count();
+                //println!("resize_count {}", );
             }
             stream.last_send_mess_number = last_send_mess_number;
-            stream.is_active = false;            
+            stream.is_active = false;      
         });
     }
 }

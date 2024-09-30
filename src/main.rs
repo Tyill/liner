@@ -40,7 +40,7 @@ fn  main() {
        
     let array = [0; 100];
     let uuid = CString::new("1234").unwrap();
-    for _ in 0..10{
+    for _ in 0..30{
         println!("{} begin send_to", current_time_ms());       
         for _ in 0..10000{
             liner::send_to(&mut c1,   
