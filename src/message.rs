@@ -67,7 +67,7 @@ impl Message{
     }   
 
     pub fn free(&self, mempool: &mut Mempool){
-        mempool.free(self.mem_pos);
+        mempool.free(self.mem_pos, self.mem_length);
     }
 
     pub fn from_stream<T>(mempool: &mut Mempool, stream: &mut T) -> Option<Message>
