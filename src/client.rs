@@ -1,4 +1,4 @@
-use crate::message::Message;
+use crate::message::MessageForReceiver;
 use crate::redis;
 use crate::UCback;
 use crate::listener::Listener;
@@ -42,7 +42,7 @@ impl Client {
             }
         )
     }
-    pub fn run(&mut self, topic: &str, localhost: &str, /*  */_receive_cb: UCback) -> bool {
+    pub fn run(&mut self, topic: &str, localhost: &str, receive_cb: UCback) -> bool {
         let _lock = self.mtx.lock();
         if self.is_run{
             return true;
@@ -59,14 +59,14 @@ impl Client {
             print_error!(&format!("{}", err));
             return false;
         }
-        let (tx_prodr, rx_prodr) = mpsc::channel::<Message>();
+        let (tx_prodr, rx_prodr) = mpsc::channel::<MessageForReceiver>();
         let stream_thread = thread::spawn(move||{ 
-            for _m in rx_prodr.iter(){
-                // receive_cb(m.topic_to.as_ptr() as *const i8,
-                //         m.topic_from.as_ptr() as *const i8, 
-                //         m.uuid.as_ptr() as *const i8, 
-                //         m.timestamp, 
-                //         m.data.as_ptr(), m.data.len());
+            for m in rx_prodr.iter(){
+                receive_cb(m.topic_to.as_ptr() as *const i8,
+                        m.topic_from.as_ptr() as *const i8, 
+                        m.uuid.as_ptr() as *const i8, 
+                        m.timestamp, 
+                        m.data.as_ptr(), m.data.len());
             }
         });  
         self.topic = topic.to_string();      

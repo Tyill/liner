@@ -1,4 +1,4 @@
-use crate::message::Message;
+use crate::message::{Message, MessageForReceiver};
 use crate::mempool::Mempool;
 use crate::redis;
 use crate::settings;
@@ -40,7 +40,7 @@ pub struct Listener{
 }
 
 impl Listener {
-    pub fn new(listener: TcpListener, tx: mpsc::Sender<Message>, 
+    pub fn new(listener: TcpListener, tx: mpsc::Sender<MessageForReceiver>, 
                unique_name: String, redis_path: String, source_topic: String)->Listener{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         let wakeup_fd = wakeupfd_create(epoll_fd);
@@ -66,7 +66,7 @@ impl Listener {
                             if stream_fd == wakeup_fd{
                                 wakeupfd_reset(wakeup_fd);
                             }else{
-                                read_stream(epoll_fd, stream_fd, &streams, tx.clone(), db.clone(), &mempool);
+                                read_stream(epoll_fd, &source_topic, stream_fd, &streams, tx.clone(), db.clone(), &mempool);
                             }
                         }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
                             remove_read_stream(epoll_fd, stream_fd);
@@ -128,9 +128,10 @@ fn listener_accept(epoll_fd: RawFd,
 }
 
 fn read_stream(epoll_fd: RawFd,
+               source_topic: &str,
                stream_fd: RawFd,
                streams: &HashMap<RawFd, Arc<Mutex<ReadStream>>>, 
-               tx: mpsc::Sender<Message>, 
+               tx: mpsc::Sender<MessageForReceiver>, 
                db: Arc<Mutex<redis::Connect>>,
                mempool: &HashMap<RawFd, Arc<Mutex<Mempool>>>){
     if let Some(stream) = streams.get(&stream_fd){        
@@ -146,6 +147,7 @@ fn read_stream(epoll_fd: RawFd,
         }
         let stream = stream.clone();
         let mempool = mempool.get(&stream_fd).unwrap().clone();
+        let source_topic = source_topic.to_string();
         rayon::spawn(move || {
             let mut stream = stream.lock().unwrap();
             let mut mempool = mempool.lock().unwrap();
@@ -158,14 +160,13 @@ fn read_stream(epoll_fd: RawFd,
             let mut sender_topic = String::new();
             while let Some(mess) = Message::from_stream(&mut mempool, reader.by_ref()){
                 if last_mess_num == 0{
-                    sender_name.clone_from(&mess.sender_name(&mempool));
-                    sender_topic.clone_from(&mess.sender_topic(&mempool));
+                    mess.sender_topic_name(&mempool, &mut sender_topic, &mut sender_name);
                     last_mess_num = get_last_mess_number(&db, &sender_name, &sender_topic);                    
                 }
                 let number_mess = mess.number_mess; 
                 if number_mess > last_mess_num{
                     last_mess_num = number_mess;
-                    if let Err(err) = tx.send(mess){
+                    if let Err(err) = tx.send(mess.for_receiver(&mempool, &source_topic)){
                         print_error!(&format!("couldn't tx.send: {}", err));
                     }
                 }

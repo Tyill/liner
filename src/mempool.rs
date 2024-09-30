@@ -14,10 +14,10 @@ impl Mempool{
             free_mem: BTreeMap::new(),
         }
     }
-    pub fn alloc(&mut self, req_size: usize)->usize{    
-        let mut key = usize::MAX;
+    pub fn alloc(&mut self, req_size: usize)->(usize, usize){    
+        let mut length = usize::MAX;
         {           
-            let keys: Vec<&usize> = self.free_mem.keys().clone().collect();
+            let keys: Vec<&usize> = self.free_mem.keys().collect();
             let mut ix;
             match keys.binary_search(&&req_size){   
                 Ok(ix_) =>{
@@ -25,24 +25,24 @@ impl Mempool{
                 },
                 Err(ix_)=>{
                     if ix_ == keys.len(){
-                        return self.new_mem(req_size);
+                        return (self.new_mem(req_size), req_size);
                     }
                     ix = ix_;
                 }
             }            
             while ix < keys.len(){
                 if !self.free_mem[keys[ix]].is_empty(){
-                    key = *keys[ix];
+                    length = *keys[ix];
                     break;
                 }else{
                     ix += 1;
                 }
             }
         }
-        if key < usize::MAX{
-            self.free_mem.get_mut(&key).unwrap().pop().unwrap()
+        if length < usize::MAX{
+            (self.free_mem.get_mut(&length).unwrap().pop().unwrap(), length)
         }else{
-            self.new_mem(req_size)
+            (self.new_mem(req_size), req_size)
         }
     }
     
@@ -82,8 +82,11 @@ impl Mempool{
         pos += std::mem::size_of::<u32>();
         &self.buff[pos.. pos + sz]
     }
-    pub fn read_mess(&self, pos: usize, sz: usize)->&[u8]{
+    pub fn read_data(&self, pos: usize, sz: usize)->&[u8]{
         &self.buff[pos.. pos + sz]
+    }
+    pub fn read_mut_data(&mut self, pos: usize, sz: usize)->&mut [u8]{
+        &mut self.buff[pos.. pos + sz]
     }
 
     fn new_mem(&mut self, req_size: usize)->usize{
