@@ -1,10 +1,10 @@
 
-use std::{collections::BTreeMap, collections::HashSet, usize};
+use std::{collections::BTreeMap, usize};
 
 
 pub struct Mempool{
     buff: Vec<u8>,
-    free_mem: BTreeMap<usize, HashSet<usize>>, // key: size, value: free pos
+    free_mem: BTreeMap<usize, Vec<usize>>, // key: size, value: free pos
 }
 
 impl Mempool{   
@@ -15,10 +15,9 @@ impl Mempool{
         }
     }
     pub fn alloc(&mut self, req_size: usize)->usize{    
-        let mut res_pos = usize::MAX;
-        let mut res_length = 0;
-        {
-            let keys: Vec<&usize> = self.free_mem.keys().collect();
+        let mut key = usize::MAX;
+        {           
+            let keys: Vec<&usize> = self.free_mem.keys().clone().collect();
             let mut ix;
             match keys.binary_search(&&req_size){   
                 Ok(ix_) =>{
@@ -30,28 +29,25 @@ impl Mempool{
                     }
                     ix = ix_;
                 }
-            }
+            }            
             while ix < keys.len(){
-                let fm = &self.free_mem[keys[ix]];
-                if !fm.is_empty(){
-                    res_pos = *fm.iter().next().unwrap();
-                    res_length = *keys[ix];
+                if !self.free_mem[keys[ix]].is_empty(){
+                    key = *keys[ix];
                     break;
                 }else{
                     ix += 1;
                 }
             }
         }
-        if res_pos < usize::MAX{
-            self.free_mem.get_mut(&res_length).unwrap().remove(&res_pos);
-            res_pos
+        if key < usize::MAX{
+            self.free_mem.get_mut(&key).unwrap().pop().unwrap()
         }else{
             self.new_mem(req_size)
         }
     }
     
     pub fn free(&mut self, pos: usize, length: usize){
-        self.free_mem.get_mut(&length).unwrap().insert(pos);
+        self.free_mem.get_mut(&length).unwrap().push(pos);
     }
     pub fn write_str(&mut self, mut pos: usize, value: &str){
         let _ = &self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
@@ -94,7 +90,7 @@ impl Mempool{
         let csz = self.buff.len();
         self.buff.resize(csz + req_size, 0);
         if !self.free_mem.contains_key(&req_size){
-            self.free_mem.insert(req_size, HashSet::new());
+            self.free_mem.insert(req_size, Vec::new());
         }
         csz
     }
