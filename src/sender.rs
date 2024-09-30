@@ -247,6 +247,7 @@ impl Sender {
             }
             self.last_mess_number.insert(addr_to.to_string(), 0);
         }            
+        self.mempool.lock().unwrap().insert(addr_to.to_string(), Arc::new(Mutex::new(Mempool::new())));
         let mempool = self.mempool.lock().unwrap().get_mut(addr_to).unwrap().clone();
         if let Ok(last_mess) = db.load_last_message_for_sender(&mut mempool.lock().unwrap(), &listener_name, listener_topic){
             if let Some(mess) = last_mess{
@@ -463,6 +464,8 @@ fn write_stream(stream_fd: RawFd,
                         let at_least_once_delivery = mess.at_least_once_delivery();
                         if at_least_once_delivery && last_mess_number < num_mess{
                             buff.push(mess);
+                        }else{
+                            mess.free(&mut mempool.lock().unwrap());
                         }
                     }
                 }
@@ -569,10 +572,10 @@ fn remove_write_stream(epoll_fd: i32, fd: RawFd){
     }
 }
 
-fn close_streams(messages: &Arc<Mutex<MessList>>,
+fn close_streams(_messages: &Arc<Mutex<MessList>>,
                  streams: &mut HashMap<RawFd, ArcWriteStream>,
-                 db: &Arc<Mutex<redis::Connect>>,
-                 mempool: &Arc<Mutex<MempoolList>>){
+                 _db: &Arc<Mutex<redis::Connect>>,
+                 _mempool: &Arc<Mutex<MempoolList>>){
     for stream in streams.values(){
         if let Ok(mut stream) = stream.lock(){
             stream.is_close = true;

@@ -49,7 +49,7 @@ impl Listener {
             let listener_fd = listener.as_raw_fd();
             regist_event(epoll_fd, listener_fd, libc::EPOLL_CTL_ADD).expect("couldn't event regist");
             let mut streams: HashMap<RawFd, Arc<Mutex<ReadStream>>> = HashMap::new();
-            let mempool: HashMap<RawFd, Arc<Mutex<Mempool>>> = HashMap::new();
+            let mut mempool: HashMap<RawFd, Arc<Mutex<Mempool>>> = HashMap::new();
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
             if let Ok(db) = redis::Connect::new(&unique_name, &redis_path){
                 let db = Arc::new(Mutex::new(db));
@@ -61,7 +61,7 @@ impl Listener {
                     for ev in &events {
                         let stream_fd = ev.u64 as RawFd;
                         if stream_fd == listener_fd{
-                            listener_accept(epoll_fd, &mut streams, &listener);
+                            listener_accept(epoll_fd, &mut streams, &listener, &mut mempool);
                         }else if ev.events as i32 & libc::EPOLLIN > 0{
                             if stream_fd == wakeup_fd{
                                 wakeupfd_reset(wakeup_fd);
@@ -112,12 +112,14 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
 
 fn listener_accept(epoll_fd: RawFd, 
                    streams: &mut HashMap<RawFd, Arc<Mutex<ReadStream>>>,
-                   listener: &TcpListener){
+                   listener: &TcpListener,
+                   mempool: &mut HashMap<RawFd, Arc<Mutex<Mempool>>>){
     match listener.accept() {
         Ok((stream, _addr)) => {
             stream.set_nonblocking(true).expect("couldn't listener set_nonblocking");
             let stream_fd = stream.as_raw_fd();
             streams.insert(stream_fd, Arc::new(Mutex::new(ReadStream{stream, is_active: false, is_close: false})));    
+            mempool.insert(stream_fd, Arc::new(Mutex::new(Mempool::new())));
             add_read_stream(epoll_fd, stream_fd);
         }
         Err(err) => print_error!(&format!("couldn't listener accept: {}", err)),

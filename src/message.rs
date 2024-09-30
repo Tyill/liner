@@ -16,6 +16,7 @@ pub struct Message{
    //  data
 
    mem_pos: usize,
+   mem_length: usize,
 }
    
 
@@ -62,27 +63,32 @@ impl Message{
         mempool.write_num(timestamp_pos, timestamp);
         mempool.write_array(data_pos, data);
 
-        Message{number_mess, flags, mem_pos: all_pos}
-    }    
+        Message{number_mess, flags, mem_pos: all_pos, mem_length: all_size}
+    }   
+
+    pub fn free(&self, mempool: &mut Mempool){
+        mempool.free(self.mem_pos);
+    }
+
     pub fn from_stream<T>(mempool: &mut Mempool, stream: &mut T) -> Option<Message>
         where T: Read{
         let indata = bytestream::read_stream(stream);
         if indata.is_empty(){
             return None;
         }
-        let mem_pos = mempool.alloc(indata.len() + std::mem::size_of::<u32>());
+        let mem_length = indata.len() + std::mem::size_of::<u32>();
+        let mem_pos = mempool.alloc(mem_length);
 
-        mempool.write_num(mem_pos, indata.len() as i32);
-        mempool.write_array(mem_pos + std::mem::size_of::<u32>(), &indata);
+        mempool.write_array(mem_pos, &indata);
               
         let number_mess = get_number_mess(mempool, mem_pos);
         let flags = get_flags(mempool, mem_pos);
         
-        Some(Message{number_mess, flags, mem_pos})
+        Some(Message{number_mess, flags, mem_pos, mem_length})
     }
     pub fn to_stream<T>(&self, mempool: &Mempool, stream: &mut T)->bool 
         where T: Write{        
-        bytestream::write_stream(stream, mempool.read_array(self.mem_pos))       
+        bytestream::write_stream(stream, mempool.read_mess(self.mem_pos, self.mem_length))       
     }
     
     pub fn at_least_once_delivery(&self)->bool{
