@@ -35,6 +35,7 @@ struct WriteStream{
     listener_name: String,
     stream: TcpStream,
     last_send_mess_number: u64,
+    last_mess_number: u64,
     is_active: bool,
     is_close: bool,
 }
@@ -90,14 +91,18 @@ impl Sender {
         let stream_thread = thread::spawn(move|| {
             let mut streams: HashMap<RawFd, ArcWriteStream> = HashMap::new();
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
-            let mut prev_time = common::current_time_ms();
+            let mut prev_time: [u64; 2] = [common::current_time_ms(); 2];
             if let Ok(db) = redis::Connect::new(&unique_name_, &redis_path){
                 let db = Arc::new(Mutex::new(db));
                 db.lock().unwrap().set_source_topic(&source_topic);
                 loop{ // stream cycle
-                    if check_available_stream(&is_new_addr_, &mut prev_time) {
+                    let ctime = common::current_time_ms();
+                    if check_available_stream(&is_new_addr_, ctime, &mut prev_time[0]) {
                         append_streams(epoll_fd, &mut addrs_new_, &mut streams, 
                                            &mut streams_fd_, &messages_, &db, &mempool_);
+                    }
+                    if timeout_update_last_mess_number(ctime, &mut prev_time[1]){                    
+                        update_last_mess_number(&mut streams, &db);
                     }
                     if !wait(epoll_fd, &mut events){
                         break;
@@ -109,7 +114,7 @@ impl Sender {
                                 wakeupfd_reset(wakeup_fd);
                             }
                         }else if ev.events as i32 & libc::EPOLLOUT > 0{
-                            write_stream(stream_fd, &streams, messages_.clone(), db.clone(), mempool_.clone());
+                            write_stream(stream_fd, &streams, messages_.clone(), mempool_.clone());
                         }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
                             remove_stream(epoll_fd, stream_fd, &mut streams, &streams_fd_,
                                           &messages_, &addrs_new_, &db, &mempool_);
@@ -315,14 +320,38 @@ fn send_mess_to_listener(epoll_fd: RawFd, addr_to: &str,
     }
 }
 
-fn check_available_stream(is_new_addr: &Arc<Mutex<bool>>, prev_time: &mut u64)->bool{
-    let ct = common::current_time_ms();
-    if *is_new_addr.lock().unwrap() || ct - *prev_time > settings::CHECK_AVAILABLE_STREAM_TIMEOUT_MS{
+fn check_available_stream(is_new_addr: &Arc<Mutex<bool>>, ctime: u64, prev_time: &mut u64)->bool{
+    if *is_new_addr.lock().unwrap() || ctime - *prev_time > settings::CHECK_AVAILABLE_STREAM_TIMEOUT_MS{
         *is_new_addr.lock().unwrap() = false;
-        *prev_time = ct;
-        return true;
+        *prev_time = ctime;
+        true
+    }else{
+        false
     }
-    false
+}
+
+fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
+    if ctime - *prev_time > settings::UPDATE_LAST_MESS_NUMBER_TIMEOUT_MS{
+        *prev_time = ctime;
+        true
+    }else{
+        false
+    }
+}
+
+fn update_last_mess_number(streams: &HashMap<RawFd, ArcWriteStream>,
+                           db: &Arc<Mutex<redis::Connect>>){
+    for stream in streams{
+        let mut stream = stream.1.lock().unwrap();
+        match db.lock().unwrap().get_last_mess_number_for_sender(&stream.listener_name, &stream.listener_topic){
+            Ok(last_mess_number)=>{
+                stream.last_mess_number = last_mess_number;
+            },
+            Err(err)=>{
+                print_error!(&format!("get_last_mess_number_for_sender from db, {}", err));
+            }
+        }
+    }
 }
 
 fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
@@ -392,7 +421,7 @@ fn append_streams(epoll_fd: RawFd,
                 let wstream = WriteStream{address: addr.address.clone(),
                                                        listener_topic: addr.listener_topic.clone(), 
                                                        listener_name: listener_name.clone(),
-                                                       stream, last_send_mess_number,
+                                                       stream, last_send_mess_number, last_mess_number: 0,
                                                        is_active: false, is_close: false};
                 streams.insert(wstream.stream.as_raw_fd(), Arc::new(Mutex::new(wstream)));
                 add_write_stream(epoll_fd, stm_fd);
@@ -413,7 +442,6 @@ fn append_streams(epoll_fd: RawFd,
 fn write_stream(stream_fd: RawFd,
                 streams: &HashMap<RawFd, Arc<Mutex<WriteStream>>>, 
                 messages: Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>,
-                db: Arc<Mutex<redis::Connect>>,
                 mempool: Arc<Mutex<MempoolList>>){
     if let Some(stream) = streams.get(&stream_fd){
         let stream = stream.clone();
@@ -429,13 +457,8 @@ fn write_stream(stream_fd: RawFd,
         rayon::spawn(move || {
             let mut stream = stream.lock().unwrap();
             let addr_to = stream.address.to_string();
-            let last_mess_number = db.lock().unwrap().get_last_mess_number_for_sender(&stream.listener_name, &stream.listener_topic);
-            if let Err(err) = last_mess_number{
-                print_error!(&format!("get_last_mess_number_for_sender from db, {}", err));
-                return;
-            }
-            let last_mess_number = last_mess_number.unwrap();
             let mut last_send_mess_number = stream.last_send_mess_number;
+            let last_mess_number = stream.last_mess_number;
             {
                 let mut buff: Vec<Message> = Vec::new();
                 let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream.stream.by_ref()); 
@@ -471,7 +494,7 @@ fn write_stream(stream_fd: RawFd,
                 }
                 if let Err(err) = writer.flush(){
                     print_error!(&format!("writer.flush, {}", err));
-                }         
+                }
             }
             stream.last_send_mess_number = last_send_mess_number;
             stream.is_active = false;      
