@@ -137,10 +137,10 @@ fn listener_accept(epoll_fd: RawFd,
             senders.insert(stream_fd, Arc::new(Mutex::new(Sender{sender_topic: "".to_string(), sender_name: "".to_string(), last_mess_num: 0})));
             mempool.insert(stream_fd, Arc::new(Mutex::new(Mempool::new())));
             add_read_stream(epoll_fd, stream_fd);
+            continue_read_stream(epoll_fd, listener.as_raw_fd());
         }
         Err(err) => print_error!(&format!("couldn't listener accept: {}", err)),
     };
-    continue_read_stream(epoll_fd, listener.as_raw_fd());
 }
 
 fn read_stream(epoll_fd: RawFd,
