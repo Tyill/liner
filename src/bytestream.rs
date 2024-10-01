@@ -24,7 +24,7 @@ where
         } 
         match stream.read(&mut buff[offs..rsz]) {
             Ok(n) => {                
-                if msz == 0 {
+                if msz == 0 && n > 0{
                     offs += n;                   
                     if offs == 4{
                         msz = i32::from_be_bytes(u8_4(&buff[0..4])) as usize; 
