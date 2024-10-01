@@ -189,6 +189,7 @@ fn read_stream(epoll_fd: RawFd,
                         print_error!(&format!("couldn't tx.send: {}", err));
                     }
                 }
+                mess.free(&mut mempool);
             }
             let mut sender = sender.lock().unwrap();
             sender.last_mess_num = last_mess_num;
