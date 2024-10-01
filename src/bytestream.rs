@@ -69,7 +69,16 @@ where
     (mem_pos, mem_alloc_length, mem_fill_length)
 }
 
+pub fn read_u32(pos: usize, data: &[u8])->u32{
+    u32::from_be_bytes(u8_4(&data[pos.. pos + std::mem::size_of::<u32>()]))
+}
+pub fn read_u64(pos: usize, data: &[u8])->u64{
+    u64::from_be_bytes(u8_8(&data[pos.. pos + std::mem::size_of::<u64>()]))
+}
 fn u8_4(b: &[u8]) -> [u8; 4] {
+    b.try_into().unwrap()
+}
+fn u8_8(b: &[u8]) -> [u8; 8] {
     b.try_into().unwrap()
 }
 

@@ -59,14 +59,16 @@ impl Client {
             print_error!(&format!("{}", err));
             return false;
         }
-        let (tx_prodr, rx_prodr) = mpsc::channel::<MessageForReceiver>();
+        let topic_ = topic.to_string();
+        let (tx_prodr, rx_prodr) = mpsc::channel::<Vec<u8>>();
         let stream_thread = thread::spawn(move||{ 
-            for m in rx_prodr.iter(){
-                receive_cb(m.topic_to.as_ptr() as *const i8,
-                        m.topic_from.as_ptr() as *const i8, 
-                        m.uuid.as_ptr() as *const i8, 
-                        m.timestamp, 
-                        m.data.as_ptr(), m.data.len());
+            for data in rx_prodr.iter(){
+                let mess = MessageForReceiver::new(&data);
+                receive_cb(topic_.as_ptr() as *const i8, 
+                        mess.topic_from, 
+                        mess.uuid, 
+                        mess.timestamp, 
+                        mess.data, mess.data_len);
             }
         });  
         self.topic = topic.to_string();      

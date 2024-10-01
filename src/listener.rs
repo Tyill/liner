@@ -1,4 +1,4 @@
-use crate::message::{Message, MessageForReceiver};
+use crate::message::Message;
 use crate::mempool::Mempool;
 use crate::redis;
 use crate::settings;
@@ -47,7 +47,7 @@ pub struct Listener{
 }
 
 impl Listener {
-    pub fn new(listener: TcpListener, tx: mpsc::Sender<MessageForReceiver>, 
+    pub fn new(listener: TcpListener, tx: mpsc::Sender<Vec<u8>>, 
                unique_name: String, redis_path: String, source_topic: String)->Listener{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         let wakeup_fd = wakeupfd_create(epoll_fd);
@@ -80,7 +80,7 @@ impl Listener {
                             if stream_fd == wakeup_fd{
                                 wakeupfd_reset(wakeup_fd);
                             }else{
-                                read_stream(epoll_fd, &source_topic, stream_fd, &streams, &senders,
+                                read_stream(epoll_fd, stream_fd, &streams, &senders,
                                             tx.clone(), db.clone(), &mempool);
                             }
                         }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
@@ -144,11 +144,10 @@ fn listener_accept(epoll_fd: RawFd,
 }
 
 fn read_stream(epoll_fd: RawFd,
-               source_topic: &str,
                stream_fd: RawFd,
                streams: &HashMap<RawFd, Arc<Mutex<ReadStream>>>,
                senders: &HashMap<RawFd, Arc<Mutex<Sender>>>,
-               tx: mpsc::Sender<MessageForReceiver>, 
+               tx: mpsc::Sender<Vec<u8>>, 
                db: Arc<Mutex<redis::Connect>>,
                mempool: &HashMap<RawFd, Arc<Mutex<Mempool>>>){
     if let Some(stream) = streams.get(&stream_fd){        
@@ -165,8 +164,7 @@ fn read_stream(epoll_fd: RawFd,
         let stream = stream.clone();
         let sender = senders.get(&stream_fd).unwrap().clone();
         let mempool = mempool.get(&stream_fd).unwrap().clone();
-        let source_topic = source_topic.to_string();
-
+    
         rayon::spawn(move || {
             let mut mempool = mempool.lock().unwrap();
             let mut stream = stream.lock().unwrap();
@@ -185,7 +183,7 @@ fn read_stream(epoll_fd: RawFd,
                 let number_mess = mess.number_mess; 
                 if number_mess > last_mess_num{
                     last_mess_num = number_mess;
-                    if let Err(err) = tx.send(mess.for_receiver(&mempool, &source_topic)){
+                    if let Err(err) = tx.send(mess.raw_data(&mut mempool).to_vec()){
                         print_error!(&format!("couldn't tx.send: {}", err));
                     }
                 }

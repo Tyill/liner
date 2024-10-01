@@ -9,22 +9,48 @@ pub struct Message{
     pub number_mess: u64,
     flags: u8,
     // other fields:
-    //  sender_topic
-    //  sender_name
-    //  uuid
-    //  timestamp
-    //  data
+    // sender_topic
+    // sender_name
+    // uuid
+    // timestamp
+    // data
     mess_size: usize, 
     mem_alloc_pos: usize,
     mem_alloc_length: usize,
 }
 
 pub struct MessageForReceiver{
-    pub topic_to: String,
-    pub topic_from: String,
-    pub uuid: String,
-    pub timestamp: u64,
-    pub data: Vec<u8>,
+    pub topic_from: *const i8, 
+    pub uuid: *const i8, 
+    pub timestamp: u64, 
+    pub data: *const u8, 
+    pub data_len: usize,
+}
+
+impl MessageForReceiver{
+    pub fn new(raw_data: &[u8])->MessageForReceiver{
+        let all_len = std::mem::size_of::<u32>();
+        let number_mess_len = std::mem::size_of::<u64>();
+        let flags_pos = all_len + number_mess_len; 
+        let flags_len = std::mem::size_of::<u8>(); 
+        let sender_topic_pos = flags_pos + flags_len;
+        let sender_topic_len = bytestream::read_u32(sender_topic_pos, raw_data) + std::mem::size_of::<u32>() as u32;
+        let sender_name_pos = sender_topic_pos + sender_topic_len as usize;
+        let sender_name_len = bytestream::read_u32(sender_name_pos, raw_data) + std::mem::size_of::<u32>() as u32;
+        let uuid_pos = sender_name_pos + sender_name_len as usize;
+        let uuid_len = bytestream::read_u32(uuid_pos, raw_data) + std::mem::size_of::<u32>() as u32;
+        let timestamp_pos = uuid_pos + uuid_len as usize;
+        let timestamp_len = std::mem::size_of::<u64>();
+        let data_pos = timestamp_pos + timestamp_len as usize;
+        
+        Self{
+            topic_from: std::ptr::from_ref(&raw_data[sender_topic_pos..]) as *const i8,
+            uuid: raw_data[uuid_pos..].as_ptr() as *const i8,
+            timestamp: bytestream::read_u64(timestamp_pos, raw_data),
+            data: raw_data[data_pos..].as_ptr() as *const u8,
+            data_len: bytestream::read_u32(data_pos, raw_data) as usize,
+        }
+    }
 }
 
 impl Message{
@@ -77,6 +103,10 @@ impl Message{
         mempool.free(self.mem_alloc_pos, self.mem_alloc_length);
     }
 
+    pub fn raw_data(& self, mempool: &Mempool)->Vec<u8>{
+        mempool.read_data(self.mem_alloc_pos, self.mem_alloc_length).to_vec()
+    }
+
     pub fn from_stream<T>(mempool: &mut Mempool, stream: &mut T) -> Option<Message>
         where T: Read{
         let (mem_alloc_pos, mem_alloc_length, mess_size) = bytestream::read_stream_to_mempool(stream, mempool);
@@ -112,36 +142,7 @@ impl Message{
         let sender_topic_pos = flags_pos + flags_len;
         let sender_topic_len = mempool.read_u32(sender_topic_pos) + std::mem::size_of::<u32>() as u32;
         io_name.clone_from(&mempool.read_string(sender_topic_pos + sender_topic_len as usize));
-    }
-    pub fn for_receiver(&self, mempool: &Mempool, listener_topic: &str)->MessageForReceiver{
-
-        let all_len = std::mem::size_of::<u32>();
-        let number_mess_len = std::mem::size_of::<u64>();
-        let flags_pos = self.mem_alloc_pos + all_len + number_mess_len; 
-        let flags_len = std::mem::size_of::<u8>(); 
-        let sender_topic_pos = flags_pos + flags_len;
-        let sender_topic_len = mempool.read_u32(sender_topic_pos) + std::mem::size_of::<u32>() as u32;
-        let sender_name_pos = sender_topic_pos + sender_topic_len as usize;
-        let sender_name_len = mempool.read_u32(sender_name_pos) + std::mem::size_of::<u32>() as u32;
-        let uuid_pos = sender_name_pos + sender_name_len as usize;
-        let uuid_len = mempool.read_u32(uuid_pos) + std::mem::size_of::<u32>() as u32;
-        let timestamp_pos = uuid_pos + uuid_len as usize;
-        let timestamp_len = std::mem::size_of::<u64>();
-        let data_pos = timestamp_pos + timestamp_len as usize;
-        
-        let topic_from = mempool.read_string(sender_topic_pos);
-        let uuid = mempool.read_string(uuid_pos);
-        let timestamp = mempool.read_u64(timestamp_pos);
-        let data = mempool.read_array(data_pos);
-
-        MessageForReceiver{
-            topic_to: listener_topic.to_string(),
-            topic_from,
-            uuid,
-            timestamp,
-            data: data.to_vec(),
-        }
-    }
+    }    
 }
 
 fn get_number_mess(mempool: &Mempool, mem_pos:usize)->u64{

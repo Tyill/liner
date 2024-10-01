@@ -77,7 +77,7 @@ impl Mempool{
     pub fn read_u8(&self, pos: usize)->u8{
         self.buff[pos]
     }
-    pub fn read_array(&self, mut pos: usize)->&[u8]{
+    pub fn _read_array(&self, mut pos: usize)->&[u8]{
         let sz: usize = i32::from_be_bytes(u8_4(&self.buff[pos.. pos + 4])) as usize;
         pos += std::mem::size_of::<u32>();
         &self.buff[pos.. pos + sz]
