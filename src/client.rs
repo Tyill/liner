@@ -62,9 +62,12 @@ impl Client {
         let topic_ = topic.to_string();
         let (tx_prodr, rx_prodr) = mpsc::channel::<Vec<u8>>();
         let stream_thread = thread::spawn(move||{ 
+            let mut topic_b : Vec<u8> = Vec::new();           // without this error UTF-8 validation  
+            topic_b.resize(topic_.len(), 0);
+            topic_b.copy_from_slice(topic_.as_bytes());
             for data in rx_prodr.iter(){
                 let mess = MessageForReceiver::new(&data);
-                receive_cb(topic_.as_ptr() as *const i8, 
+                receive_cb(topic_b.as_ptr() as *const i8, 
                         mess.topic_from, 
                         mess.uuid, 
                         mess.timestamp, 

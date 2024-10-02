@@ -183,7 +183,7 @@ fn read_stream(epoll_fd: RawFd,
                 let number_mess = mess.number_mess; 
                 if number_mess > last_mess_num{
                     last_mess_num = number_mess;
-                    if let Err(err) = tx.send(mess.raw_data(&mut mempool).to_vec()){
+                    if let Err(err) = tx.send(mess.raw_data(&mut mempool).to_vec()){ //todo how to get rid of allocation
                         print_error!(&format!("couldn't tx.send: {}", err));
                     }
                 }

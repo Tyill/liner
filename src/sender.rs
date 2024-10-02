@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::thread;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::io::{self, BufWriter, Write};
+use std::ops::DerefMut;
 
 
 #[allow(unused_macros)]
@@ -123,7 +124,7 @@ impl Sender {
                         }
                     }               
                 }
-                close_streams(&messages_, &mut streams, &db, &mempool_);
+                close_streams(&messages_, &mut streams, &streams_fd_, &db, &mempool_);
             }else{
                 print_error!(format!("couldn't redis::Connect"));
             }
@@ -595,32 +596,30 @@ fn remove_write_stream(epoll_fd: i32, fd: RawFd){
     }
 }
 
-fn close_streams(_messages: &Arc<Mutex<MessList>>,
+fn close_streams(messages: &Arc<Mutex<MessList>>,
                  streams: &mut HashMap<RawFd, ArcWriteStream>,
-                 _db: &Arc<Mutex<redis::Connect>>,
-                 _mempool: &Arc<Mutex<MempoolList>>){
+                 streams_fd: &Arc<Mutex<HashMap<String, RawFd>>>,
+                 db: &Arc<Mutex<redis::Connect>>,
+                 mempool: &Arc<Mutex<MempoolList>>){
     for stream in streams.values(){
         if let Ok(mut stream) = stream.lock(){
             stream.is_close = true;
         }
     }
-    // for kv in messages.lock().unwrap().deref_mut(){
-    //     if let Some(mess_for_send) = kv.1.take(){
-    //         if mess_for_send.is_empty(){
-    //             continue;
-    //         }
-    //         let addr = kv.0;
-    //         let listener_topic = mess_for_send[0].topic_to.clone();
-    //         let listener_name;
-    //         if let Ok(name) = db.lock().unwrap().get_listener_unique_name(&listener_topic, addr){
-    //             listener_name = name;
-    //         }else{
-    //             print_error!(&format!("db.get_listener_unique_name, {}", addr));
-    //             continue;
-    //         }
-    //         save_mess_to_db(mess_for_send, db, &listener_name, &listener_topic, addr, mempool);            
-    //     }
-    // }
+    for kv in messages.lock().unwrap().deref_mut(){
+        if let Some(mess_for_send) = kv.1.take(){
+            if mess_for_send.is_empty(){
+                continue;
+            }
+            let addr = kv.0;
+
+            let fd = *streams_fd.lock().unwrap().get(addr).unwrap();
+            let stream = streams.get(&fd).unwrap().lock().unwrap();
+            let listener_topic = &stream.listener_topic;
+            let listener_name = &stream.listener_name;           
+            save_mess_to_db(mess_for_send, db, listener_name, listener_topic, addr, mempool);            
+        }
+    }
 }
 
 impl Drop for Sender {

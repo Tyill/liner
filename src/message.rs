@@ -19,40 +19,6 @@ pub struct Message{
     mem_alloc_length: usize,
 }
 
-pub struct MessageForReceiver{
-    pub topic_from: *const i8, 
-    pub uuid: *const i8, 
-    pub timestamp: u64, 
-    pub data: *const u8, 
-    pub data_len: usize,
-}
-
-impl MessageForReceiver{
-    pub fn new(raw_data: &[u8])->MessageForReceiver{
-        let all_len = std::mem::size_of::<u32>();
-        let number_mess_len = std::mem::size_of::<u64>();
-        let flags_pos = all_len + number_mess_len; 
-        let flags_len = std::mem::size_of::<u8>(); 
-        let sender_topic_pos = flags_pos + flags_len;
-        let sender_topic_len = bytestream::read_u32(sender_topic_pos, raw_data) + std::mem::size_of::<u32>() as u32;
-        let sender_name_pos = sender_topic_pos + sender_topic_len as usize;
-        let sender_name_len = bytestream::read_u32(sender_name_pos, raw_data) + std::mem::size_of::<u32>() as u32;
-        let uuid_pos = sender_name_pos + sender_name_len as usize;
-        let uuid_len = bytestream::read_u32(uuid_pos, raw_data) + std::mem::size_of::<u32>() as u32;
-        let timestamp_pos = uuid_pos + uuid_len as usize;
-        let timestamp_len = std::mem::size_of::<u64>();
-        let data_pos = timestamp_pos + timestamp_len as usize;
-        
-        Self{
-            topic_from: std::ptr::from_ref(&raw_data[sender_topic_pos..]) as *const i8,
-            uuid: raw_data[uuid_pos..].as_ptr() as *const i8,
-            timestamp: bytestream::read_u64(timestamp_pos, raw_data),
-            data: raw_data[data_pos..].as_ptr() as *const u8,
-            data_len: bytestream::read_u32(data_pos, raw_data) as usize,
-        }
-    }
-}
-
 impl Message{
     pub fn new(mempool: &mut Mempool, sender_topic: &str, sender_name: &str,
                uuid: &str, number_mess: u64, data: &[u8], at_least_once_delivery: bool, timestamp: u64) -> Message {
@@ -153,4 +119,41 @@ fn get_flags(mempool: &Mempool, mem_pos:usize)->u8{
     let all_len = std::mem::size_of::<u32>();
     let number_mess_len = std::mem::size_of::<u64>();        
     mempool.read_u8(mem_pos + all_len + number_mess_len)
+}
+
+
+pub struct MessageForReceiver{
+    pub topic_from: *const i8, 
+    pub uuid: *const i8, 
+    pub timestamp: u64, 
+    pub data: *const u8, 
+    pub data_len: usize,
+}
+
+impl MessageForReceiver{
+    pub fn new(raw_data: &Vec<u8>)->MessageForReceiver{
+        let all_len = std::mem::size_of::<u32>();
+        let number_mess_len = std::mem::size_of::<u64>();
+        let flags_pos = all_len + number_mess_len; 
+        let flags_len = std::mem::size_of::<u8>(); 
+        let sender_topic_pos = flags_pos + flags_len;
+        let sender_topic_len = bytestream::read_u32(sender_topic_pos, raw_data) + std::mem::size_of::<u32>() as u32;
+        let sender_name_pos = sender_topic_pos + sender_topic_len as usize;
+        let sender_name_len = bytestream::read_u32(sender_name_pos, raw_data) + std::mem::size_of::<u32>() as u32;
+        let uuid_pos = sender_name_pos + sender_name_len as usize;
+        let uuid_len = bytestream::read_u32(uuid_pos, raw_data) + std::mem::size_of::<u32>() as u32;
+        let timestamp_pos = uuid_pos + uuid_len as usize;
+        let timestamp_len = std::mem::size_of::<u64>();
+        let data_pos = timestamp_pos + timestamp_len as usize;
+        unsafe{
+            let len: isize = std::mem::size_of::<u32>() as isize;
+            Self{
+                topic_from: raw_data.as_ptr().offset(sender_topic_pos as isize + len) as *const i8,
+                uuid: raw_data.as_ptr().offset(uuid_pos as isize + len) as *const i8,
+                timestamp: bytestream::read_u64(timestamp_pos, raw_data),
+                data: raw_data.as_ptr().offset(data_pos as isize + len) as *const u8,
+                data_len: bytestream::read_u32(data_pos, raw_data) as usize,
+            }
+        }
+    }
 }

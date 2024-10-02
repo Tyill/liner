@@ -50,18 +50,18 @@ impl Mempool{
         self.free_mem.get_mut(&length).unwrap().push(pos);
     }
     pub fn write_str(&mut self, mut pos: usize, value: &str){
-        let _ = &self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
+        self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
         pos += std::mem::size_of::<u32>();
-        let _ = &self.buff[pos.. pos + value.len()].copy_from_slice(value.as_bytes());
+        self.buff[pos.. pos + value.len()].copy_from_slice(value.as_bytes());
     } 
     pub fn write_num<T>(&mut self, pos: usize, value: T)
     where T: ToBeBytes{
-        let _ = &self.buff[pos.. pos + std::mem::size_of::<T>()].copy_from_slice(value.to_be_bytes().as_ref());
+        self.buff[pos.. pos + std::mem::size_of::<T>()].copy_from_slice(value.to_be_bytes().as_ref());
     } 
     pub fn write_array(&mut self, mut pos: usize, value: &[u8]){
-        let _ = &self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
+        self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
         pos += std::mem::size_of::<u32>();
-        let _ = &self.buff[pos.. pos + value.len()].copy_from_slice(value);
+        self.buff[pos.. pos + value.len()].copy_from_slice(value);
     }
     pub fn read_string(&self, mut pos: usize)->String{
         let sz: usize = i32::from_be_bytes(u8_4(&self.buff[pos.. pos + std::mem::size_of::<u32>()])) as usize;
