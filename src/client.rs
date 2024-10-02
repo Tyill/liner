@@ -1,4 +1,4 @@
-use crate::message::Message;
+use crate::message::MessageForReceiver;
 use crate::redis;
 use crate::UCback;
 use crate::listener::Listener;
@@ -59,14 +59,19 @@ impl Client {
             print_error!(&format!("{}", err));
             return false;
         }
-        let (tx_prodr, rx_prodr) = mpsc::channel::<Message>();
+        let topic_ = topic.to_string();
+        let (tx_prodr, rx_prodr) = mpsc::channel::<Vec<u8>>();
         let stream_thread = thread::spawn(move||{ 
-            for m in rx_prodr.iter(){
-                receive_cb(m.topic_to.as_ptr() as *const i8,
-                        m.topic_from.as_ptr() as *const i8, 
-                        m.uuid.as_ptr() as *const i8, 
-                        m.timestamp, 
-                        m.data.as_ptr(), m.data.len());
+            let mut topic_b : Vec<u8> = Vec::new();           // without this error UTF-8 validation  
+            topic_b.resize(topic_.len(), 0);
+            topic_b.copy_from_slice(topic_.as_bytes());
+            for data in rx_prodr.iter(){
+                let mess = MessageForReceiver::new(&data);
+                receive_cb(topic_b.as_ptr() as *const i8, 
+                        mess.topic_from, 
+                        mess.uuid, 
+                        mess.timestamp, 
+                        mess.data, mess.data_len);
             }
         });  
         self.topic = topic.to_string();      
@@ -133,7 +138,7 @@ impl Client {
             return false;
         }
         if topic == self.topic{
-            print_error!("you can't delete your own topic");
+            print_error!("you can't subscribe on your own topic");
             return false;
         }
         if let Err(err) = self.db.regist_topic(topic){
@@ -149,7 +154,7 @@ impl Client {
             return false;
         }
         if topic == self.topic{
-            print_error!("you can't delete your own topic");
+            print_error!("you can't unsubscribe on your own topic");
             return false;
         }
         if let Err(err) = self.db.unregist_topic(topic){

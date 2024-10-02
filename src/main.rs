@@ -1,5 +1,5 @@
 use std::time::SystemTime;
-use std::ffi::CString;
+use std::ffi::{CString, CStr};
 use std::{thread, time};
        
 
@@ -12,11 +12,13 @@ extern "C" fn cb1(_to: *const i8, _from: *const i8, _uuid: *const i8, _timestamp
 }
 
 extern "C" fn cb2(_to: *const i8, _from: *const i8, _uuid: *const i8, _timestamp: u64, _data: *const u8, _dsize: usize){
-  //  unsafe {
-      //  let from = CStr::from_ptr(from).to_str().unwrap();
-    
-      //  print!("{}", from);
-  //  }
+    // unsafe {
+    //     let to = CStr::from_ptr(to).to_str().unwrap();
+    //     let from = CStr::from_ptr(from).to_str().unwrap();
+    //     let uuid = CStr::from_ptr(uuid).to_str().unwrap();
+        
+    //     print!("{}", from);
+    // }
 }
 
 fn  main() {
@@ -51,7 +53,7 @@ fn  main() {
         println!("{} end send_to", current_time_ms());       
       
         thread::sleep(time::Duration::from_millis(1000));
-   }
+    }
 }
 }
 

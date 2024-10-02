@@ -1,6 +1,7 @@
 mod redis;
 mod client;
 mod message;
+mod mempool;
 mod bytestream;
 mod listener;
 mod sender;

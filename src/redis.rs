@@ -1,4 +1,4 @@
-use crate::{message::Message, print_error};
+use crate::{message::Message, mempool::Mempool, print_error};
 
 use redis::{Commands, ConnectionLike, RedisResult, ErrorKind};
 use std::collections::HashMap;
@@ -122,18 +122,18 @@ impl Connect {
         Ok(res.parse::<u64>().unwrap())
     }
 
-    pub fn save_messages_from_sender(&mut self, listener_name: &str, listener_topic: &str, mess: Vec<Message>)->RedisResult<()>{
+    pub fn save_messages_from_sender(&mut self, mempool: &Mempool, listener_name: &str, listener_topic: &str, mess: Vec<Message>)->RedisResult<()>{
         let key = format!("{}:{}:{}:{}", self.unique_name, self.source_topic, listener_name, listener_topic);
         let dbconn = self.get_dbconn()?; 
         for m in mess{
             let mut buf: Vec<u8> = Vec::new(); 
-            m.to_stream(&mut buf);                
+            m.to_stream(mempool, &mut buf);                
             dbconn.rpush(&format!("connection:{}:messages", key), buf)?;
         }
         Ok(())
     }
 
-    pub fn load_messages_for_sender(&mut self, listener_name: &str, listener_topic: &str)->RedisResult<Vec<Message>>{
+    pub fn load_messages_for_sender(&mut self, mempool: &mut Mempool, listener_name: &str, listener_topic: &str)->RedisResult<Vec<Message>>{
         let key = format!("{}:{}:{}:{}", self.unique_name, self.source_topic, listener_name, listener_topic);
         let dbconn = self.get_dbconn()?; 
         let llen: Option<usize> = dbconn.llen(&format!("connection:{}:messages", key.clone()))?;
@@ -141,7 +141,7 @@ impl Connect {
         if let Some(llen) = llen{
             let buff: Vec<Vec<u8>> = dbconn.lpop(&format!("connection:{}:messages", key), core::num::NonZeroUsize::new(llen))?;
             for b in buff{
-                if let Some(mess) = Message::from_stream(&mut &b[..]){
+                if let Some(mess) = Message::from_stream(mempool, &mut &b[..]){
                     out.push(mess);
                 }else{
                     print_error!("!Message::from_stream");
@@ -151,7 +151,7 @@ impl Connect {
         Ok(out)
     }
 
-    pub fn load_last_message_for_sender(&mut self, listener_name: &str, listener_topic: &str)->RedisResult<Option<Message>>{
+    pub fn load_last_message_for_sender(&mut self, mempool: &mut Mempool, listener_name: &str, listener_topic: &str)->RedisResult<Option<Message>>{
         let key = format!("{}:{}:{}:{}", self.unique_name, self.source_topic, listener_name, listener_topic);
         let dbconn = self.get_dbconn()?; 
         let llen: Option<usize> = dbconn.llen(&format!("connection:{}:messages", key.clone()))?;
@@ -162,7 +162,7 @@ impl Connect {
             }
             let buff: Vec<Vec<u8>> = dbconn.lrange(&format!("connection:{}:messages", key), -1, -1)?;
             for b in buff{
-                if let Some(mess) = Message::from_stream(&mut &b[..]){
+                if let Some(mess) = Message::from_stream(mempool, &mut &b[..]){
                     out = Some(mess);
                 }else{
                     print_error!("!Message::from_stream");
