@@ -138,6 +138,7 @@ pub struct MessageForReceiver{
     pub timestamp: u64, 
     pub data: *const u8, 
     pub data_len: usize,
+    pub number_mess: u64,
     mem_alloc_pos: usize,
     mem_alloc_length: usize,
 }
@@ -170,6 +171,7 @@ impl MessageForReceiver{
                 timestamp: bytestream::read_u64(timestamp_pos, raw_data),
                 data: raw_data.as_ptr().offset(data_pos as isize + len) as *const u8,
                 data_len: bytestream::read_u32(data_pos, raw_data) as usize,
+                number_mess: mess.number_mess,
                 mem_alloc_pos: mess.mem_alloc_pos,
                 mem_alloc_length: mess.mem_alloc_length,
             }
