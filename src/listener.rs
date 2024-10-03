@@ -30,10 +30,6 @@ macro_rules! syscall {
     }};
 }
 
-type MessList = HashMap<RawFd, Option<Vec<Message>>>; 
-type MempoolList = HashMap<RawFd, Arc<Mutex<Mempool>>>; 
-type SenderList = HashMap<RawFd, Sender>; 
-
 struct ReadStream{
     stream: TcpStream,
     is_active: bool,
@@ -45,6 +41,10 @@ struct Sender{
     sender_name: String,
     last_mess_num: u64,
 }
+
+type MessList = HashMap<RawFd, Option<Vec<Message>>>; 
+type MempoolList = HashMap<RawFd, Arc<Mutex<Mempool>>>; 
+type SenderList = HashMap<RawFd, Sender>; 
 
 pub struct Listener{
     epoll_fd: RawFd,
