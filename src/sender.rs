@@ -195,7 +195,7 @@ impl Sender {
        
         let mempool = self.mempool.lock().unwrap().get_mut(addr_to).unwrap().clone();
         let timestamp = common::current_time_ms();
-        let mess = Message::new(&mut mempool.lock().unwrap(),
+        let mess = Message::new(&mut mempool.lock().unwrap(), to,
                                          from, &self.unique_name,
                                          uuid, number_mess, data, at_least_once_delivery, timestamp);
         self.send_mess_to_buff(mess, addr_to, timestamp);
@@ -463,7 +463,7 @@ fn write_stream(stream_fd: RawFd,
             {
                 let mut buff: Vec<Message> = Vec::new();
                 let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream.stream.by_ref()); 
-                let mempool = mempool.lock().unwrap().get(&addr_to).unwrap().clone();
+                let mempool = mempool.lock().unwrap()[&addr_to].clone();
                 loop{  
                     let mut mess_for_send = None;
                     if let Ok(mut mess_lock) = messages.lock(){
@@ -544,7 +544,7 @@ fn save_mess_to_db(mess: Vec<Message>, db: &Arc<Mutex<redis::Connect>>, listener
                                         m.at_least_once_delivery() &&
                                         m.number_mess > last_send_mess_number)
                                  .collect();
-    let mempool = mempool.lock().unwrap().get(addr).unwrap().clone();
+    let mempool = mempool.lock().unwrap()[addr].clone();
     if !mess.is_empty(){
         if let Err(err) = db.lock().unwrap().save_messages_from_sender(&mempool.lock().unwrap(), listener_name, listener_topic, mess){
             print_error!(&format!("db.save_messages_from_sender, {}:{}, err {}", listener_name, listener_topic, err));
@@ -613,8 +613,8 @@ fn close_streams(messages: &Arc<Mutex<MessList>>,
             }
             let addr = kv.0;
 
-            let fd = *streams_fd.lock().unwrap().get(addr).unwrap();
-            let stream = streams.get(&fd).unwrap().lock().unwrap();
+            let fd = streams_fd.lock().unwrap()[addr];
+            let stream = streams[&fd].lock().unwrap();
             let listener_topic = &stream.listener_topic;
             let listener_name = &stream.listener_name;           
             save_mess_to_db(mess_for_send, db, listener_name, listener_topic, addr, mempool);            

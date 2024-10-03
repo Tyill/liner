@@ -12,13 +12,13 @@ extern "C" fn cb1(_to: *const i8, _from: *const i8, _uuid: *const i8, _timestamp
 }
 
 extern "C" fn cb2(_to: *const i8, _from: *const i8, _uuid: *const i8, _timestamp: u64, _data: *const u8, _dsize: usize){
-    // unsafe {
-    //     let to = CStr::from_ptr(to).to_str().unwrap();
-    //     let from = CStr::from_ptr(from).to_str().unwrap();
-    //     let uuid = CStr::from_ptr(uuid).to_str().unwrap();
+    //  unsafe {
+    //      let to = CStr::from_ptr(to).to_str().unwrap();
+    //      let from = CStr::from_ptr(from).to_str().unwrap();
+    //      let uuid = CStr::from_ptr(uuid).to_str().unwrap();
         
-    //     print!("{}", from);
-    // }
+    //      print!("{}", from);
+    //  }
 }
 
 fn  main() {
@@ -42,7 +42,7 @@ fn  main() {
        
     let array = [0; 100];
     let uuid = CString::new("1234").unwrap();
-    for _ in 0..10{
+    for _ in 0..30{
         println!("{} begin send_to", current_time_ms());       
         for _ in 0..10000{
             liner::send_to(&mut c1,   

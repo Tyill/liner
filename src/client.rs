@@ -1,4 +1,3 @@
-use crate::message::MessageForReceiver;
 use crate::redis;
 use crate::UCback;
 use crate::listener::Listener;
@@ -7,9 +6,7 @@ use crate::print_error;
 
 use std::net::TcpListener;
 use std::sync::Mutex;
-use std::{thread, sync::mpsc};
 use std::collections::HashMap;
-use std::thread::JoinHandle;
 
 pub struct Client{
     unique_name: String,
@@ -20,8 +17,7 @@ pub struct Client{
     last_send_index: HashMap<String, usize>,
     is_run: bool,
     mtx: Mutex<()>,
-    stream_thread: Option<JoinHandle<()>>,
-    address_topic: Vec<String>,
+    address_topic: HashMap<String, Vec<String>>,
 }
 
 impl Client {
@@ -37,8 +33,7 @@ impl Client {
                 last_send_index: HashMap::new(),
                 is_run: false,
                 mtx: Mutex::new(()),
-                stream_thread: None,
-                address_topic: Vec::new(),
+                address_topic: HashMap::new(),
             }
         )
     }
@@ -58,27 +53,11 @@ impl Client {
         if let Err(err) = self.db.regist_topic(topic){
             print_error!(&format!("{}", err));
             return false;
-        }
-        let topic_ = topic.to_string();
-        let (tx_prodr, rx_prodr) = mpsc::channel::<Vec<u8>>();
-        let stream_thread = thread::spawn(move||{ 
-            let mut topic_b : Vec<u8> = Vec::new();           // without this error UTF-8 validation  
-            topic_b.resize(topic_.len(), 0);
-            topic_b.copy_from_slice(topic_.as_bytes());
-            for data in rx_prodr.iter(){
-                let mess = MessageForReceiver::new(&data);
-                receive_cb(topic_b.as_ptr() as *const i8, 
-                        mess.topic_from, 
-                        mess.uuid, 
-                        mess.timestamp, 
-                        mess.data, mess.data_len);
-            }
-        });  
+        }        
         self.topic = topic.to_string();      
-        self.listener = Some(Listener::new(listener, tx_prodr, self.unique_name.clone(), self.db.redis_path(), topic.to_string()));
+        self.listener = Some(Listener::new(listener, self.unique_name.clone(), self.db.redis_path(), topic.to_string(), receive_cb));
         self.sender = Some(Sender::new(self.unique_name.clone(), self.db.redis_path(), topic.to_string()));
         self.sender.as_mut().unwrap().load_prev_connects(&mut self.db);
-        self.stream_thread = Some(stream_thread);
         self.is_run = true;
 
         true
@@ -92,18 +71,19 @@ impl Client {
         if !get_address_topic(topic, &mut self.db, &mut self.address_topic){
             return false           
         }
-        if self.address_topic.is_empty(){
+        let address = &self.address_topic[topic];   
+        if address.is_empty(){
             print_error!(&format!("not found addr for topic {}", topic));
             return false;
-        }       
+        }  
         if !self.last_send_index.contains_key(topic){
             self.last_send_index.insert(topic.to_string(), 0);
         }
         let mut index = self.last_send_index[topic];
-        if index >= self.address_topic.len(){
+        if index >= address.len(){
             index = 0;
         }
-        let addr = &self.address_topic[index];
+        let addr = &address[index];
         let ok = self.sender
         .as_mut().unwrap().send_to(&mut self.db, addr, 
                                 topic, &self.topic, uuid, data, at_least_once_delivery);
@@ -120,12 +100,13 @@ impl Client {
         if !get_address_topic(topic, &mut self.db, &mut self.address_topic){
             return false           
         }
-        if self.address_topic.is_empty(){
+        let address = &self.address_topic[topic];   
+        if address.is_empty(){
             print_error!(&format!("not found addr for topic {}", topic));
             return false;
         }       
         let mut ok = false;
-        for addr in &self.address_topic{
+        for addr in address{
             ok &= self.sender.as_mut().unwrap().send_to(&mut self.db, addr, 
                                     topic, &self.topic, uuid, data, at_least_once_delivery);
         }
@@ -165,18 +146,14 @@ impl Client {
     }
 }
 
-fn get_address_topic(topic: &str, db: &mut redis::Connect, address_topic: &mut Vec<String>)->bool{
-    if address_topic.is_empty(){
+fn get_address_topic(topic: &str, db: &mut redis::Connect, address_topic: &mut HashMap<String, Vec<String>>)->bool{
+    if !address_topic.contains_key(topic) || address_topic[topic].is_empty(){
         let addresses = db.get_addresses_of_topic(topic);
         if let Err(err) = addresses{
             print_error!(&format!("{}", err));
             return false;           
         }
-        *address_topic = addresses.unwrap();
-        if address_topic.is_empty(){
-            print_error!(&format!("not found addr for topic {}", topic));
-            return false;
-        }  
+        address_topic.insert(topic.to_string(), addresses.unwrap());
     }
     true
 }
@@ -189,9 +166,5 @@ impl Drop for Client {
         }
         drop(self.sender.take().unwrap());      
         drop(self.listener.take().unwrap());      
-    
-        if let Err(err) = self.stream_thread.take().unwrap().join(){
-            print_error!(&format!("stream_thread.join, {:?}", err));
-        }  
     }
 }

@@ -69,7 +69,7 @@ impl Connect {
         if !self.topic_addr_cache.contains_key(topic){
             self.init_addresses_of_topic(topic)?;
         }
-        Ok(self.topic_addr_cache.get(topic).unwrap().to_vec())
+        Ok(self.topic_addr_cache[topic].to_vec())
     }
     pub fn get_listener_unique_name(&mut self, topic: &str, address: &str)->RedisResult<String>{
         if !self.topic_addr_cache.contains_key(topic){
@@ -106,7 +106,7 @@ impl Connect {
             let res: String = dbconn.get(&format!("connection:{}:mess_number", key))?;
             self.last_mess_number.insert(key.clone(), res.parse::<u64>().unwrap());
         }
-        Ok(*self.last_mess_number.get(&key).unwrap())              
+        Ok(self.last_mess_number[&key])              
     }
      
     pub fn init_last_mess_number_from_sender(&mut self, listener_name: &str, listener_topic: &str)->RedisResult<()>{
