@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, usize};
 pub struct Mempool{
     buff: Vec<u8>,
     free_mem: BTreeMap<usize, Vec<usize>>, // key: size, value: free pos
+    median_size: usize,
 }
 
 impl Mempool{   
@@ -12,7 +13,11 @@ impl Mempool{
         Mempool{
             buff: Vec::new(),
             free_mem: BTreeMap::new(),
+            median_size: 0,
         }
+    }
+    pub fn _print_size(&self){
+        println!("mempool sz {}", self.buff.len());
     }
     pub fn alloc(&mut self, req_size: usize)->(usize, usize){    
         let mut length = usize::MAX;
@@ -46,8 +51,19 @@ impl Mempool{
         }
     }
     
-    pub fn free(&mut self, pos: usize, length: usize){
-        self.free_mem.get_mut(&length).unwrap().push(pos);
+    pub fn free(&mut self, mut pos: usize, length: usize){
+        let mut endlen = length;
+        while endlen > (self.median_size as f32 * 1.5) as usize {
+            self.free_mem.get_mut(&self.median_size).unwrap().push(pos);
+            endlen -= self.median_size;
+            pos += self.median_size;
+        }
+        if endlen > 0{
+            if endlen < length && !self.free_mem.contains_key(&endlen){
+                self.free_mem.insert(endlen, Vec::new());
+            }
+            self.free_mem.get_mut(&endlen).unwrap().push(pos);
+        }
     }
     pub fn write_str(&mut self, mut pos: usize, value: &str){
         self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
@@ -94,6 +110,8 @@ impl Mempool{
         self.buff.resize(csz + req_size, 0);
         if !self.free_mem.contains_key(&req_size){
             self.free_mem.insert(req_size, Vec::new());
+            let keys: Vec<&usize> = self.free_mem.keys().collect();
+            self.median_size = *keys[self.free_mem.len()/2];
         }
         csz
     }

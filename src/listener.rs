@@ -77,6 +77,9 @@ impl Listener {
         let db = Arc::new(Mutex::new(db_conn));
         db.lock().unwrap().set_source_topic(&source_topic);
         let db_ = db.clone();
+        let receive_thread_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        let receive_thread_cvar_ = receive_thread_cvar.clone();
+        
         let stream_thread = thread::spawn(move|| {
             listener.set_nonblocking(true).expect("couldn't listener set_nonblocking");
             let listener_fd = listener.as_raw_fd();
@@ -103,7 +106,7 @@ impl Listener {
                             wakeupfd_reset(wakeup_fd);
                         }else{
                             read_stream(epoll_fd, stream_fd, &streams, &senders_,
-                                        db_.clone(), &mempools_, &messages_);
+                                        db_.clone(), &mempools_, &messages_, &receive_thread_cvar_);
                         }
                     }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
                         remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders_);
@@ -119,7 +122,6 @@ impl Listener {
         let mempools_= mempools.clone();
         let senders_ = senders.clone();
         let db_ = db.clone();
-        let receive_thread_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
         let receive_thread_cvar_ = receive_thread_cvar.clone();
         let is_close: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
         let is_close_ = is_close.clone();
@@ -129,9 +131,7 @@ impl Listener {
                 if mess_buff.is_empty(){
                     let (lock, cvar) = &*receive_thread_cvar_;
                     let mut _started = lock.lock().unwrap();
-                    if !*is_close_.lock().unwrap(){
-                        _started = cvar.wait(_started).unwrap();
-                    }
+                    _started = cvar.wait(_started).unwrap();
                 }
                 do_receive_cb(mess_buff, &messages_, &mempools_, &senders_, &db_, receive_cb);                
             }
@@ -150,13 +150,6 @@ impl Listener {
             is_close,
         }
     }   
-
-    fn receive_thread_notify(&self){
-        let (lock, cvar) = &*self.receive_thread_cvar;
-        *lock.lock().unwrap() = true;
-        cvar.notify_one();
-    }
-   
 }
 
 fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
@@ -198,6 +191,12 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
         }
     }
     check_has_remove_senders(&db, &senders, &mempools, &messages);
+}
+
+fn receive_thread_notify(receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
+    let (lock, cvar) = &**receive_thread_cvar;
+    *lock.lock().unwrap() = true;
+    cvar.notify_one();
 }
 
 fn mess_for_receive(messages: &Arc<Mutex<MessList>>)->BTreeMap<RawFd, Vec<Message>>{
@@ -262,7 +261,8 @@ fn read_stream(epoll_fd: RawFd,
                senders: &Arc<Mutex<SenderList>>,
                db: Arc<Mutex<redis::Connect>>,
                mempools: &Arc<Mutex<MempoolList>>,
-               messages: &Arc<Mutex<MessList>>){
+               messages: &Arc<Mutex<MessList>>,
+               receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
     if let Some(stream) = streams.get(&stream_fd){        
         if let Ok(mut stream) = stream.try_lock(){
             if !stream.is_active && !stream.is_close{
@@ -278,9 +278,9 @@ fn read_stream(epoll_fd: RawFd,
         let senders = senders.clone();
         let mempool = mempools.lock().unwrap()[&stream_fd].clone();
         let messages = messages.clone();
+        let receive_thread_cvar = receive_thread_cvar.clone();
     
         rayon::spawn(move || {
-            let mut mempool = mempool.lock().unwrap();
             let mut stream = stream.lock().unwrap();
             let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.stream.by_ref());
 
@@ -289,13 +289,13 @@ fn read_stream(epoll_fd: RawFd,
             if let Ok(senders) = senders.lock(){
                 last_mess_num = senders[&stream_fd].last_mess_num_preview;
             }
-            while let Some(mess) = Message::from_stream(&mut mempool, reader.by_ref()){
+            while let Some(mess) = Message::from_stream(&mut mempool.lock().unwrap(), reader.by_ref()){
                 if last_mess_num == 0{
                     let senders = &mut senders.lock().unwrap();
                     let sender = senders.get_mut(&stream_fd).unwrap();
                     if sender.sender_name.is_empty(){
-                        mess.sender_topic(&mempool, &mut sender.sender_topic);
-                        mess.sender_name(&mempool, &mut sender.sender_name);
+                        mess.sender_topic(&mempool.lock().unwrap(), &mut sender.sender_topic);
+                        mess.sender_name(&mempool.lock().unwrap(), &mut sender.sender_name);
                     } 
                     last_mess_num = get_last_mess_number(&db, &sender.sender_name, &sender.sender_topic, 0);                    
                 }
@@ -303,7 +303,7 @@ fn read_stream(epoll_fd: RawFd,
                     last_mess_num = mess.number_mess;
                     mess_buff.push(mess);
                 }else{
-                    mess.free(&mut mempool);
+                    mess.free(&mut mempool.lock().unwrap());
                 }
             }            
             if let Ok(mut mess_lock) = messages.lock(){
@@ -317,7 +317,9 @@ fn read_stream(epoll_fd: RawFd,
                 senders.get_mut(&stream_fd).unwrap().last_mess_num_preview = last_mess_num;
             }            
             stream.is_active = false;
-            continue_read_stream(epoll_fd, stream_fd);  
+            continue_read_stream(epoll_fd, stream_fd);
+            receive_thread_notify(&receive_thread_cvar);
+            mempool.lock().unwrap()._print_size();
         });
     }
 
@@ -448,7 +450,7 @@ fn close_streams(streams: &mut HashMap<RawFd, Arc<Mutex<ReadStream>>>,
 impl Drop for Listener {
     fn drop(&mut self) {        
         *self.is_close.lock().unwrap() = true;
-        self.receive_thread_notify();
+        receive_thread_notify(&self.receive_thread_cvar);
         if let Err(err) = self.receive_thread.take().unwrap().join(){
             print_error!(&format!("wdelay_thread.join, {:?}", err));
         }
