@@ -105,7 +105,7 @@ impl Listener {
                         if stream_fd == wakeup_fd{
                             wakeupfd_reset(wakeup_fd);
                         }else{
-                            read_stream(epoll_fd, stream_fd, &streams, &senders_,
+                            read_stream(epoll_fd, stream_fd, &mut streams, &mut senders_,
                                         db_.clone(), &mempools_, &messages_, &receive_thread_cvar_);
                         }
                     }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
@@ -258,8 +258,8 @@ fn listener_accept(epoll_fd: RawFd,
 
 fn read_stream(epoll_fd: RawFd,
                stream_fd: RawFd,
-               streams: &HashMap<RawFd, Arc<Mutex<ReadStream>>>,
-               senders: &Arc<Mutex<SenderList>>,
+               streams: &mut HashMap<RawFd, Arc<Mutex<ReadStream>>>,
+               senders: &mut Arc<Mutex<SenderList>>,
                db: Arc<Mutex<redis::Connect>>,
                mempools: &Arc<Mutex<MempoolList>>,
                messages: &Arc<Mutex<MessList>>,
@@ -275,8 +275,9 @@ fn read_stream(epoll_fd: RawFd,
             continue_read_stream(epoll_fd, stream_fd);
             return;
         }
+        let mut streams = streams.clone();
         let stream = stream.clone();
-        let senders = senders.clone();
+        let mut senders = senders.clone();
         let mempool = mempools.lock().unwrap()[&stream_fd].clone();
         let messages = messages.clone();
         let receive_thread_cvar = receive_thread_cvar.clone();
@@ -289,7 +290,8 @@ fn read_stream(epoll_fd: RawFd,
             }
             let mut stream = stream.lock().unwrap();
             let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.stream.by_ref());
-            while let Some(mess) = Message::from_stream(&mempool, reader.by_ref()){
+            let mut is_shutdown = false;
+            while let Some(mess) = Message::from_stream(&mempool, reader.by_ref(), &mut is_shutdown){
                 if last_mess_num == 0{
                     let senders = &mut senders.lock().unwrap();
                     let sender = senders.get_mut(&stream_fd).unwrap();
@@ -305,20 +307,28 @@ fn read_stream(epoll_fd: RawFd,
                 }else{
                     mess.free(&mut mempool.lock().unwrap());
                 }
-            }   
-            if let Ok(mut mess_lock) = messages.lock(){
-                if let Some(mess_for_receive) = mess_lock.get_mut(&stream_fd).unwrap().as_mut(){
-                    mess_for_receive.append(&mut mess_buff);
-                }else{
-                    *mess_lock.get_mut(&stream_fd).unwrap() = Some(mess_buff);
+            }  
+            if !mess_buff.is_empty(){ 
+                if let Ok(mut mess_lock) = messages.lock(){
+                    if let Some(mess_for_receive) = mess_lock.get_mut(&stream_fd).unwrap().as_mut(){
+                        mess_for_receive.append(&mut mess_buff);
+                    }else{
+                        *mess_lock.get_mut(&stream_fd).unwrap() = Some(mess_buff);
+                    }
                 }
             }
             if let Ok(mut senders) = senders.lock(){
                 senders.get_mut(&stream_fd).unwrap().last_mess_num_preview = last_mess_num;
             }            
-            stream.is_active = false;
-            continue_read_stream(epoll_fd, stream_fd);
-            receive_thread_notify(&receive_thread_cvar);
+            if !is_shutdown{
+                continue_read_stream(epoll_fd, stream_fd);
+            }else{
+                let _ = stream.stream.shutdown(std::net::Shutdown::Read);
+                stream.is_close = true;
+                remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders);
+            }            
+            stream.is_active = false;        
+            receive_thread_notify(&receive_thread_cvar); 
         });
     }
 

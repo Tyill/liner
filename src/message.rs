@@ -79,10 +79,12 @@ impl Message{
         mempool.read_data(self.mem_alloc_pos, self.mem_alloc_length)
     }
 
-    pub fn from_stream<T>(mempool: &Arc<Mutex<Mempool>>, stream: &mut T) -> Option<Message>
+    pub fn from_stream<T>(mempool: &Arc<Mutex<Mempool>>, stream: &mut T, is_shutdown: &mut bool) -> Option<Message>
         where T: Read{
-        let (mem_alloc_pos, mem_alloc_length, mess_size) = bytestream::read_stream(stream, mempool);
+        let (mem_alloc_pos, mem_alloc_length, 
+            mess_size, is_shutdown_) = bytestream::read_stream(stream, mempool);
         if mess_size == 0{
+            *is_shutdown = is_shutdown_;
             return None;
         }
         let number_mess = get_number_mess(&mempool.lock().unwrap(), mem_alloc_pos);

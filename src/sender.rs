@@ -459,6 +459,7 @@ fn write_stream(stream_fd: RawFd,
             let addr_to = stream.address.to_string();
             let mut last_send_mess_number = stream.last_send_mess_number;
             let last_mess_number = stream.last_mess_number;
+            let mut is_shutdown = false;
             {
                 let mut buff: Vec<Message> = Vec::new();
                 let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream.stream.by_ref()); 
@@ -478,6 +479,7 @@ fn write_stream(stream_fd: RawFd,
                         if last_send_mess_number < num_mess{
                             last_send_mess_number = num_mess;
                             if !mess.to_stream(&mempool, &mut writer){
+                                is_shutdown = true;
                                 break;
                             }
                         }
@@ -498,6 +500,11 @@ fn write_stream(stream_fd: RawFd,
             }
             stream.last_send_mess_number = last_send_mess_number;
             stream.is_active = false;
+            if is_shutdown{ 
+                let _ = stream.stream.shutdown(std::net::Shutdown::Write);
+                stream.is_close = true;
+                remove_stream(epol)
+            }
         });
     }
 }

@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 // return: mem_pos, mem_alloc_length, mess_size
-pub fn read_stream<T>(stream: &mut T, mempool: &Arc<Mutex<Mempool>>)->(usize, usize, usize) 
+pub fn read_stream<T>(stream: &mut T, mempool: &Arc<Mutex<Mempool>>)->(usize, usize, usize, bool) 
 where 
     T: Read
 {
@@ -14,7 +14,8 @@ where
     let mut offs: usize = 0;
     let mut mem_pos = 0;
     let mut mem_alloc_length = 0; 
-    let mut mem_fill_length = 0;   
+    let mut mem_fill_length = 0;
+    let mut is_shutdown = false;
     loop {
         let mut rsz: usize = msz - mem_fill_length;
         if rsz == 0{
@@ -53,6 +54,7 @@ where
                         mem_pos = 0;
                         mem_fill_length = 0;
                     }
+                    is_shutdown = true;
                     break; 
                 }
             }
@@ -68,7 +70,7 @@ where
             }
         }
     }
-    (mem_pos, mem_alloc_length, mem_fill_length)
+    (mem_pos, mem_alloc_length, mem_fill_length, is_shutdown)
 }
 
 pub fn read_u32(pos: usize, data: &[u8])->u32{

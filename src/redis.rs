@@ -142,7 +142,8 @@ impl Connect {
         if let Some(llen) = llen{
             let buff: Vec<Vec<u8>> = dbconn.lpop(&format!("connection:{}:messages", key), core::num::NonZeroUsize::new(llen))?;
             for b in buff{
-                if let Some(mess) = Message::from_stream(mempool, &mut &b[..]){
+                let mut is_shutdown = false;
+                if let Some(mess) = Message::from_stream(mempool, &mut &b[..], &mut is_shutdown){
                     out.push(mess);
                 }else{
                     print_error!("!Message::from_stream");
@@ -163,7 +164,8 @@ impl Connect {
             }
             let buff: Vec<Vec<u8>> = dbconn.lrange(&format!("connection:{}:messages", key), -1, -1)?;
             for b in buff{
-                if let Some(mess) = Message::from_stream(mempool, &mut &b[..]){
+                let mut is_shutdown = false;
+                if let Some(mess) = Message::from_stream(mempool, &mut &b[..], &mut is_shutdown){
                     out = Some(mess);
                 }else{
                     print_error!("!Message::from_stream");
