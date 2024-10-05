@@ -16,12 +16,10 @@ use std::ffi::CStr;
 pub unsafe extern "C" fn new_client(unique_name: *const i8,
                        redis_path: *const i8,
                        )->Box<Option<Client>>{
-    unsafe{
-        let unique_name = CStr::from_ptr(unique_name).to_str().unwrap();
-        let redis_path = CStr::from_ptr(redis_path).to_str().unwrap();
-        
-        Box::new(Client::new(unique_name, redis_path))
-    }    
+    let unique_name = CStr::from_ptr(unique_name).to_str().unwrap();
+    let redis_path = CStr::from_ptr(redis_path).to_str().unwrap();
+    
+    Box::new(Client::new(unique_name, redis_path))
 }
 
 type UCback = extern "C" fn(to: *const i8, from: *const i8, uuid: *const i8, timestamp: u64, data: *const u8, dsize: usize);
@@ -32,13 +30,11 @@ pub unsafe extern "C" fn run(client: &mut Box<Option<Client>>,
                       topic: *const i8, 
                       localhost: *const i8,
                       receive_cb: UCback)->bool{
-    unsafe{
-        let topic = CStr::from_ptr(topic).to_str().unwrap();
-        let localhost = CStr::from_ptr(localhost).to_str().unwrap();
-            
-        let c = client.as_mut();
-        c.as_mut().unwrap().run(topic, localhost, receive_cb)
-    }
+    let topic = CStr::from_ptr(topic).to_str().unwrap();
+    let localhost = CStr::from_ptr(localhost).to_str().unwrap();
+        
+    let c = client.as_mut();
+    c.as_mut().unwrap().run(topic, localhost, receive_cb)
 }
 /// # Safety
 #[no_mangle]
@@ -47,14 +43,12 @@ pub unsafe extern "C" fn send_to(client: &mut Box<Option<Client>>,
                           uuid: *const i8,
                           data: *const u8, data_size: usize,
                           at_least_once_delivery: bool)->bool{
-    unsafe {
-        let topic = CStr::from_ptr(topic).to_str().unwrap();
-        let uuid = CStr::from_ptr(uuid).to_str().unwrap();       
-        let data = std::slice::from_raw_parts(data, data_size);
+    let topic = CStr::from_ptr(topic).to_str().unwrap();
+    let uuid = CStr::from_ptr(uuid).to_str().unwrap();       
+    let data = std::slice::from_raw_parts(data, data_size);
 
-        let c = client.as_mut();
-        c.as_mut().unwrap().send_to(topic, uuid, data, at_least_once_delivery)
-    }    
+    let c = client.as_mut();
+    c.as_mut().unwrap().send_to(topic, uuid, data, at_least_once_delivery)
 }
 /// # Safety
 #[no_mangle]
@@ -63,25 +57,21 @@ pub unsafe extern "C" fn send_all(client: &mut Box<Option<Client>>,
                           uuid: *const i8,
                           data: *const u8, data_size: usize,
                           at_least_once_delivery: bool)->bool{
-    unsafe {
-        let topic = CStr::from_ptr(topic).to_str().unwrap();
-        let uuid = CStr::from_ptr(uuid).to_str().unwrap();       
-        let data = std::slice::from_raw_parts(data, data_size);
+    let topic = CStr::from_ptr(topic).to_str().unwrap();
+    let uuid = CStr::from_ptr(uuid).to_str().unwrap();       
+    let data = std::slice::from_raw_parts(data, data_size);
 
-        let c = client.as_mut();
-        c.as_mut().unwrap().send_all(topic, uuid, data, at_least_once_delivery)
-    }    
+    let c = client.as_mut();
+    c.as_mut().unwrap().send_all(topic, uuid, data, at_least_once_delivery)
 }
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn subscribe(client: &mut Box<Option<Client>>,
                           topic: *const i8)->bool{
-    unsafe {
-        let topic = CStr::from_ptr(topic).to_str().unwrap();
-        
-        let c = client.as_mut();
-        c.as_mut().unwrap().subscribe(topic)
-    }    
+    let topic = CStr::from_ptr(topic).to_str().unwrap();
+    
+    let c = client.as_mut();
+    c.as_mut().unwrap().subscribe(topic)
 }
 /// # Safety
 #[no_mangle]

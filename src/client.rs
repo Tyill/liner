@@ -126,7 +126,7 @@ impl Client {
             print_error!(&format!("{}", err));
             return false;
         }        
-        return true;
+        true
     }
 
     pub fn unsubscribe(&mut self, topic: &str) -> bool {
@@ -142,7 +142,7 @@ impl Client {
             print_error!(&format!("{}", err));
             return false;
         }        
-        return true;
+        true
     }
 }
 

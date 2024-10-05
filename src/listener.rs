@@ -128,12 +128,13 @@ impl Listener {
         let receive_thread = thread::spawn(move|| {
             while !*is_close_.lock().unwrap(){
                 let mess_buff = mess_for_receive(&messages_);
-                if mess_buff.is_empty(){
+                if !mess_buff.is_empty(){
+                    do_receive_cb(mess_buff, &messages_, &mempools_, &senders_, &db_, receive_cb); 
+                }else{
                     let (lock, cvar) = &*receive_thread_cvar_;
                     let mut _started = lock.lock().unwrap();
                     _started = cvar.wait(_started).unwrap();
-                }
-                do_receive_cb(mess_buff, &messages_, &mempools_, &senders_, &db_, receive_cb);                
+                }                               
             }
         });  
         Self{
@@ -190,7 +191,7 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
             senders.get_mut(&fd).unwrap().last_mess_num = last_mess_num;
         }
     }
-    check_has_remove_senders(&db, &senders, &mempools, &messages);
+    check_has_remove_senders(db, senders, mempools, messages);
 }
 
 fn receive_thread_notify(receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
@@ -204,8 +205,8 @@ fn mess_for_receive(messages: &Arc<Mutex<MessList>>)->BTreeMap<RawFd, Vec<Messag
     for mess in messages.lock().unwrap().iter_mut(){
         let fd = *mess.0;
         let m = mess.1.take();
-        if m.is_some(){
-            mess_buff.insert(fd, m.unwrap());
+        if let Some(m) = m{
+            mess_buff.insert(fd, m);
         }
     }
     mess_buff
@@ -299,7 +300,7 @@ fn read_stream(epoll_fd: RawFd,
                     } 
                     last_mess_num = get_last_mess_number(&db, &sender.sender_name, &sender.sender_topic, 0);                    
                 }
-                if mess.number_mess > last_mess_num && false{
+                if mess.number_mess > last_mess_num{
                     last_mess_num = mess.number_mess;
                     mess_buff.push(mess);
                 }else{

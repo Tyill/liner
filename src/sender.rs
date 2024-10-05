@@ -104,7 +104,7 @@ impl Sender {
                                         &mut streams_fd_, &messages_, &db, &mempools_);
                 }
                 if timeout_update_last_mess_number(ctime, &mut prev_time[1]){                    
-                    update_last_mess_number(&mut streams, &db);
+                    update_last_mess_number(&streams, &db);
                 }
                 if !wait(epoll_fd, &mut events){
                     break;
@@ -431,7 +431,7 @@ fn append_streams(epoll_fd: RawFd,
                 addrs_lost.push(addr.clone());
                 print_error!(&format!("tcp connect, {} {}", err, addr.address));
                 if let Some(mess) = messages.lock().unwrap().get_mut(&addr.address).unwrap().take(){
-                    save_mess_to_db(mess, db, &listener_name, &addr.listener_topic, &addr.address, &mempools);
+                    save_mess_to_db(mess, db, &listener_name, &addr.listener_topic, &addr.address, mempools);
                 }
             }
         }

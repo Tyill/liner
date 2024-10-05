@@ -41,7 +41,7 @@ where
                     if let Some(indata) = indata.as_deref_mut(){
                         indata[mem_fill_length.. mem_fill_length + n].copy_from_slice(&buff[..n]);
                         mem_fill_length += n;
-                        if mem_fill_length == msz as usize {                        
+                        if mem_fill_length == msz {                        
                             break;
                         }
                     }

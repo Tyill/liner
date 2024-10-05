@@ -161,7 +161,7 @@ impl MessageForReceiver{
         let uuid_len = bytestream::read_u32(uuid_pos, raw_data) + std::mem::size_of::<u32>() as u32;
         let timestamp_pos = uuid_pos + uuid_len as usize;
         let timestamp_len = std::mem::size_of::<u64>();
-        let data_pos = timestamp_pos + timestamp_len as usize;
+        let data_pos = timestamp_pos + timestamp_len;
         unsafe{
             let len: isize = std::mem::size_of::<u32>() as isize;
             Self{
@@ -169,7 +169,7 @@ impl MessageForReceiver{
                 topic_from: raw_data.as_ptr().offset(sender_topic_pos as isize + len) as *const i8,
                 uuid: raw_data.as_ptr().offset(uuid_pos as isize + len) as *const i8,
                 timestamp: bytestream::read_u64(timestamp_pos, raw_data),
-                data: raw_data.as_ptr().offset(data_pos as isize + len) as *const u8,
+                data: raw_data.as_ptr().offset(data_pos as isize + len),
                 data_len: bytestream::read_u32(data_pos, raw_data) as usize,
                 number_mess: mess.number_mess,
                 mem_alloc_pos: mess.mem_alloc_pos,
