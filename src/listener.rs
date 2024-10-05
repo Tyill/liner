@@ -168,7 +168,7 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
         for m in mess.1{
             mess_buff.push(MessageForReceiver::new(&m, &mempool));
         }
-        mess_for_receive.insert(mess.0, mess_buff);
+        mess_for_receive.insert(fd, mess_buff);
     }
     for mess in mess_for_receive{
         let fd = mess.0;
@@ -186,8 +186,8 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
             }
         }
         let mut senders = senders.lock().unwrap();
-        if senders[&mess.0].last_mess_num < last_mess_num{
-            senders.get_mut(&mess.0).unwrap().last_mess_num = last_mess_num;
+        if senders[&fd].last_mess_num < last_mess_num{
+            senders.get_mut(&fd).unwrap().last_mess_num = last_mess_num;
         }
     }
     check_has_remove_senders(&db, &senders, &mempools, &messages);
