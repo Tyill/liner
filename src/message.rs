@@ -1,6 +1,7 @@
 use crate::bytestream;
 use crate::mempool::Mempool;
 use std::io::{Write, Read};
+use std::sync::{Arc, Mutex};
 
 const _COMPRESS: u8 = 0x01;
 const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
@@ -78,20 +79,20 @@ impl Message{
         mempool.read_data(self.mem_alloc_pos, self.mem_alloc_length)
     }
 
-    pub fn from_stream<T>(mempool: &mut Mempool, stream: &mut T) -> Option<Message>
+    pub fn from_stream<T>(mempool: &Arc<Mutex<Mempool>>, stream: &mut T) -> Option<Message>
         where T: Read{
-        let (mem_alloc_pos, mem_alloc_length, mess_size) = bytestream::read_stream_to_mempool(stream, mempool);
+        let (mem_alloc_pos, mem_alloc_length, mess_size) = bytestream::read_stream(stream, mempool);
         if mess_size == 0{
             return None;
         }
-        let number_mess = get_number_mess(mempool, mem_alloc_pos);
-        let flags = get_flags(mempool, mem_alloc_pos);
+        let number_mess = get_number_mess(&mempool.lock().unwrap(), mem_alloc_pos);
+        let flags = get_flags(&mempool.lock().unwrap(), mem_alloc_pos);
         
         Some(Message{number_mess, flags, mess_size, mem_alloc_pos, mem_alloc_length})
     }
-    pub fn to_stream<T>(&self, mempool: &Mempool, stream: &mut T)->bool 
+    pub fn to_stream<T>(&self, mempool: &Arc<Mutex<Mempool>>, stream: &mut T)->bool 
         where T: Write{        
-        bytestream::write_stream(stream, mempool.read_data(self.mem_alloc_pos, self.mess_size))       
+        bytestream::write_stream(stream, self.mem_alloc_pos, self.mess_size, mempool)       
     }
     
     pub fn at_least_once_delivery(&self)->bool{

@@ -254,7 +254,7 @@ impl Sender {
         }            
         self.mempools.lock().unwrap().insert(addr_to.to_string(), Arc::new(Mutex::new(Mempool::new())));
         let mempool = self.mempools.lock().unwrap().get_mut(addr_to).unwrap().clone();
-        if let Ok(last_mess) = db.load_last_message_for_sender(&mut mempool.lock().unwrap(), &listener_name, listener_topic){
+        if let Ok(last_mess) = db.load_last_message_for_sender(&mempool, &listener_name, listener_topic){
             if let Some(mess) = last_mess{
                 let mess_num = mess.number_mess;
                 if mess_num > self.last_mess_number[addr_to]{
@@ -399,7 +399,7 @@ fn append_streams(epoll_fd: RawFd,
                 let stm_fd = stream.as_raw_fd();
 
                 let mempool = mempools.lock().unwrap().get_mut(&addr.address).unwrap().clone();
-                match db.lock().unwrap().load_messages_for_sender(&mut mempool.lock().unwrap(), &listener_name, &addr.listener_topic){
+                match db.lock().unwrap().load_messages_for_sender(&mempool, &listener_name, &addr.listener_topic){
                     Ok(mut mess_from_db) =>{
                         if let Ok(mut mess_lock) = messages.lock(){
                             if let Some(mut mess_for_send) = mess_lock.get_mut(&addr.address).unwrap().take(){
@@ -477,7 +477,7 @@ fn write_stream(stream_fd: RawFd,
                         let num_mess = mess.number_mess;
                         if last_send_mess_number < num_mess{
                             last_send_mess_number = num_mess;
-                            if !mess.to_stream(&mempool.lock().unwrap(), &mut writer){
+                            if !mess.to_stream(&mempool, &mut writer){
                                 break;
                             }
                         }
@@ -545,7 +545,7 @@ fn save_mess_to_db(mess: Vec<Message>, db: &Arc<Mutex<redis::Connect>>, listener
                                  .collect();
     let mempool = mempools.lock().unwrap()[addr].clone();
     if !mess.is_empty(){
-        if let Err(err) = db.lock().unwrap().save_messages_from_sender(&mempool.lock().unwrap(), listener_name, listener_topic, mess){
+        if let Err(err) = db.lock().unwrap().save_messages_from_sender(&mempool, listener_name, listener_topic, mess){
             print_error!(&format!("db.save_messages_from_sender, {}:{}, err {}", listener_name, listener_topic, err));
         }
     }

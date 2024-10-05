@@ -2,6 +2,7 @@ use crate::{message::Message, mempool::Mempool, print_error};
 
 use redis::{Commands, ConnectionLike, RedisResult, ErrorKind};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 pub struct Connect{
     unique_name: String,
@@ -122,7 +123,7 @@ impl Connect {
         Ok(res.parse::<u64>().unwrap())
     }
 
-    pub fn save_messages_from_sender(&mut self, mempool: &Mempool, listener_name: &str, listener_topic: &str, mess: Vec<Message>)->RedisResult<()>{
+    pub fn save_messages_from_sender(&mut self, mempool: &Arc<Mutex<Mempool>>, listener_name: &str, listener_topic: &str, mess: Vec<Message>)->RedisResult<()>{
         let key = format!("{}:{}:{}:{}", self.unique_name, self.source_topic, listener_name, listener_topic);
         let dbconn = self.get_dbconn()?; 
         for m in mess{
@@ -133,7 +134,7 @@ impl Connect {
         Ok(())
     }
 
-    pub fn load_messages_for_sender(&mut self, mempool: &mut Mempool, listener_name: &str, listener_topic: &str)->RedisResult<Vec<Message>>{
+    pub fn load_messages_for_sender(&mut self, mempool: &Arc<Mutex<Mempool>>, listener_name: &str, listener_topic: &str)->RedisResult<Vec<Message>>{
         let key = format!("{}:{}:{}:{}", self.unique_name, self.source_topic, listener_name, listener_topic);
         let dbconn = self.get_dbconn()?; 
         let llen: Option<usize> = dbconn.llen(&format!("connection:{}:messages", key.clone()))?;
@@ -151,7 +152,7 @@ impl Connect {
         Ok(out)
     }
 
-    pub fn load_last_message_for_sender(&mut self, mempool: &mut Mempool, listener_name: &str, listener_topic: &str)->RedisResult<Option<Message>>{
+    pub fn load_last_message_for_sender(&mut self, mempool: &Arc<Mutex<Mempool>>, listener_name: &str, listener_topic: &str)->RedisResult<Option<Message>>{
         let key = format!("{}:{}:{}:{}", self.unique_name, self.source_topic, listener_name, listener_topic);
         let dbconn = self.get_dbconn()?; 
         let llen: Option<usize> = dbconn.llen(&format!("connection:{}:messages", key.clone()))?;

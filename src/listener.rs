@@ -163,9 +163,9 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
     let mut mess_for_receive: BTreeMap<RawFd, Vec<MessageForReceiver>> = BTreeMap::new();
     for mess in mess_buff{
         let fd = mess.0;
+        let mut mess_buff: Vec<MessageForReceiver> = Vec::with_capacity(mess.1.len());
         let mempool_lock = mempools.lock().unwrap()[&fd].clone();
         let mempool = mempool_lock.lock().unwrap();
-        let mut mess_buff: Vec<MessageForReceiver> = Vec::with_capacity(mess.1.len());
         for m in mess.1{
             mess_buff.push(MessageForReceiver::new(&m, &mempool));
         }
@@ -289,14 +289,13 @@ fn read_stream(epoll_fd: RawFd,
             }
             let mut stream = stream.lock().unwrap();
             let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.stream.by_ref());
-            let mut mempool = mempool.lock().unwrap();
-            while let Some(mess) = Message::from_stream(&mut mempool, reader.by_ref()){
+            while let Some(mess) = Message::from_stream(&mempool, reader.by_ref()){
                 if last_mess_num == 0{
                     let senders = &mut senders.lock().unwrap();
                     let sender = senders.get_mut(&stream_fd).unwrap();
                     if sender.sender_name.is_empty(){
-                        mess.sender_topic(&mempool, &mut sender.sender_topic);
-                        mess.sender_name(&mempool, &mut sender.sender_name);
+                        mess.sender_topic(&mempool.lock().unwrap(), &mut sender.sender_topic);
+                        mess.sender_name(&mempool.lock().unwrap(), &mut sender.sender_name);
                     } 
                     last_mess_num = get_last_mess_number(&db, &sender.sender_name, &sender.sender_topic, 0);                    
                 }
@@ -304,9 +303,9 @@ fn read_stream(epoll_fd: RawFd,
                     last_mess_num = mess.number_mess;
                     mess_buff.push(mess);
                 }else{
-                    mess.free(&mut mempool);
+                    mess.free(&mut mempool.lock().unwrap());
                 }
-            }       
+            }   
             if let Ok(mut mess_lock) = messages.lock(){
                 if let Some(mess_for_receive) = mess_lock.get_mut(&stream_fd).unwrap().as_mut(){
                     mess_for_receive.append(&mut mess_buff);

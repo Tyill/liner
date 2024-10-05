@@ -79,6 +79,9 @@ impl Mempool{
         pos += std::mem::size_of::<u32>();
         self.buff[pos.. pos + value.len()].copy_from_slice(value);
     }
+    pub fn write_data(&mut self, pos: usize, value: &[u8]){
+        self.buff[pos.. pos + value.len()].copy_from_slice(value);
+    }
     pub fn read_string(&self, mut pos: usize)->String{
         let sz: usize = i32::from_be_bytes(u8_4(&self.buff[pos.. pos + std::mem::size_of::<u32>()])) as usize;
         pos += std::mem::size_of::<u32>();
@@ -100,9 +103,6 @@ impl Mempool{
     }
     pub fn read_data(&self, pos: usize, sz: usize)->&[u8]{
         &self.buff[pos.. pos + sz]
-    }
-    pub fn read_mut_data(&mut self, pos: usize, sz: usize)->&mut [u8]{
-        &mut self.buff[pos.. pos + sz]
     }
 
     fn new_mem(&mut self, req_size: usize)->usize{
