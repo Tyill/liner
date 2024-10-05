@@ -280,32 +280,32 @@ fn read_stream(epoll_fd: RawFd,
         let messages = messages.clone();
         let receive_thread_cvar = receive_thread_cvar.clone();
     
-        rayon::spawn(move || {
-            let mut stream = stream.lock().unwrap();
-            let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.stream.by_ref());
-
+        rayon::spawn(move || {           
             let mut mess_buff: Vec<Message> = Vec::new();      
             let mut last_mess_num = 0;
             if let Ok(senders) = senders.lock(){
                 last_mess_num = senders[&stream_fd].last_mess_num_preview;
             }
-            while let Some(mess) = Message::from_stream(&mut mempool.lock().unwrap(), reader.by_ref()){
+            let mut stream = stream.lock().unwrap();
+            let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.stream.by_ref());
+            let mut mempool = mempool.lock().unwrap();
+            while let Some(mess) = Message::from_stream(&mut mempool, reader.by_ref()){
                 if last_mess_num == 0{
                     let senders = &mut senders.lock().unwrap();
                     let sender = senders.get_mut(&stream_fd).unwrap();
                     if sender.sender_name.is_empty(){
-                        mess.sender_topic(&mempool.lock().unwrap(), &mut sender.sender_topic);
-                        mess.sender_name(&mempool.lock().unwrap(), &mut sender.sender_name);
+                        mess.sender_topic(&mempool, &mut sender.sender_topic);
+                        mess.sender_name(&mempool, &mut sender.sender_name);
                     } 
                     last_mess_num = get_last_mess_number(&db, &sender.sender_name, &sender.sender_topic, 0);                    
                 }
-                if mess.number_mess > last_mess_num{
+                if mess.number_mess > last_mess_num && false{
                     last_mess_num = mess.number_mess;
                     mess_buff.push(mess);
                 }else{
-                    mess.free(&mut mempool.lock().unwrap());
+                    mess.free(&mut mempool);
                 }
-            }            
+            }       
             if let Ok(mut mess_lock) = messages.lock(){
                 if let Some(mess_for_receive) = mess_lock.get_mut(&stream_fd).unwrap().as_mut(){
                     mess_for_receive.append(&mut mess_buff);
@@ -319,7 +319,6 @@ fn read_stream(epoll_fd: RawFd,
             stream.is_active = false;
             continue_read_stream(epoll_fd, stream_fd);
             receive_thread_notify(&receive_thread_cvar);
-            mempool.lock().unwrap()._print_size();
         });
     }
 
