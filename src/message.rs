@@ -1,9 +1,10 @@
-use crate::bytestream;
+use crate::{bytestream, print_error};
 use crate::mempool::Mempool;
+use crate::settings;
 use std::io::{Write, Read};
 use std::sync::{Arc, Mutex};
 
-const _COMPRESS: u8 = 0x01;
+const COMPRESS: u8 = 0x01;
 const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
 
 pub struct Message{
@@ -36,8 +37,15 @@ impl Message{
         let sender_name_len = sender_name.len() + std::mem::size_of::<u32>();
         let uuid_len = uuid.len() + std::mem::size_of::<u32>();
         let timestamp_len = std::mem::size_of::<u64>();
-        let data_len = data.len() + std::mem::size_of::<u32>();
-
+        let mut cdata: Option<Vec<u8>> = None;
+        if data.len() > settings::MIN_SIZE_DATA_FOR_COMPRESS_BYTE{
+            cdata = Some(compress(data)); 
+        }
+        let mut data_len = data.len() + std::mem::size_of::<u32>();
+        if let Some(cdata) = &cdata{
+            data_len = cdata.len() + std::mem::size_of::<u32>();
+            flags |= COMPRESS;
+        }
         let mess_size = std::mem::size_of::<i32>() +                
             number_mess_len +                 
             flags_len +
@@ -66,8 +74,11 @@ impl Message{
         mempool.write_str(sender_name_pos, sender_name);
         mempool.write_str(uuid_pos, uuid);
         mempool.write_num(timestamp_pos, timestamp);
-        mempool.write_array(data_pos, data);
-
+        if cdata.is_none(){
+            mempool.write_array(data_pos, data);
+        }else{
+            mempool.write_array(data_pos, &cdata.unwrap());
+        }
         Message{number_mess, flags, mess_size, mem_alloc_pos, mem_alloc_length}
     }   
 
@@ -99,6 +110,9 @@ impl Message{
     
     pub fn at_least_once_delivery(&self)->bool{
         self.flags & AT_LEAST_ONCE_DELIVERY > 0
+    }
+    fn is_compressed(&self)->bool{
+        self.flags & COMPRESS > 0
     }
     pub fn sender_topic(&self, mempool: &Mempool, io_topic: &mut String){
         let all_len = std::mem::size_of::<u32>();
@@ -132,6 +146,30 @@ fn get_flags(mempool: &Mempool, mem_pos:usize)->u8{
     let number_mess_len = std::mem::size_of::<u64>();        
     mempool.read_u8(mem_pos + all_len + number_mess_len)
 }
+fn compress(data: &[u8])->Vec<u8>{
+    let mut cdata: Vec<u8> = Vec::new(); 
+    match zstd::stream::encode_all(data, settings::DATA_COMPRESS_LEVEL){
+        Ok(data)=>{
+            cdata = data;
+        },
+        Err(err)=>{
+            print_error!(format!("compress error, dsz {}, err {}", data.len(), err));
+        }
+    }
+    cdata
+}
+fn decompress(cdata: &[u8])->Vec<u8>{
+    let mut data: Vec<u8> = Vec::new(); 
+    match zstd::stream::decode_all(cdata){
+        Ok(data_)=>{
+            data = data_;
+        },
+        Err(err)=>{
+            print_error!(format!("decompress error, dsz {}, err {}", cdata.len(), err));
+        }
+    }
+    data
+}
 
 
 pub struct MessageForReceiver{
@@ -142,6 +180,7 @@ pub struct MessageForReceiver{
     pub data: *const u8, 
     pub data_len: usize,
     pub number_mess: u64,
+    _decomp_data: Option<Vec<u8>>,
     mem_alloc_pos: usize,
     mem_alloc_length: usize,
 }
@@ -165,16 +204,29 @@ impl MessageForReceiver{
         let timestamp_pos = uuid_pos + uuid_len as usize;
         let timestamp_len = std::mem::size_of::<u64>();
         let data_pos = timestamp_pos + timestamp_len;
+
+        let len: isize = std::mem::size_of::<u32>() as isize;
         unsafe{
-            let len: isize = std::mem::size_of::<u32>() as isize;
+            let mut data = raw_data.as_ptr().offset(data_pos as isize + len);
+            let mut data_len = bytestream::read_u32(data_pos, raw_data) as usize;
+            let mut _decomp_data = None;
+            if mess.is_compressed(){
+                let data_pos = data_pos + len as usize;
+                _decomp_data = Some(decompress(&raw_data[data_pos.. data_pos + data_len]));
+                if let Some(decomp_data) = &_decomp_data{
+                    data = decomp_data.as_ptr();
+                    data_len = decomp_data.len();
+                }
+            }
             Self{
                 topic_to: raw_data.as_ptr().offset(listener_topic_pos as isize + len) as *const i8,
                 topic_from: raw_data.as_ptr().offset(sender_topic_pos as isize + len) as *const i8,
                 uuid: raw_data.as_ptr().offset(uuid_pos as isize + len) as *const i8,
                 timestamp: bytestream::read_u64(timestamp_pos, raw_data),
-                data: raw_data.as_ptr().offset(data_pos as isize + len),
-                data_len: bytestream::read_u32(data_pos, raw_data) as usize,
+                data,
+                data_len,
                 number_mess: mess.number_mess,
+                _decomp_data,
                 mem_alloc_pos: mess.mem_alloc_pos,
                 mem_alloc_length: mess.mem_alloc_length,
             }

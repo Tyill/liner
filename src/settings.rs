@@ -5,3 +5,5 @@ pub const CHECK_AVAILABLE_STREAM_TIMEOUT_MS: u64 = 10*1000; //10sec
 pub const UPDATE_LAST_MESS_NUMBER_TIMEOUT_MS: u64 = 1000; //1s
 pub const WRITE_MESS_DELAY_MS: u64 = 1;
 pub const WRITE_MESS_TIMEOUT_MS: u64 = 10;
+pub const MIN_SIZE_DATA_FOR_COMPRESS_BYTE: usize = 1024*1024;
+pub const DATA_COMPRESS_LEVEL: i32 = 0; // A level of `0` uses zstd's default (currently `3`).

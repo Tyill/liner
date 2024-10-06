@@ -40,11 +40,11 @@ fn  main() {
     liner::run(&mut c1, topic_1.as_ptr(), localhost.as_ptr(), cb1);
     
        
-    let array = [0; 100];
+    let array = [0; 1024 * 1025];
     let uuid = CString::new("1234").unwrap();
     for _ in 0..30{
         println!("{} begin send_to", current_time_ms());       
-        for _ in 0..10000{
+        for _ in 0..100{
             liner::send_to(&mut c1,   
                 topic_2.as_ptr(),
                 uuid.as_ptr(),
