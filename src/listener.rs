@@ -324,13 +324,12 @@ fn read_stream(epoll_fd: RawFd,
         if let Ok(mut senders) = senders.lock(){
             senders.get_mut(&stream_fd).unwrap().last_mess_num_preview = last_mess_num;
         }            
-        if !is_shutdown{
-            continue_read_stream(epoll_fd, stream_fd);
-        }else{
+        if is_shutdown{
             let _ = stream.stream.shutdown(std::net::Shutdown::Read);
             stream.is_close = true;
         }            
-        stream.is_active = false;        
+        stream.is_active = false;
+        continue_read_stream(epoll_fd, stream_fd);
         receive_thread_notify(&receive_thread_cvar); 
     });
 }
