@@ -13,7 +13,7 @@ use std::ffi::CStr;
 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn new_client(unique_name: *const i8,
+pub unsafe extern "C" fn ln_new_client(unique_name: *const i8,
                        redis_path: *const i8,
                        )->Box<Option<Client>>{
     let unique_name = CStr::from_ptr(unique_name).to_str().unwrap();
@@ -26,19 +26,22 @@ type UCback = extern "C" fn(to: *const i8, from: *const i8, uuid: *const i8, tim
 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn run(client: &mut Box<Option<Client>>, 
+pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>, 
                       topic: *const i8, 
                       localhost: *const i8,
                       receive_cb: UCback)->bool{
     let topic = CStr::from_ptr(topic).to_str().unwrap();
     let localhost = CStr::from_ptr(localhost).to_str().unwrap();
         
+    if !has_client(client){
+        return false;
+    }    
     let c = client.as_mut();
     c.as_mut().unwrap().run(topic, localhost, receive_cb)
 }
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn send_to(client: &mut Box<Option<Client>>,
+pub unsafe extern "C" fn ln_send_to(client: &mut Box<Option<Client>>,
                           topic: *const i8,
                           uuid: *const i8,
                           data: *const u8, data_size: usize,
@@ -47,12 +50,15 @@ pub unsafe extern "C" fn send_to(client: &mut Box<Option<Client>>,
     let uuid = CStr::from_ptr(uuid).to_str().unwrap();       
     let data = std::slice::from_raw_parts(data, data_size);
 
+    if !has_client(client){
+        return false;
+    }
     let c = client.as_mut();
     c.as_mut().unwrap().send_to(topic, uuid, data, at_least_once_delivery)
 }
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn send_all(client: &mut Box<Option<Client>>,
+pub unsafe extern "C" fn ln_send_all(client: &mut Box<Option<Client>>,
                           topic: *const i8,
                           uuid: *const i8,
                           data: *const u8, data_size: usize,
@@ -61,33 +67,53 @@ pub unsafe extern "C" fn send_all(client: &mut Box<Option<Client>>,
     let uuid = CStr::from_ptr(uuid).to_str().unwrap();       
     let data = std::slice::from_raw_parts(data, data_size);
 
+    if !has_client(client){
+        return false;
+    }
     let c = client.as_mut();
     c.as_mut().unwrap().send_all(topic, uuid, data, at_least_once_delivery)
 }
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn subscribe(client: &mut Box<Option<Client>>,
+pub unsafe extern "C" fn ln_subscribe(client: &mut Box<Option<Client>>,
                           topic: *const i8)->bool{
     let topic = CStr::from_ptr(topic).to_str().unwrap();
     
+    if !has_client(client){
+        return false;
+    }
     let c = client.as_mut();
     c.as_mut().unwrap().subscribe(topic)
 }
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn unsubscribe(client: &mut Box<Option<Client>>,
+pub unsafe extern "C" fn ln_unsubscribe(client: &mut Box<Option<Client>>,
                           topic: *const i8)->bool{
     let topic = CStr::from_ptr(topic).to_str().unwrap();
     
+    if !has_client(client){
+        return false;
+    }
     let c = client.as_mut();
     c.as_mut().unwrap().unsubscribe(topic)
 }
 
 #[no_mangle]
-pub extern "C" fn delete_client(c: Box<Option<Client>>){
-    drop(c.unwrap());
+pub extern "C" fn ln_delete_client(client: Box<Option<Client>>){
+    if !has_client(&client){
+        return;
+    }
+    drop(client.unwrap());
 }
 
+fn has_client(client: &Box<Option<Client>>)->bool{
+    if client.is_some(){
+        true
+    }else{
+        print_error!("client was not created");
+        false
+    }
+}
 
 #[macro_export]
 macro_rules! print_error {

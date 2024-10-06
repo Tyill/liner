@@ -2,7 +2,9 @@
 name = "liner"
 version = "0.1.0"
 edition = "2021"
-crate-type = ["cdylib"]      # Creates dynamic lib
+
+[lib]
+crate-type = ["cdylib"]
 
 [dependencies]
 redis = "0.26.1"
