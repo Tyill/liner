@@ -116,14 +116,21 @@ impl Sender {
                             wakeupfd_reset(wakeup_fd);
                         }
                     }else if ev.events as i32 & libc::EPOLLOUT > 0{
-                        write_stream(stream_fd, &streams, messages_.clone(), mempools_.clone());
+                        if let Some(stream) = streams.get(&stream_fd){
+                            if !stream.lock().unwrap().is_close{
+                                write_stream(stream, &messages_, &mempools_);
+                            }else{
+                                remove_stream(epoll_fd, stream_fd, &mut streams, &streams_fd_,
+                                    &messages_, &addrs_new_, &db, &mempools_);
+                            }
+                        }
                     }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
                         remove_stream(epoll_fd, stream_fd, &mut streams, &streams_fd_,
                                         &messages_, &addrs_new_, &db, &mempools_);
                     }else{
                         print_error!(format!("unknown event {}", stream_fd as RawFd));
                     }
-                }               
+                }   
             }
             close_streams(&messages_, &mut streams, &streams_fd_, &db, &mempools_);
         });
@@ -439,74 +446,74 @@ fn append_streams(epoll_fd: RawFd,
     *addrs.lock().unwrap() = addrs_lost;
 }
 
-fn write_stream(stream_fd: RawFd,
-                streams: &HashMap<RawFd, Arc<Mutex<WriteStream>>>, 
-                messages: Arc<Mutex<HashMap<String, Option<Vec<Message>>>>>,
-                mempools: Arc<Mutex<MempoolList>>){
-    if let Some(stream) = streams.get(&stream_fd){
-        let stream = stream.clone();
-        if let Ok(mut stream) = stream.try_lock(){
-            if !stream.is_active && !stream.is_close{
-                stream.is_active = true;
-            }else{
-                return;
-            }
+fn write_stream(stream: &Arc<Mutex<WriteStream>>,
+                messages: &Arc<Mutex<MessList>>,
+                mempools: &Arc<Mutex<MempoolList>>){
+      
+    if let Ok(mut stream) = stream.try_lock(){
+        if !stream.is_active && !stream.is_close{
+            stream.is_active = true;
         }else{
             return;
         }
-        rayon::spawn(move || {
-            let mut stream = stream.lock().unwrap();
-            let addr_to = stream.address.to_string();
-            let mut last_send_mess_number = stream.last_send_mess_number;
-            let last_mess_number = stream.last_mess_number;
-            let mut is_shutdown = false;
-            {
-                let mut buff: Vec<Message> = Vec::new();
-                let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream.stream.by_ref()); 
-                let mempool = mempools.lock().unwrap()[&addr_to].clone();
-                loop{  
-                    let mut mess_for_send = None;
-                    if let Ok(mut mess_lock) = messages.lock(){
-                        mess_for_send = mess_lock.get_mut(&addr_to).unwrap().take();
-                        if mess_for_send.is_none(){
-                            *mess_lock.get_mut(&addr_to).unwrap() = Some(buff);
+    }else{
+        return;
+    }
+    let stream = stream.clone();
+    let messages = messages.clone();
+    let mempools = mempools.clone();
+    
+    rayon::spawn(move || {
+        let mut is_shutdown = false;
+        let mut stream = stream.lock().unwrap();
+        let addr_to = stream.address.to_string();
+        let mut last_send_mess_number = stream.last_send_mess_number;
+        let last_mess_number = stream.last_mess_number;
+        {
+            let mut buff: Vec<Message> = Vec::new();
+            let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream.stream.by_ref()); 
+            let mempool = mempools.lock().unwrap()[&addr_to].clone();
+            loop{  
+                let mut mess_for_send = None;
+                if let Ok(mut mess_lock) = messages.lock(){
+                    mess_for_send = mess_lock.get_mut(&addr_to).unwrap().take();
+                    if mess_for_send.is_none(){
+                        *mess_lock.get_mut(&addr_to).unwrap() = Some(buff);
+                        break;
+                    }
+                }   
+                let mess_for_send = mess_for_send.unwrap();
+                for mess in &mess_for_send{
+                    let num_mess = mess.number_mess;
+                    if last_send_mess_number < num_mess{
+                        last_send_mess_number = num_mess;
+                        if !mess.to_stream(&mempool, &mut writer){
+                            is_shutdown = true;
                             break;
                         }
-                    }   
-                    let mess_for_send = mess_for_send.unwrap();
-                    for mess in &mess_for_send{
-                        let num_mess = mess.number_mess;
-                        if last_send_mess_number < num_mess{
-                            last_send_mess_number = num_mess;
-                            if !mess.to_stream(&mempool, &mut writer){
-                                is_shutdown = true;
-                                break;
-                            }
-                        }
-                    }
-                    for mess in mess_for_send{
-                        let num_mess = mess.number_mess;
-                        let at_least_once_delivery = mess.at_least_once_delivery();
-                        if at_least_once_delivery && last_mess_number < num_mess{
-                            buff.push(mess);
-                        }else{
-                            mess.free(&mut mempool.lock().unwrap());
-                        }
                     }
                 }
-                if let Err(err) = writer.flush(){
-                    print_error!(&format!("writer.flush, {}", err));
+                for mess in mess_for_send{
+                    let num_mess = mess.number_mess;
+                    let at_least_once_delivery = mess.at_least_once_delivery();
+                    if at_least_once_delivery && last_mess_number < num_mess{
+                        buff.push(mess);
+                    }else{
+                        mess.free(&mut mempool.lock().unwrap());
+                    }
                 }
             }
-            stream.last_send_mess_number = last_send_mess_number;
-            stream.is_active = false;
-            if is_shutdown{ 
-                let _ = stream.stream.shutdown(std::net::Shutdown::Write);
-                stream.is_close = true;
-                remove_stream(epol)
+            if let Err(err) = writer.flush(){
+                print_error!(&format!("writer.flush, {}", err));
             }
-        });
-    }
+        }
+        stream.last_send_mess_number = last_send_mess_number;
+        stream.is_active = false;
+        if is_shutdown{ 
+            let _ = stream.stream.shutdown(std::net::Shutdown::Write);
+            stream.is_close = true;
+        }
+    });
 }
 
 fn remove_stream(epoll_fd: i32,

@@ -105,8 +105,14 @@ impl Listener {
                         if stream_fd == wakeup_fd{
                             wakeupfd_reset(wakeup_fd);
                         }else{
-                            read_stream(epoll_fd, stream_fd, &mut streams, &mut senders_,
-                                        db_.clone(), &mempools_, &messages_, &receive_thread_cvar_);
+                            if let Some(stream) = streams.get(&stream_fd){
+                                if !stream.lock().unwrap().is_close{
+                                    read_stream(epoll_fd, stream_fd, stream, &senders_,
+                                                db_.clone(), &mempools_, &messages_, &receive_thread_cvar_);
+                                }else{
+                                    remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders_);
+                                }
+                            }
                         }
                     }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
                         remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders_);
@@ -115,7 +121,7 @@ impl Listener {
                     }
                 }
             }
-            close_streams(&mut streams, &senders_, &db_);        
+            update_last_mess_number(&senders_, &db_);       
         });
 
         let messages_ = messages.clone();
@@ -258,80 +264,75 @@ fn listener_accept(epoll_fd: RawFd,
 
 fn read_stream(epoll_fd: RawFd,
                stream_fd: RawFd,
-               streams: &mut HashMap<RawFd, Arc<Mutex<ReadStream>>>,
-               senders: &mut Arc<Mutex<SenderList>>,
+               stream: &Arc<Mutex<ReadStream>>,
+               senders: &Arc<Mutex<SenderList>>,
                db: Arc<Mutex<redis::Connect>>,
                mempools: &Arc<Mutex<MempoolList>>,
                messages: &Arc<Mutex<MessList>>,
                receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
-    if let Some(stream) = streams.get(&stream_fd){        
-        if let Ok(mut stream) = stream.try_lock(){
-            if !stream.is_active && !stream.is_close{
-                stream.is_active = true;
-            }else{
-                return;
-            }
+    if let Ok(mut stream) = stream.try_lock(){
+        if !stream.is_active && !stream.is_close{
+            stream.is_active = true;
         }else{
-            continue_read_stream(epoll_fd, stream_fd);
             return;
         }
-        let mut streams = streams.clone();
-        let stream = stream.clone();
-        let mut senders = senders.clone();
-        let mempool = mempools.lock().unwrap()[&stream_fd].clone();
-        let messages = messages.clone();
-        let receive_thread_cvar = receive_thread_cvar.clone();
-    
-        rayon::spawn(move || {           
-            let mut mess_buff: Vec<Message> = Vec::new();      
-            let mut last_mess_num = 0;
-            if let Ok(senders) = senders.lock(){
-                last_mess_num = senders[&stream_fd].last_mess_num_preview;
-            }
-            let mut stream = stream.lock().unwrap();
-            let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.stream.by_ref());
-            let mut is_shutdown = false;
-            while let Some(mess) = Message::from_stream(&mempool, reader.by_ref(), &mut is_shutdown){
-                if last_mess_num == 0{
-                    let senders = &mut senders.lock().unwrap();
-                    let sender = senders.get_mut(&stream_fd).unwrap();
-                    if sender.sender_name.is_empty(){
-                        mess.sender_topic(&mempool.lock().unwrap(), &mut sender.sender_topic);
-                        mess.sender_name(&mempool.lock().unwrap(), &mut sender.sender_name);
-                    } 
-                    last_mess_num = get_last_mess_number(&db, &sender.sender_name, &sender.sender_topic, 0);                    
-                }
-                if mess.number_mess > last_mess_num{
-                    last_mess_num = mess.number_mess;
-                    mess_buff.push(mess);
-                }else{
-                    mess.free(&mut mempool.lock().unwrap());
-                }
-            }  
-            if !mess_buff.is_empty(){ 
-                if let Ok(mut mess_lock) = messages.lock(){
-                    if let Some(mess_for_receive) = mess_lock.get_mut(&stream_fd).unwrap().as_mut(){
-                        mess_for_receive.append(&mut mess_buff);
-                    }else{
-                        *mess_lock.get_mut(&stream_fd).unwrap() = Some(mess_buff);
-                    }
-                }
-            }
-            if let Ok(mut senders) = senders.lock(){
-                senders.get_mut(&stream_fd).unwrap().last_mess_num_preview = last_mess_num;
-            }            
-            if !is_shutdown{
-                continue_read_stream(epoll_fd, stream_fd);
-            }else{
-                let _ = stream.stream.shutdown(std::net::Shutdown::Read);
-                stream.is_close = true;
-                remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders);
-            }            
-            stream.is_active = false;        
-            receive_thread_notify(&receive_thread_cvar); 
-        });
+    }else{
+        continue_read_stream(epoll_fd, stream_fd);
+        return;
     }
+    let stream = stream.clone();
+    let senders = senders.clone();
+    let mempool = mempools.lock().unwrap()[&stream_fd].clone();
+    let messages = messages.clone();
+    let receive_thread_cvar = receive_thread_cvar.clone();
 
+    rayon::spawn(move || {           
+        let mut mess_buff: Vec<Message> = Vec::new();      
+        let mut last_mess_num = 0;
+        if let Ok(senders) = senders.lock(){
+            last_mess_num = senders[&stream_fd].last_mess_num_preview;
+        }
+        let mut stream = stream.lock().unwrap();
+        let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.stream.by_ref());
+        let mut is_shutdown = false;
+        while let Some(mess) = Message::from_stream(&mempool, reader.by_ref(), &mut is_shutdown){
+            if last_mess_num == 0{
+                let senders = &mut senders.lock().unwrap();
+                let sender = senders.get_mut(&stream_fd).unwrap();
+                if sender.sender_name.is_empty(){
+                    mess.sender_topic(&mempool.lock().unwrap(), &mut sender.sender_topic);
+                    mess.sender_name(&mempool.lock().unwrap(), &mut sender.sender_name);
+                } 
+                last_mess_num = get_last_mess_number(&db, &sender.sender_name, &sender.sender_topic, 0);                    
+            }
+            if mess.number_mess > last_mess_num{
+                last_mess_num = mess.number_mess;
+                mess_buff.push(mess);
+            }else{
+                mess.free(&mut mempool.lock().unwrap());
+            }
+        }  
+        if !mess_buff.is_empty(){ 
+            if let Ok(mut mess_lock) = messages.lock(){
+                if let Some(mess_for_receive) = mess_lock.get_mut(&stream_fd).unwrap().as_mut(){
+                    mess_for_receive.append(&mut mess_buff);
+                }else{
+                    *mess_lock.get_mut(&stream_fd).unwrap() = Some(mess_buff);
+                }
+            }
+        }
+        if let Ok(mut senders) = senders.lock(){
+            senders.get_mut(&stream_fd).unwrap().last_mess_num_preview = last_mess_num;
+        }            
+        if !is_shutdown{
+            continue_read_stream(epoll_fd, stream_fd);
+        }else{
+            let _ = stream.stream.shutdown(std::net::Shutdown::Read);
+            stream.is_close = true;
+        }            
+        stream.is_active = false;        
+        receive_thread_notify(&receive_thread_cvar); 
+    });
 }
 
 fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
@@ -443,17 +444,6 @@ fn wakeupfd_reset(event_fd: i32){
     if let Err(err) = syscall!(read(event_fd, &b as *const u64 as *mut c_void, std::mem::size_of::<u64>())){
         print_error!(format!("couldn't wakeupfd_reset, {}", err));
     }
-}
-
-fn close_streams(streams: &mut HashMap<RawFd, Arc<Mutex<ReadStream>>>,
-                 senders: &Arc<Mutex<SenderList>>,
-                 db: &Arc<Mutex<redis::Connect>>){
-    for stream in streams.values(){
-        if let Ok(mut stream) = stream.lock(){
-            stream.is_close = true;
-        }
-    }
-    update_last_mess_number(senders, db);
 }
 
 impl Drop for Listener {
