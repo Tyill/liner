@@ -3,7 +3,7 @@ use std::ffi::{CString, CStr};
 use std::{thread, time};
        
 
-extern "C" fn cb1(_to: *const i8, _from: *const i8, _uuid: *const i8, _timestamp: u64, _data: *const u8, _dsize: usize){
+extern "C" fn cb1(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){
    // unsafe {
       //  let from = CStr::from_ptr(from).to_str().unwrap();
     
@@ -11,7 +11,7 @@ extern "C" fn cb1(_to: *const i8, _from: *const i8, _uuid: *const i8, _timestamp
     //}
 }
 
-extern "C" fn cb2(_to: *const i8, _from: *const i8, _uuid: *const i8, _timestamp: u64, _data: *const u8, _dsize: usize){
+extern "C" fn cb2(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){
     //  unsafe {
     //      let to = CStr::from_ptr(to).to_str().unwrap();
     //      let from = CStr::from_ptr(from).to_str().unwrap();
@@ -41,13 +41,11 @@ fn  main() {
     
        
     let array = [0; 100];
-    let uuid = CString::new("1234").unwrap();
     for _ in 0..30{
         println!("{} begin send_to", current_time_ms());       
         for _ in 0..10000{
             liner::ln_send_to(&mut c1,   
                 topic_2.as_ptr(),
-                uuid.as_ptr(),
                 array.as_ptr(), array.len(), true);
         }
         println!("{} end send_to", current_time_ms());       

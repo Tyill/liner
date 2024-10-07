@@ -36,27 +36,23 @@ extern "C" {
 
 typedef enum BOOL{ FALSE = 0, TRUE = 1}BOOL;
 
-typedef void(*ln_receive_cb)(char* to, char* from, char* uuid, uint64_t timestamp, char* data, uint64_t data_size);
+typedef void(*ln_receive_cb)(char* to, char* from, char* data, uint64_t data_size);
 
 typedef void* hClient;
 
-/// Add function
-/// @param name
-/// @param ufunc function
-/// return true - ok
 LINER_API hClient ln_new_client(char* unique_name, char* redis_path);
+
+LINER_API BOOL ln_is_init_client(hClient* client);
 
 LINER_API BOOL ln_run(hClient* client, char* topic, char* localhost, ln_receive_cb receive_cb);
 
 LINER_API BOOL ln_send_to(hClient* client,
                           char* topic,
-                          char* uuid,
                           char* data, uint64_t data_size,
                           BOOL at_least_once_delivery);
 
 LINER_API BOOL ln_send_all(hClient* client,
                           char* topic,
-                          char* uuid,
                           char* data, uint64_t data_size,
                           BOOL at_least_once_delivery);
 

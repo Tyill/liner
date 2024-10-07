@@ -184,8 +184,6 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
         for m in mess.1{
             receive_cb(m.topic_to, 
                 m.topic_from, 
-                m.uuid, 
-                m.timestamp, 
                 m.data, m.data_len);
             m.free(&mut mempool.lock().unwrap());
             if m.number_mess > last_mess_num{
@@ -312,7 +310,7 @@ fn read_stream(epoll_fd: RawFd,
                 mess.free(&mut mempool.lock().unwrap());
             }
         }  
-        mempool.lock().unwrap()._print_size();
+       // mempool.lock().unwrap()._print_size();
         if !mess_buff.is_empty(){ 
             if let Ok(mut mess_lock) = messages.lock(){
                 if let Some(mess_for_receive) = mess_lock.get_mut(&stream_fd).unwrap().as_mut(){

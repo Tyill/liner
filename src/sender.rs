@@ -66,7 +66,6 @@ pub struct Sender{
     is_new_addr: Arc<Mutex<bool>>,
     is_close: Arc<Mutex<bool>>,
     ctime_ms: HashMap<String, u64>, // key - addr
-    delay_write_list: Arc<Mutex<HashSet<String>>>, // value - addr
     delay_write_cvar: Arc<(Mutex<bool>, Condvar)>,
     stream_thread: Option<JoinHandle<()>>,
     wdelay_thread: Option<JoinHandle<()>>,
@@ -88,7 +87,9 @@ impl Sender {
         let is_new_addr: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
         let is_new_addr_ = is_new_addr.clone();
         let unique_name_ = unique_name.clone();
-      
+        let ctime = Arc::new(Mutex::new(common::current_time_ms()));
+        let ctime_ = ctime.clone();
+
         let db_conn = redis::Connect::new(&unique_name_, &redis_path).expect("couldn't redis::Connect");
         let db = Arc::new(Mutex::new(db_conn));
         db.lock().unwrap().set_source_topic(&source_topic);
@@ -96,14 +97,14 @@ impl Sender {
         let stream_thread = thread::spawn(move|| {
             let mut streams: HashMap<RawFd, ArcWriteStream> = HashMap::new();
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
-            let mut prev_time: [u64; 2] = [common::current_time_ms(); 2];
+            let mut prev_time: [u64; 2] = [*ctime_.lock().unwrap(); 2];
             loop{ // stream cycle
-                let ctime = common::current_time_ms();
+                let ctime = *ctime_.lock().unwrap();
                 if check_available_stream(&is_new_addr_, ctime, &mut prev_time[0]) {
                     append_streams(epoll_fd, &mut addrs_new_, &mut streams, 
                                         &mut streams_fd_, &messages_, &db, &mempools_);
                 }
-                if timeout_update_last_mess_number(ctime, &mut prev_time[1]){                    
+                if timeout_update_last_mess_number(ctime, &mut prev_time[1]){
                     update_last_mess_number(&streams, &db);
                 }
                 if !wait(epoll_fd, &mut events){
@@ -135,8 +136,6 @@ impl Sender {
             close_streams(&messages_, &mut streams, &streams_fd_, &db, &mempools_);
         });
 
-        let delay_write_list: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-        let delay_write_list_ = delay_write_list.clone();
         let delay_write_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
         let delay_write_cvar_ = delay_write_cvar.clone();
         let messages_ = messages.clone();
@@ -147,22 +146,19 @@ impl Sender {
         let is_close_ = is_close.clone();
         let wdelay_thread = thread::spawn(move||
             while !*is_close_.lock().unwrap(){ // write delay cycle
-                if delay_write_list_.lock().unwrap().is_empty(){
+                {
                     let (lock, cvar) = &*delay_write_cvar_;
                     let mut _started = lock.lock().unwrap();
-                    if !*is_close_.lock().unwrap(){
+                    let is = !message_buffer_.lock().unwrap().iter().any(|m: (&String, &Option<Vec<Message>>)| m.1.is_some());
+                    if !is{
+                        *_started = false;
                         _started = cvar.wait(_started).unwrap();
                     }
                 }
-                if !*is_close_.lock().unwrap(){
-                    std::thread::sleep(Duration::from_millis(settings::WRITE_MESS_TIMEOUT_MS));
-                }
-                if let Ok(mut delay_write_list) = delay_write_list_.lock(){
-                    for addr in &delay_write_list.clone(){
-                        send_mess_to_listener(epoll_fd, addr, &message_buffer_, &messages_, &streams_fd_);
-                    }
-                    delay_write_list.clear();
-                }
+                std::thread::sleep(Duration::from_millis(settings::WRITE_MESS_DELAY_MS));
+                send_mess_to_listener(epoll_fd, &message_buffer_, &messages_, &streams_fd_);
+
+                *ctime.lock().unwrap() = common::current_time_ms();
             }
         );
         Self{
@@ -179,7 +175,6 @@ impl Sender {
             is_new_addr,
             is_close,
             ctime_ms: HashMap::new(),
-            delay_write_list,
             delay_write_cvar,
             stream_thread: Some(stream_thread),
             wdelay_thread: Some(wdelay_thread),
@@ -187,7 +182,7 @@ impl Sender {
     }
     
     pub fn send_to(&mut self, db: &mut redis::Connect, addr_to: &str, to: &str, from: &str, 
-                   uuid: &str, data: &[u8], at_least_once_delivery: bool)->bool{
+                   data: &[u8], at_least_once_delivery: bool)->bool{
         let mut is_new_addr = false;
         if !self.addrs_for.contains(addr_to){
             if !self.append_new_state(db, addr_to, to){
@@ -200,11 +195,10 @@ impl Sender {
         *self.last_mess_number.get_mut(addr_to).unwrap() = number_mess;
        
         let mempool = self.mempools.lock().unwrap().get_mut(addr_to).unwrap().clone();
-        let timestamp = common::current_time_ms();
         let mess = Message::new(&mut mempool.lock().unwrap(), to,
                                          from, &self.unique_name,
-                                         uuid, number_mess, data, at_least_once_delivery, timestamp);
-        self.send_mess_to_buff(mess, addr_to, timestamp);
+                                         number_mess, data, at_least_once_delivery);
+        self.send_mess_to_buff(mess, addr_to);
                
         if is_new_addr{
             self.addrs_new.lock().unwrap().push(Address{address: addr_to.to_string(), 
@@ -216,23 +210,19 @@ impl Sender {
         true
     }
     
-    fn send_mess_to_buff(&mut self, mess: Message, addr_to: &str, timestamp: u64){
+    fn send_mess_to_buff(&mut self, mess: Message, addr_to: &str){
+        let (lock, cvar) = &*self.delay_write_cvar;
+        let mut _started = lock.lock().unwrap();
         if let Ok(mut message_buffer_lock) = self.message_buffer.lock(){
             if let Some(mbuff) = message_buffer_lock.get_mut(addr_to).unwrap(){
                 mbuff.push(mess);
             }else{
                 *message_buffer_lock.get_mut(addr_to).unwrap() = Some(vec![mess]);
             }
-        }        
-        if timestamp - self.ctime_ms[addr_to] >= settings::WRITE_MESS_DELAY_MS {
-            *self.ctime_ms.get_mut(addr_to).unwrap() = timestamp;
-            send_mess_to_listener(self.epoll_fd, addr_to, &self.message_buffer, &self.messages, &self.streams_fd);
-        }else{
-            let is_first = self.delay_write_list.lock().unwrap().is_empty();
-            self.delay_write_list.lock().unwrap().insert(addr_to.to_string());
-            if is_first{
-                self.wdelay_thread_notify();
-            }
+        }       
+        if !*_started{
+            *_started = true;
+            cvar.notify_one();
         }
     }
     fn wdelay_thread_notify(&self){
@@ -307,23 +297,24 @@ impl Sender {
     }
 }
 
-fn send_mess_to_listener(epoll_fd: RawFd, addr_to: &str, 
-                           message_buffer: &Arc<Mutex<MessList>>,
-                           messages: &Arc<Mutex<MessList>>,
-                           streams_fd: &Arc<Mutex<HashMap<String, RawFd>>>){
-    let buff = message_buffer.lock().unwrap().get_mut(addr_to).unwrap().take();
-    if buff.is_none(){
-        return; // already send from delay write cycle
-    }
-    if let Ok(mut mess_lock) = messages.lock(){
-        if let Some(mess_for_send) = mess_lock.get_mut(addr_to).unwrap().as_mut(){
-            mess_for_send.append(&mut buff.unwrap());
-        }else{
-            *mess_lock.get_mut(addr_to).unwrap() = buff;
+fn send_mess_to_listener(epoll_fd: RawFd,
+                         message_buffer: &Arc<Mutex<MessList>>,
+                         messages: &Arc<Mutex<MessList>>,
+                         streams_fd: &Arc<Mutex<HashMap<String, RawFd>>>){
+    for m in message_buffer.lock().unwrap().iter_mut(){
+        if let Some(mut buff) = m.1.take(){
+            let addr_to = m.0;
+            if let Ok(mut mess_lock) = messages.lock(){
+                if let Some(mess_for_send) = mess_lock.get_mut(addr_to).unwrap().as_mut(){
+                    mess_for_send.append(&mut buff);
+                }else{
+                    *mess_lock.get_mut(addr_to).unwrap() = Some(buff);
+                }
+            }
+            if let Some(strm_fd) = streams_fd.lock().unwrap().get(addr_to){
+                continue_write_stream(epoll_fd, *strm_fd);
+            }
         }
-    }
-    if let Some(strm_fd) = streams_fd.lock().unwrap().get(addr_to){
-        continue_write_stream(epoll_fd, *strm_fd);
     }
 }
 
@@ -507,7 +498,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 print_error!(&format!("writer.flush, {}", err));
                 is_shutdown = true;
             }
-            mempool.lock().unwrap()._print_size();
+       //     mempool.lock().unwrap()._print_size();
         }
         stream.last_send_mess_number = last_send_mess_number;
         stream.is_active = false;
@@ -644,12 +635,8 @@ impl Drop for Sender {
         if let Err(err) = self.wdelay_thread.take().unwrap().join(){
             print_error!(&format!("wdelay_thread.join, {:?}", err));
         }
-        if let Ok(mut delay_write_list) = self.delay_write_list.lock(){
-            for addr in &delay_write_list.clone(){
-                send_mess_to_listener(self.epoll_fd, addr, &self.message_buffer, &self.messages, &self.streams_fd);
-            }
-            delay_write_list.clear();
-        } 
+        send_mess_to_listener(self.epoll_fd, &self.message_buffer, &self.messages, &self.streams_fd);
+        
         syscall!(close(self.epoll_fd)).expect("couldn't close epoll");
         wakeupfd_notify(self.wakeup_fd);
         if let Err(err) = self.stream_thread.take().unwrap().join(){

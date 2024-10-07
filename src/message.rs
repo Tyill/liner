@@ -24,7 +24,7 @@ pub struct Message{
 
 impl Message{
     pub fn new(mempool: &mut Mempool, listener_topic: &str, sender_topic: &str, sender_name: &str,
-               uuid: &str, number_mess: u64, data: &[u8], at_least_once_delivery: bool, timestamp: u64) -> Message {
+               number_mess: u64, data: &[u8], at_least_once_delivery: bool) -> Message {
         let mut flags = 0;
         if at_least_once_delivery{
             flags |= AT_LEAST_ONCE_DELIVERY;
@@ -35,8 +35,6 @@ impl Message{
         let listener_topic_len = listener_topic.len() + std::mem::size_of::<u32>();
         let sender_topic_len = sender_topic.len() + std::mem::size_of::<u32>();
         let sender_name_len = sender_name.len() + std::mem::size_of::<u32>();
-        let uuid_len = uuid.len() + std::mem::size_of::<u32>();
-        let timestamp_len = std::mem::size_of::<u64>();
         let mut cdata: Option<Vec<u8>> = None;
         if data.len() > settings::MIN_SIZE_DATA_FOR_COMPRESS_BYTE{
             cdata = Some(compress(data)); 
@@ -52,8 +50,6 @@ impl Message{
             listener_topic_len +  
             sender_topic_len  +
             sender_name_len  +
-            uuid_len + 
-            timestamp_len +                    
             data_len;
       
         let (mem_alloc_pos, mem_alloc_length) = mempool.alloc(mess_size);
@@ -62,9 +58,7 @@ impl Message{
         let listener_topic_pos = flags_pos + flags_len;
         let sender_topic_pos = listener_topic_pos + listener_topic_len;
         let sender_name_pos = sender_topic_pos + sender_topic_len;
-        let uuid_pos = sender_name_pos + sender_name_len;
-        let timestamp_pos = uuid_pos + uuid_len;
-        let data_pos = timestamp_pos + timestamp_len;
+        let data_pos = sender_name_pos + sender_name_len;
                      
         mempool.write_num(mem_alloc_pos, (mess_size - all_len) as i32);
         mempool.write_num(number_mess_pos, number_mess);
@@ -72,8 +66,6 @@ impl Message{
         mempool.write_str(listener_topic_pos, listener_topic);
         mempool.write_str(sender_topic_pos, sender_topic);
         mempool.write_str(sender_name_pos, sender_name);
-        mempool.write_str(uuid_pos, uuid);
-        mempool.write_num(timestamp_pos, timestamp);
         if cdata.is_none(){
             mempool.write_array(data_pos, data);
         }else{
@@ -175,8 +167,6 @@ fn decompress(cdata: &[u8])->Vec<u8>{
 pub struct MessageForReceiver{
     pub topic_to: *const i8, 
     pub topic_from: *const i8, 
-    pub uuid: *const i8, 
-    pub timestamp: u64, 
     pub data: *const u8, 
     pub data_len: usize,
     pub number_mess: u64,
@@ -199,11 +189,7 @@ impl MessageForReceiver{
         let sender_topic_len = bytestream::read_u32(sender_topic_pos, raw_data) + std::mem::size_of::<u32>() as u32;
         let sender_name_pos = sender_topic_pos + sender_topic_len as usize;
         let sender_name_len = bytestream::read_u32(sender_name_pos, raw_data) + std::mem::size_of::<u32>() as u32;
-        let uuid_pos = sender_name_pos + sender_name_len as usize;
-        let uuid_len = bytestream::read_u32(uuid_pos, raw_data) + std::mem::size_of::<u32>() as u32;
-        let timestamp_pos = uuid_pos + uuid_len as usize;
-        let timestamp_len = std::mem::size_of::<u64>();
-        let data_pos = timestamp_pos + timestamp_len;
+        let data_pos = sender_name_pos + sender_name_len as usize;
 
         let len: isize = std::mem::size_of::<u32>() as isize;
         unsafe{
@@ -221,8 +207,6 @@ impl MessageForReceiver{
             Self{
                 topic_to: raw_data.as_ptr().offset(listener_topic_pos as isize + len) as *const i8,
                 topic_from: raw_data.as_ptr().offset(sender_topic_pos as isize + len) as *const i8,
-                uuid: raw_data.as_ptr().offset(uuid_pos as isize + len) as *const i8,
-                timestamp: bytestream::read_u64(timestamp_pos, raw_data),
                 data,
                 data_len,
                 number_mess: mess.number_mess,

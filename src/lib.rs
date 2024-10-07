@@ -22,7 +22,13 @@ pub unsafe extern "C" fn ln_new_client(unique_name: *const i8,
     Box::new(Client::new(unique_name, redis_path))
 }
 
-type UCback = extern "C" fn(to: *const i8, from: *const i8, uuid: *const i8, timestamp: u64, data: *const u8, dsize: usize);
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn ln_is_init_client(client: &mut Box<Option<Client>>)->bool{
+    has_client(client)
+}
+
+type UCback = extern "C" fn(to: *const i8, from: *const i8, data: *const u8, dsize: usize);
 
 /// # Safety
 #[no_mangle]
@@ -43,35 +49,31 @@ pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>,
 #[no_mangle]
 pub unsafe extern "C" fn ln_send_to(client: &mut Box<Option<Client>>,
                           topic: *const i8,
-                          uuid: *const i8,
                           data: *const u8, data_size: usize,
                           at_least_once_delivery: bool)->bool{
-    let topic = CStr::from_ptr(topic).to_str().unwrap();
-    let uuid = CStr::from_ptr(uuid).to_str().unwrap();       
+    let topic = CStr::from_ptr(topic).to_str().unwrap();  
     let data = std::slice::from_raw_parts(data, data_size);
 
     if !has_client(client){
         return false;
     }
     let c = client.as_mut();
-    c.as_mut().unwrap().send_to(topic, uuid, data, at_least_once_delivery)
+    c.as_mut().unwrap().send_to(topic, data, at_least_once_delivery)
 }
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn ln_send_all(client: &mut Box<Option<Client>>,
                           topic: *const i8,
-                          uuid: *const i8,
                           data: *const u8, data_size: usize,
                           at_least_once_delivery: bool)->bool{
-    let topic = CStr::from_ptr(topic).to_str().unwrap();
-    let uuid = CStr::from_ptr(uuid).to_str().unwrap();       
+    let topic = CStr::from_ptr(topic).to_str().unwrap();    
     let data = std::slice::from_raw_parts(data, data_size);
 
     if !has_client(client){
         return false;
     }
     let c = client.as_mut();
-    c.as_mut().unwrap().send_all(topic, uuid, data, at_least_once_delivery)
+    c.as_mut().unwrap().send_all(topic, data, at_least_once_delivery)
 }
 /// # Safety
 #[no_mangle]

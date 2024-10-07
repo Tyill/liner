@@ -63,7 +63,7 @@ impl Client {
         true
     }
 
-    pub fn send_to(&mut self, topic: &str, uuid: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
+    pub fn send_to(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
         let _lock = self.mtx.lock();
         if !self.is_run{
             return false;
@@ -86,13 +86,13 @@ impl Client {
         let addr = &address[index];
         let ok = self.sender
         .as_mut().unwrap().send_to(&mut self.db, addr, 
-                                topic, &self.topic, uuid, data, at_least_once_delivery);
+                                topic, &self.topic, data, at_least_once_delivery);
 
         *self.last_send_index.get_mut(topic).unwrap() = index + 1;
         ok
     }
 
-    pub fn send_all(&mut self, topic: &str, uuid: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
+    pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
         let _lock = self.mtx.lock();
         if !self.is_run{
             return false;
@@ -108,7 +108,7 @@ impl Client {
         let mut ok = false;
         for addr in address{
             ok &= self.sender.as_mut().unwrap().send_to(&mut self.db, addr, 
-                                    topic, &self.topic, uuid, data, at_least_once_delivery);
+                                    topic, &self.topic, data, at_least_once_delivery);
         }
         ok
     }

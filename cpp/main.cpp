@@ -6,11 +6,11 @@
 #include <chrono>
 #include <thread>
 
-void cb1(char* to, char* from, char* uuid, uint64_t timestamp, char* data, uint64_t data_size){
+void cb1(char* to, char* from,  char* data, uint64_t data_size){
  //  std::cout << "cb1" << to << from << uuid << timestamp << data << data_size << std::endl;
 }
 
-void cb2(char* to, char* from, char* uuid, uint64_t timestamp, char* data, uint64_t data_size){
+void cb2(char* to, char* from,  char* data, uint64_t data_size){
  //  std::cout << "cb2" << to << from << uuid << timestamp << data << data_size << std::endl;
 }
 
@@ -26,7 +26,7 @@ int main(int argc, char* argv[])
     for (int i = 0; i < 30; ++i){
         auto bt = clock();
         for (int j = 0; j < 10000; ++j){
-            ln_send_to(&hclient1, "topic2", "uuid", data, 100, TRUE);
+            ln_send_to(&hclient1, "topic2", data, 100, TRUE);
         }
         auto ct = clock();
         std::cout << "send_to " << 1000.0 * (ct - bt) / CLOCKS_PER_SEC << std::endl;
