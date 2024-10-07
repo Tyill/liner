@@ -505,7 +505,9 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
             }
             if let Err(err) = writer.flush(){
                 print_error!(&format!("writer.flush, {}", err));
+                is_shutdown = true;
             }
+            mempool.lock().unwrap()._print_size();
         }
         stream.last_send_mess_number = last_send_mess_number;
         stream.is_active = false;

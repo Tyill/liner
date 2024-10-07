@@ -312,6 +312,7 @@ fn read_stream(epoll_fd: RawFd,
                 mess.free(&mut mempool.lock().unwrap());
             }
         }  
+        mempool.lock().unwrap()._print_size();
         if !mess_buff.is_empty(){ 
             if let Ok(mut mess_lock) = messages.lock(){
                 if let Some(mess_for_receive) = mess_lock.get_mut(&stream_fd).unwrap().as_mut(){
@@ -320,6 +321,7 @@ fn read_stream(epoll_fd: RawFd,
                     *mess_lock.get_mut(&stream_fd).unwrap() = Some(mess_buff);
                 }
             }
+            receive_thread_notify(&receive_thread_cvar); 
         }
         if let Ok(mut senders) = senders.lock(){
             senders.get_mut(&stream_fd).unwrap().last_mess_num_preview = last_mess_num;
@@ -330,7 +332,6 @@ fn read_stream(epoll_fd: RawFd,
         }            
         stream.is_active = false;
         continue_read_stream(epoll_fd, stream_fd);
-        receive_thread_notify(&receive_thread_cvar); 
     });
 }
 
