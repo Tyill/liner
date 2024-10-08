@@ -65,7 +65,9 @@ where
                         break;
                     }
                 }else if e != std::io::ErrorKind::Interrupted{
-                    print_error!(&format!("{}", e));                    
+                    print_error!(&format!("{}", e));
+                    is_shutdown = true;
+                    break;                  
                 }
             }
         }
