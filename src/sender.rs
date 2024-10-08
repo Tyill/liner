@@ -380,7 +380,7 @@ fn append_streams(epoll_fd: RawFd,
                   db: &Arc<Mutex<redis::Connect>>,
                   mempools: &Arc<Mutex<MempoolList>>){
     let mut addrs_lost: Vec<Address> = Vec::new();
-    for addr in &addrs.lock().unwrap().clone(){
+    for addr in addrs.lock().unwrap().iter(){
         if !addr.is_new_addr && messages.lock().unwrap()[&addr.address].as_ref().unwrap().is_empty(){
             addrs_lost.push(addr.clone());
             continue;

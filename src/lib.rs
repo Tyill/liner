@@ -19,6 +19,14 @@ pub unsafe extern "C" fn ln_new_client(unique_name: *const i8,
     let unique_name = CStr::from_ptr(unique_name).to_str().unwrap();
     let redis_path = CStr::from_ptr(redis_path).to_str().unwrap();
     
+    if unique_name.len() == 0{
+        print_error!("unique_name empty");
+        return Box::new(None);
+    }
+    if redis_path.len() == 0{
+        print_error!("redis_path empty");
+        return Box::new(None);
+    }
     Box::new(Client::new(unique_name, redis_path))
 }
 
@@ -41,7 +49,15 @@ pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>,
         
     if !has_client(client){
         return false;
-    }    
+    }
+    if topic.len() == 0{
+        print_error!("topic name empty");
+        return false;
+    }
+    if localhost.len() == 0{
+        print_error!("localhost empty");
+        return false;
+    }
     let c = client.as_mut();
     c.as_mut().unwrap().run(topic, localhost, receive_cb)
 }
@@ -55,6 +71,14 @@ pub unsafe extern "C" fn ln_send_to(client: &mut Box<Option<Client>>,
     let data = std::slice::from_raw_parts(data, data_size);
 
     if !has_client(client){
+        return false;
+    }
+    if topic.len() == 0{
+        print_error!("topic name empty");
+        return false;
+    }
+    if data_size == 0{
+        print_error!("data_size empty");
         return false;
     }
     let c = client.as_mut();
@@ -72,6 +96,14 @@ pub unsafe extern "C" fn ln_send_all(client: &mut Box<Option<Client>>,
     if !has_client(client){
         return false;
     }
+    if topic.len() == 0{
+        print_error!("topic.len() == 0");
+        return false;
+    }
+    if data_size == 0{
+        print_error!("data_size == 0");
+        return false;
+    }
     let c = client.as_mut();
     c.as_mut().unwrap().send_all(topic, data, at_least_once_delivery)
 }
@@ -84,6 +116,10 @@ pub unsafe extern "C" fn ln_subscribe(client: &mut Box<Option<Client>>,
     if !has_client(client){
         return false;
     }
+    if topic.len() == 0{
+        print_error!("topic.len() == 0");
+        return false;
+    }
     let c = client.as_mut();
     c.as_mut().unwrap().subscribe(topic)
 }
@@ -94,6 +130,10 @@ pub unsafe extern "C" fn ln_unsubscribe(client: &mut Box<Option<Client>>,
     let topic = CStr::from_ptr(topic).to_str().unwrap();
     
     if !has_client(client){
+        return false;
+    }
+    if topic.len() == 0{
+        print_error!("topic.len() == 0");
         return false;
     }
     let c = client.as_mut();
