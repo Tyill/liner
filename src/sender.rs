@@ -66,7 +66,6 @@ pub struct Sender{
     streams_fd: Arc<Mutex<HashMap<String, RawFd>>>,    
     is_new_addr: Arc<AtomicBool>,
     is_close: Arc<AtomicBool>,
-    ctime_ms: HashMap<String, u64>, // key - addr
     delay_write_cvar: Arc<(Mutex<bool>, Condvar)>,
     stream_thread: Option<JoinHandle<()>>,
     wdelay_thread: Option<JoinHandle<()>>,
@@ -178,7 +177,6 @@ impl Sender {
             wakeup_fd,
             is_new_addr,
             is_close,
-            ctime_ms: HashMap::new(),
             delay_write_cvar,
             stream_thread: Some(stream_thread),
             wdelay_thread: Some(wdelay_thread),
@@ -272,7 +270,6 @@ impl Sender {
 
         self.messages.lock().unwrap().insert(addr_to.to_string(), Some(Vec::new()));
         self.message_buffer.lock().unwrap().insert(addr_to.to_string(), Some(Vec::new()));
-        self.ctime_ms.insert(addr_to.to_string(), common::current_time_ms());
         true
     }
 

@@ -14,7 +14,8 @@ use std::thread::JoinHandle;
 use std::thread;
 use std::net::{TcpStream, TcpListener};
 use std::os::unix::io::{AsRawFd, RawFd};
-use std::sync::{Arc, Mutex, Condvar};
+use std::sync::{ Arc, Mutex, Condvar};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::io::{self,BufReader};
 
 
@@ -59,7 +60,7 @@ pub struct Listener{
     db: Arc<Mutex<redis::Connect>>,
     receive_thread_cvar: Arc<(Mutex<bool>, Condvar)>,
     receive_cb: UCback,
-    is_close: Arc<Mutex<bool>>,
+    is_close: Arc<AtomicBool>,
 }
 
 impl Listener {
@@ -87,15 +88,10 @@ impl Listener {
 
             let mut streams: HashMap<RawFd, Arc<Mutex<ReadStream>>> = HashMap::new();
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
-            let mut prev_time: [u64; 1] = [common::current_time_ms(); 1];
             loop{    
                 if !wait(epoll_fd, &mut events){
                     break;
                 }
-                let ctime = common::current_time_ms();
-                if timeout_update_last_mess_number(ctime, &mut prev_time[0]){                    
-                    update_last_mess_number(&senders_, &db_);
-                }                                  
                 for ev in &events {
                     let stream_fd = ev.u64 as RawFd;
                     if stream_fd == listener_fd{
@@ -129,18 +125,26 @@ impl Listener {
         let senders_ = senders.clone();
         let db_ = db.clone();
         let receive_thread_cvar_ = receive_thread_cvar.clone();
-        let is_close: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let is_close = Arc::new(AtomicBool::new(false));
         let is_close_ = is_close.clone();
         let receive_thread = thread::spawn(move|| {
-            while !*is_close_.lock().unwrap(){
+            let mut prev_time: [u64; 1] = [common::current_time_ms(); 1];
+            while !is_close_.load(Ordering::Relaxed){
+                let (lock, cvar) = &*receive_thread_cvar_;
+                if let Ok(mut _started) = lock.lock(){                    
+                    if !messages_.lock().unwrap().iter().any(|m: (&i32, &Option<Vec<Message>>)| m.1.is_some()){
+                        *_started = false;
+                        _started = cvar.wait(_started).unwrap();
+                    }
+                }
                 let mess_buff = mess_for_receive(&messages_);
                 if !mess_buff.is_empty(){
                     do_receive_cb(mess_buff, &messages_, &mempools_, &senders_, &db_, receive_cb); 
-                }else{
-                    let (lock, cvar) = &*receive_thread_cvar_;
-                    let mut _started = lock.lock().unwrap();
-                    _started = cvar.wait(_started).unwrap();
-                }                               
+                }   
+                let ctime = common::current_time_ms();
+                if timeout_update_last_mess_number(ctime, &mut prev_time[0]){                    
+                    update_last_mess_number(&senders_, &db_);
+                }                             
             }
         });  
         Self{
@@ -208,8 +212,7 @@ fn mess_for_receive(messages: &Arc<Mutex<MessList>>)->BTreeMap<RawFd, Vec<Messag
     let mut mess_buff: BTreeMap<RawFd, Vec<Message>> = BTreeMap::new();
     for mess in messages.lock().unwrap().iter_mut(){
         let fd = *mess.0;
-        let m = mess.1.take();
-        if let Some(m) = m{
+        if let Some(m) = mess.1.take(){
             mess_buff.insert(fd, m);
         }
     }
@@ -312,14 +315,20 @@ fn read_stream(epoll_fd: RawFd,
         }  
        // mempool.lock().unwrap()._print_size();
         if !mess_buff.is_empty(){ 
-            if let Ok(mut mess_lock) = messages.lock(){
-                if let Some(mess_for_receive) = mess_lock.get_mut(&stream_fd).unwrap().as_mut(){
-                    mess_for_receive.append(&mut mess_buff);
-                }else{
-                    *mess_lock.get_mut(&stream_fd).unwrap() = Some(mess_buff);
+            let (lock, cvar) = &*receive_thread_cvar;
+            if let Ok(mut _started) = lock.lock(){
+                if let Ok(mut mess_lock) = messages.lock(){
+                    if let Some(mess_for_receive) = mess_lock.get_mut(&stream_fd).unwrap().as_mut(){
+                        mess_for_receive.append(&mut mess_buff);
+                    }else{
+                        *mess_lock.get_mut(&stream_fd).unwrap() = Some(mess_buff);
+                    }
+                }
+                if !*_started{
+                    *_started = true;
+                    cvar.notify_one();
                 }
             }
-            receive_thread_notify(&receive_thread_cvar); 
         }
         if let Ok(mut senders) = senders.lock(){
             senders.get_mut(&stream_fd).unwrap().last_mess_num_preview = last_mess_num;
@@ -446,7 +455,7 @@ fn wakeupfd_reset(event_fd: i32){
 
 impl Drop for Listener {
     fn drop(&mut self) {        
-        *self.is_close.lock().unwrap() = true;
+        self.is_close.store(true, Ordering::Relaxed);
         receive_thread_notify(&self.receive_thread_cvar);
         if let Err(err) = self.receive_thread.take().unwrap().join(){
             print_error!(&format!("wdelay_thread.join, {:?}", err));

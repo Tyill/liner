@@ -28,7 +28,7 @@
 
 #define LINER_API
 
-#include <stdint.h>
+#include <stddef.h>
 
 #if defined(__cplusplus)
 extern "C" {
@@ -36,30 +36,67 @@ extern "C" {
 
 typedef enum BOOL{ FALSE = 0, TRUE = 1}BOOL;
 
-typedef void(*ln_receive_cb)(char* to, char* from, char* data, uint64_t data_size);
+typedef void(*ln_receive_cb)(char* to, char* from, char* data, size_t data_size);
 
 typedef void* hClient;
 
+/// Create new client
+/// @param unique_name
+/// @param redis_path
+/// @return hClient
 LINER_API hClient ln_new_client(char* unique_name, char* redis_path);
 
-LINER_API BOOL ln_is_init_client(hClient* client);
+/// Check has client
+/// @return true - ok
+LINER_API BOOL ln_has_client(hClient* client);
 
+/// Run transfer data
+/// @param hClient
+/// @param topic - current topic
+/// @param localhost - local ip
+/// @param receive_cb - callback for receive data from other topics
+/// @return true - ok
 LINER_API BOOL ln_run(hClient* client, char* topic, char* localhost, ln_receive_cb receive_cb);
 
+/// Send data to other topic - only to one
+/// @param hClient
+/// @param topic - other topic
+/// @param data
+/// @param data_size
+/// @param at_least_once_delivery
+/// @return true - ok
 LINER_API BOOL ln_send_to(hClient* client,
                           char* topic,
-                          char* data, uint64_t data_size,
+                          char* data, size_t data_size,
                           BOOL at_least_once_delivery);
 
+/// Send data to other topics - broadcast
+/// @param hClient
+/// @param topic - other topic
+/// @param data
+/// @param data_size
+/// @param at_least_once_delivery
+/// @return true - ok
 LINER_API BOOL ln_send_all(hClient* client,
                           char* topic,
-                          char* data, uint64_t data_size,
+                          char* data, size_t data_size,
                           BOOL at_least_once_delivery);
 
+/// Subscribe on topic for broadcast
+/// @param hClient
+/// @param topic
+/// @return true - ok
 LINER_API BOOL ln_subscribe(hClient* client, char* topic);
 
+/// Unsubscribe on topic for broadcast
+/// @param hClient
+/// @param topic
+/// @return true - ok
 LINER_API BOOL ln_unsubscribe(hClient* client, char* topic);
 
+/// Delete client
+/// @param hClient
+/// @return true - ok
 LINER_API BOOL ln_delete_client(hClient client);
   
  

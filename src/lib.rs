@@ -24,7 +24,7 @@ pub unsafe extern "C" fn ln_new_client(unique_name: *const i8,
 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_is_init_client(client: &mut Box<Option<Client>>)->bool{
+pub unsafe extern "C" fn ln_has_client(client: &mut Box<Option<Client>>)->bool{
     has_client(client)
 }
 
@@ -101,11 +101,12 @@ pub unsafe extern "C" fn ln_unsubscribe(client: &mut Box<Option<Client>>,
 }
 
 #[no_mangle]
-pub extern "C" fn ln_delete_client(client: Box<Option<Client>>){
+pub extern "C" fn ln_delete_client(client: Box<Option<Client>>)->bool{
     if !has_client(&client){
-        return;
+        return false;
     }
     drop(client.unwrap());
+    true
 }
 
 fn has_client(client: &Box<Option<Client>>)->bool{
