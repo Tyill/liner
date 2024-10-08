@@ -11,6 +11,7 @@ use std::os::raw::c_void;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::sync::{Arc, Mutex, Condvar};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::collections::{HashMap, HashSet};
 use std::thread;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -50,7 +51,7 @@ struct Address{
 
 type MempoolList = HashMap<String, Arc<Mutex<Mempool>>>; // key - addr
 type MessList = HashMap<String, Option<Vec<Message>>>;   // ..
-type ArcWriteStream = Arc<Mutex<WriteStream>>;           // .. 
+type WriteStreamArc = Arc<Mutex<WriteStream>>;           // .. 
 
 pub struct Sender{
     epoll_fd: RawFd,
@@ -63,8 +64,8 @@ pub struct Sender{
     mempools: Arc<Mutex<MempoolList>>, 
     last_mess_number: HashMap<String, u64>,              
     streams_fd: Arc<Mutex<HashMap<String, RawFd>>>,    
-    is_new_addr: Arc<Mutex<bool>>,
-    is_close: Arc<Mutex<bool>>,
+    is_new_addr: Arc<AtomicBool>,
+    is_close: Arc<AtomicBool>,
     ctime_ms: HashMap<String, u64>, // key - addr
     delay_write_cvar: Arc<(Mutex<bool>, Condvar)>,
     stream_thread: Option<JoinHandle<()>>,
@@ -84,22 +85,21 @@ impl Sender {
         let streams_fd: Arc<Mutex<HashMap<String, RawFd>>> = Arc::new(Mutex::new(HashMap::new()));
         let mut streams_fd_ = streams_fd.clone();
         let wakeup_fd = wakeupfd_create(epoll_fd);
-        let is_new_addr: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let is_new_addr = Arc::new(AtomicBool::new(false));
         let is_new_addr_ = is_new_addr.clone();
         let unique_name_ = unique_name.clone();
-        let ctime = Arc::new(Mutex::new(common::current_time_ms()));
+        let ctime = Arc::new(AtomicU64::new(common::current_time_ms()));
         let ctime_ = ctime.clone();
-
         let db_conn = redis::Connect::new(&unique_name_, &redis_path).expect("couldn't redis::Connect");
         let db = Arc::new(Mutex::new(db_conn));
         db.lock().unwrap().set_source_topic(&source_topic);
         
         let stream_thread = thread::spawn(move|| {
-            let mut streams: HashMap<RawFd, ArcWriteStream> = HashMap::new();
+            let mut streams: HashMap<RawFd, WriteStreamArc> = HashMap::new();
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
-            let mut prev_time: [u64; 2] = [*ctime_.lock().unwrap(); 2];
+            let mut prev_time: [u64; 2] = [ctime_.load(Ordering::Relaxed); 2];
             loop{ // stream cycle
-                let ctime = *ctime_.lock().unwrap();
+                let ctime = ctime_.load(Ordering::Relaxed);
                 if check_available_stream(&is_new_addr_, ctime, &mut prev_time[0]) {
                     append_streams(epoll_fd, &mut addrs_new_, &mut streams, 
                                         &mut streams_fd_, &messages_, &db, &mempools_);
@@ -131,36 +131,40 @@ impl Sender {
                     }else{
                         print_error!(format!("unknown event {}", stream_fd as RawFd));
                     }
-                }   
+                }                
             }
             close_streams(&messages_, &mut streams, &streams_fd_, &db, &mempools_);
         });
 
-        let delay_write_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        let delay_write_cvar = Arc::new((Mutex::new(false), Condvar::new()));
         let delay_write_cvar_ = delay_write_cvar.clone();
         let messages_ = messages.clone();
         let streams_fd_ = streams_fd.clone();
         let message_buffer = Arc::new(Mutex::new(HashMap::new()));
         let message_buffer_ = message_buffer.clone();
-        let is_close: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let is_close = Arc::new(AtomicBool::new(false));
         let is_close_ = is_close.clone();
-        let wdelay_thread = thread::spawn(move||
-            while !*is_close_.lock().unwrap(){ // write delay cycle
-                {
+        let wdelay_thread = thread::spawn(move||{
+            let mut has_changes = true;
+            while !is_close_.load(Ordering::Relaxed){ // write delay cycle
+                if !has_changes{
                     let (lock, cvar) = &*delay_write_cvar_;
-                    let mut _started = lock.lock().unwrap();
-                    let is = !message_buffer_.lock().unwrap().iter().any(|m: (&String, &Option<Vec<Message>>)| m.1.is_some());
-                    if !is{
-                        *_started = false;
-                        _started = cvar.wait(_started).unwrap();
+                    if let Ok(mut _started) = lock.lock(){
+                        if !message_buffer_.lock().unwrap().iter().any(|m: (&String, &Option<Vec<Message>>)| m.1.is_some()){
+                            *_started = false;
+                            _started = cvar.wait(_started).unwrap();
+                        }
                     }
                 }
+                has_changes = !has_changes;
+                  
                 std::thread::sleep(Duration::from_millis(settings::WRITE_MESS_DELAY_MS));
+               
                 send_mess_to_listener(epoll_fd, &message_buffer_, &messages_, &streams_fd_);
-
-                *ctime.lock().unwrap() = common::current_time_ms();
+                
+                ctime.store(common::current_time_ms(), Ordering::Relaxed);
             }
-        );
+        });
         Self{
             unique_name,
             epoll_fd,
@@ -204,7 +208,7 @@ impl Sender {
             self.addrs_new.lock().unwrap().push(Address{address: addr_to.to_string(), 
                                                         listener_topic: to.to_string(),
                                                         is_new_addr: true});
-            *self.is_new_addr.lock().unwrap() = true;
+            self.is_new_addr.store(true, Ordering::Relaxed);
             wakeupfd_notify(self.wakeup_fd);    
         }
         true
@@ -212,17 +216,18 @@ impl Sender {
     
     fn send_mess_to_buff(&mut self, mess: Message, addr_to: &str){
         let (lock, cvar) = &*self.delay_write_cvar;
-        let mut _started = lock.lock().unwrap();
-        if let Ok(mut message_buffer_lock) = self.message_buffer.lock(){
-            if let Some(mbuff) = message_buffer_lock.get_mut(addr_to).unwrap(){
-                mbuff.push(mess);
-            }else{
-                *message_buffer_lock.get_mut(addr_to).unwrap() = Some(vec![mess]);
+        if let Ok(mut _started) = lock.lock(){
+            if let Ok(mut message_buffer_lock) = self.message_buffer.lock(){
+                if let Some(mbuff) = message_buffer_lock.get_mut(addr_to).unwrap(){
+                    mbuff.push(mess);
+                }else{
+                    *message_buffer_lock.get_mut(addr_to).unwrap() = Some(vec![mess]);
+                }
+            }    
+            if !*_started{
+                *_started = true;
+                cvar.notify_one();
             }
-        }       
-        if !*_started{
-            *_started = true;
-            cvar.notify_one();
         }
     }
     fn wdelay_thread_notify(&self){
@@ -291,7 +296,7 @@ impl Sender {
             }            
         }
         if !self.addrs_new.lock().unwrap().is_empty(){
-            *self.is_new_addr.lock().unwrap() = true;
+            self.is_new_addr.store(true, Ordering::Relaxed);
             wakeupfd_notify(self.wakeup_fd);
         }   
     }
@@ -318,9 +323,9 @@ fn send_mess_to_listener(epoll_fd: RawFd,
     }
 }
 
-fn check_available_stream(is_new_addr: &Arc<Mutex<bool>>, ctime: u64, prev_time: &mut u64)->bool{
-    if *is_new_addr.lock().unwrap() || ctime - *prev_time > settings::CHECK_AVAILABLE_STREAM_TIMEOUT_MS{
-        *is_new_addr.lock().unwrap() = false;
+fn check_available_stream(is_new_addr: &Arc<AtomicBool>, ctime: u64, prev_time: &mut u64)->bool{
+    if is_new_addr.load(Ordering::Relaxed) || ctime - *prev_time > settings::CHECK_AVAILABLE_STREAM_TIMEOUT_MS{
+        is_new_addr.store(false, Ordering::Relaxed);
         *prev_time = ctime;
         true
     }else{
@@ -337,7 +342,7 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
     }
 }
 
-fn update_last_mess_number(streams: &HashMap<RawFd, ArcWriteStream>,
+fn update_last_mess_number(streams: &HashMap<RawFd, WriteStreamArc>,
                            db: &Arc<Mutex<redis::Connect>>){
     for stream in streams{
         let mut stream = stream.1.lock().unwrap();
@@ -372,7 +377,7 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
 
 fn append_streams(epoll_fd: RawFd,
                   addrs: &mut Arc<Mutex<Vec<Address>>>, 
-                  streams: &mut HashMap<RawFd, ArcWriteStream>,
+                  streams: &mut HashMap<RawFd, WriteStreamArc>,
                   streams_fd: &mut Arc<Mutex<HashMap<String, RawFd>>>,
                   messages: &Arc<Mutex<MessList>>,
                   db: &Arc<Mutex<redis::Connect>>,
@@ -394,8 +399,7 @@ fn append_streams(epoll_fd: RawFd,
         match TcpStream::connect(&addr.address){
             Ok(stream)=>{
                 stream.set_nonblocking(true).expect("couldn't stream set_nonblocking");
-                let stm_fd = stream.as_raw_fd();
-
+                
                 let mempool = mempools.lock().unwrap().get_mut(&addr.address).unwrap().clone();
                 match db.lock().unwrap().load_messages_for_sender(&mempool, &listener_name, &addr.listener_topic){
                     Ok(mut mess_from_db) =>{
@@ -416,12 +420,13 @@ fn append_streams(epoll_fd: RawFd,
                 }else{
                     print_error!(format!("couldn't db.get_last_mess_number_for_sender {}", addr.address));
                 }
+                let stm_fd = stream.as_raw_fd();
                 let wstream = WriteStream{address: addr.address.clone(),
                                                        listener_topic: addr.listener_topic.clone(), 
                                                        listener_name: listener_name.clone(),
                                                        stream, last_send_mess_number, last_mess_number: 0,
                                                        is_active: false, is_close: false};
-                streams.insert(wstream.stream.as_raw_fd(), Arc::new(Mutex::new(wstream)));
+                streams.insert(stm_fd, Arc::new(Mutex::new(wstream)));
                 add_write_stream(epoll_fd, stm_fd);
                 streams_fd.lock().unwrap().insert(addr.address.clone(), stm_fd);
             },
@@ -440,7 +445,6 @@ fn append_streams(epoll_fd: RawFd,
 fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 messages: &Arc<Mutex<MessList>>,
                 mempools: &Arc<Mutex<MempoolList>>){
-      
     if let Ok(mut stream) = stream.try_lock(){
         if !stream.is_active && !stream.is_close{
             stream.is_active = true;
@@ -511,7 +515,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
 
 fn remove_stream(epoll_fd: i32,
                  strm_fd: RawFd, 
-                 streams: &mut HashMap<RawFd, ArcWriteStream>,
+                 streams: &mut HashMap<RawFd, WriteStreamArc>,
                  streams_fd: &Arc<Mutex<HashMap<String, RawFd>>>,
                  messages: &Arc<Mutex<MessList>>,
                  addrs_new: &Arc<Mutex<Vec<Address>>>,
@@ -603,7 +607,7 @@ fn remove_write_stream(epoll_fd: i32, fd: RawFd){
 }
 
 fn close_streams(messages: &Arc<Mutex<MessList>>,
-                 streams: &mut HashMap<RawFd, ArcWriteStream>,
+                 streams: &mut HashMap<RawFd, WriteStreamArc>,
                  streams_fd: &Arc<Mutex<HashMap<String, RawFd>>>,
                  db: &Arc<Mutex<redis::Connect>>,
                  mempools: &Arc<Mutex<MempoolList>>){
@@ -630,7 +634,7 @@ fn close_streams(messages: &Arc<Mutex<MessList>>,
 
 impl Drop for Sender {
     fn drop(&mut self) {                
-        *self.is_close.lock().unwrap() = true;
+        self.is_close.store(true, Ordering::Relaxed);
         self.wdelay_thread_notify();
         if let Err(err) = self.wdelay_thread.take().unwrap().join(){
             print_error!(&format!("wdelay_thread.join, {:?}", err));
