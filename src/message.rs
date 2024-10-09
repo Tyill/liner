@@ -14,8 +14,6 @@ pub struct Message{
     //  listener_topic
     //  sender_topic
     //  sender_name
-    //  uuid
-    //  timestamp
     //  data
     mess_size: usize, 
     mem_alloc_pos: usize,

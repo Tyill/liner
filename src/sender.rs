@@ -140,10 +140,10 @@ impl Sender {
         let mut addrs_new_ = addrs_new.clone();
         let mempools_ = mempools.clone(); 
         let wdelay_thread = thread::spawn(move||{
-            let mut has_changes = true;
+            let mut once_again = true;
             let mut prev_time: [u64; 2] = [common::current_time_ms(); 2];
             while !is_close_.load(Ordering::Relaxed){ // write delay cycle
-                if !has_changes{
+                if !once_again{
                     let (lock, cvar) = &*delay_write_cvar_;
                     if let Ok(mut _started) = lock.lock(){
                         if !message_buffer_.lock().unwrap().iter().any(|m: (&String, &Option<Vec<Message>>)| m.1.is_some()){
@@ -152,7 +152,7 @@ impl Sender {
                         }
                     }
                 }
-                has_changes = !has_changes;
+                once_again = !once_again;
                   
                 std::thread::sleep(Duration::from_millis(settings::WRITE_MESS_DELAY_MS));
 
@@ -211,7 +211,6 @@ impl Sender {
                                                         listener_topic: to.to_string(),
                                                         is_new_addr: true});
             self.is_new_addr.store(true, Ordering::Relaxed);
-            wakeupfd_notify(self.wakeup_fd);    
         }
         true
     }
@@ -297,8 +296,7 @@ impl Sender {
             }            
         }
         if !self.addrs_new.lock().unwrap().is_empty(){
-            self.is_new_addr.store(true, Ordering::Relaxed);
-            wakeupfd_notify(self.wakeup_fd);
+            self.is_new_addr.store(true, Ordering::Relaxed);            
         }   
     }
 }

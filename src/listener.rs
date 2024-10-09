@@ -12,6 +12,7 @@ use std::io::Read;
 use std::os::raw::c_void;
 use std::thread::JoinHandle;
 use std::thread;
+use std::time::Duration;
 use std::net::{TcpStream, TcpListener};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{ Arc, Mutex, Condvar};
@@ -128,15 +129,22 @@ impl Listener {
         let is_close = Arc::new(AtomicBool::new(false));
         let is_close_ = is_close.clone();
         let receive_thread = thread::spawn(move|| {
+            let mut once_again = true;
             let mut prev_time: [u64; 1] = [common::current_time_ms(); 1];
             while !is_close_.load(Ordering::Relaxed){
-                let (lock, cvar) = &*receive_thread_cvar_;
-                if let Ok(mut _started) = lock.lock(){                    
-                    if !messages_.lock().unwrap().iter().any(|m: (&i32, &Option<Vec<Message>>)| m.1.is_some()){
-                        *_started = false;
-                        _started = cvar.wait(_started).unwrap();
+                if !once_again{
+                    let (lock, cvar) = &*receive_thread_cvar_;
+                    if let Ok(mut _started) = lock.lock(){                    
+                        if !messages_.lock().unwrap().iter().any(|m: (&i32, &Option<Vec<Message>>)| m.1.is_some()){
+                            *_started = false;
+                            _started = cvar.wait(_started).unwrap();
+                        }
                     }
                 }
+                once_again = !once_again;
+
+                std::thread::sleep(Duration::from_millis(settings::READ_MESS_DELAY_MS));
+
                 let mess_buff = mess_for_receive(&messages_);
                 if !mess_buff.is_empty(){
                     do_receive_cb(mess_buff, &messages_, &mempools_, &senders_, &db_, receive_cb); 
