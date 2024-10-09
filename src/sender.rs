@@ -16,7 +16,6 @@ use std::collections::{HashMap, HashSet};
 use std::thread;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::io::{self, BufWriter, Write};
-use std::ops::DerefMut;
 
 
 #[allow(unused_macros)]
@@ -50,8 +49,9 @@ struct Address{
 }
 
 type MempoolList = HashMap<String, Arc<Mutex<Mempool>>>; // key - addr
-type MessList = HashMap<String, Option<Vec<Message>>>;   // ..
-type WriteStreamList = HashMap<RawFd, Arc<Mutex<WriteStream>>>;           // .. 
+type MessList = HashMap<String, Arc<Mutex<Option<Vec<Message>>>>>; 
+type MessBuffList = HashMap<String, Option<Vec<Message>>>; 
+type WriteStreamList = HashMap<RawFd, Arc<Mutex<WriteStream>>>; 
 
 pub struct Sender{
     epoll_fd: RawFd,
@@ -59,7 +59,7 @@ pub struct Sender{
     unique_name: String,
     addrs_for: HashSet<String>,
     addrs_new: Arc<Mutex<Vec<Address>>>,
-    message_buffer: Arc<Mutex<MessList>>, // key - addr
+    message_buffer: Arc<Mutex<MessBuffList>>, // key - addr
     messages: Arc<Mutex<MessList>>, // key - addr
     mempools: Arc<Mutex<MempoolList>>, 
     last_mess_number: HashMap<String, u64>,              
@@ -133,7 +133,7 @@ impl Sender {
         let delay_write_cvar_ = delay_write_cvar.clone();
         let messages_ = messages.clone();
         let mut streams_fd_ = streams_fd.clone();
-        let message_buffer = Arc::new(Mutex::new(HashMap::new()));
+        let message_buffer: Arc<Mutex<MessBuffList>> = Arc::new(Mutex::new(HashMap::new()));
         let message_buffer_ = message_buffer.clone();
         let is_close = Arc::new(AtomicBool::new(false));
         let is_close_ = is_close.clone();
@@ -155,13 +155,13 @@ impl Sender {
                 has_changes = !has_changes;
                   
                 std::thread::sleep(Duration::from_millis(settings::WRITE_MESS_DELAY_MS));
-               
+
                 send_mess_to_listener(epoll_fd, &message_buffer_, &messages_, &streams_fd_);
-               
+                              
                 let ctime = common::current_time_ms();
                 if check_available_stream(&is_new_addr_, ctime, &mut prev_time[0]) {
                     append_streams(epoll_fd, &mut addrs_new_, &mut streams, 
-                                        &mut streams_fd_, &messages_, &db, &mempools_);
+                                   &mut streams_fd_, &messages_, &db, &mempools_);
                 }
                 if timeout_update_last_mess_number(ctime, &mut prev_time[1]){
                     update_last_mess_number(&streams, &db);
@@ -272,7 +272,7 @@ impl Sender {
             print_error!(&format!("db.save_listener_for_sender {}", err));
         }
 
-        self.messages.lock().unwrap().insert(addr_to.to_string(), Some(Vec::new()));
+        self.messages.lock().unwrap().insert(addr_to.to_string(), Arc::new(Mutex::new(Some(Vec::new()))));
         self.message_buffer.lock().unwrap().insert(addr_to.to_string(), Some(Vec::new()));
         true
     }
@@ -304,18 +304,18 @@ impl Sender {
 }
 
 fn send_mess_to_listener(epoll_fd: RawFd,
-                         message_buffer: &Arc<Mutex<MessList>>,
+                         message_buffer: &Arc<Mutex<MessBuffList>>,
                          messages: &Arc<Mutex<MessList>>,
                          streams_fd: &Arc<Mutex<HashMap<String, RawFd>>>){
     for m in message_buffer.lock().unwrap().iter_mut(){
         if let Some(mut buff) = m.1.take(){
             let addr_to = m.0;
-            if let Ok(mut mess_lock) = messages.lock(){
-                if let Some(mess_for_send) = mess_lock.get_mut(addr_to).unwrap().as_mut(){
-                    mess_for_send.append(&mut buff);
-                }else{
-                    *mess_lock.get_mut(addr_to).unwrap() = Some(buff);
-                }
+            let mess_lock = messages.lock().unwrap()[addr_to].clone();
+            let mut mess_for_send = mess_lock.lock().unwrap();
+            if let Some(mess) = mess_for_send.as_mut(){
+                mess.append(&mut buff);
+            }else{
+                *mess_for_send = Some(buff);
             }
             if let Some(strm_fd) = streams_fd.lock().unwrap().get(addr_to){
                 continue_write_stream(epoll_fd, *strm_fd);
@@ -346,9 +346,11 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
 fn update_last_mess_number(streams: &Arc<Mutex<WriteStreamList>>,
                            db: &Arc<Mutex<redis::Connect>>){
     let mut snames: Vec<(RawFd, String, String)> = Vec::new();
-    for stream in streams.lock().unwrap().iter(){
-        snames.push((*stream.0, stream.1.lock().unwrap().listener_name.clone(),
-                     stream.1.lock().unwrap().listener_topic.clone()));
+    for stream_lock in streams.lock().unwrap().iter(){
+        if let Ok(stream) = stream_lock.1.lock(){
+            snames.push((*stream_lock.0, stream.listener_name.clone(),
+                                         stream.listener_topic.clone()));
+        }
     }
     for sname in snames{    
         match db.lock().unwrap().get_last_mess_number_for_sender(&sname.1, &sname.2){
@@ -389,7 +391,7 @@ fn append_streams(epoll_fd: RawFd,
                   mempools: &Arc<Mutex<MempoolList>>){
     let mut addrs_lost: Vec<Address> = Vec::new();
     for addr in addrs.lock().unwrap().iter(){
-        if !addr.is_new_addr && messages.lock().unwrap()[&addr.address].as_ref().unwrap().is_empty(){
+        if !addr.is_new_addr && messages.lock().unwrap()[&addr.address].lock().unwrap().is_none(){
             addrs_lost.push(addr.clone());
             continue;
         }
@@ -405,15 +407,14 @@ fn append_streams(epoll_fd: RawFd,
             Ok(stream)=>{
                 stream.set_nonblocking(true).expect("couldn't stream set_nonblocking");
                 
-                let mempool = mempools.lock().unwrap().get_mut(&addr.address).unwrap().clone();
+                let mempool = mempools.lock().unwrap()[&addr.address].clone();
                 match db.lock().unwrap().load_messages_for_sender(&mempool, &listener_name, &addr.listener_topic){
                     Ok(mut mess_from_db) =>{
-                        if let Ok(mut mess_lock) = messages.lock(){
-                            if let Some(mut mess_for_send) = mess_lock.get_mut(&addr.address).unwrap().take(){
-                                mess_from_db.append(&mut mess_for_send);
-                            }
-                            *mess_lock.get_mut(&addr.address).unwrap() = Some(mess_from_db);
+                        let mess_lock = messages.lock().unwrap()[&addr.address].clone();
+                        if let Some(mut mess_for_send) = mess_lock.lock().unwrap().take(){
+                            mess_from_db.append(&mut mess_for_send);
                         }
+                        *mess_lock.lock().unwrap() = Some(mess_from_db);
                     },
                     Err(err)=>{
                         print_error!(&format!("db.load_messages_for_sender, {} {}", addr.address, err));
@@ -432,13 +433,14 @@ fn append_streams(epoll_fd: RawFd,
                                                        stream, last_send_mess_number, last_mess_number: 0,
                                                        is_active: false, is_close: false};
                 streams.lock().unwrap().insert(stm_fd, Arc::new(Mutex::new(wstream)));
-                add_write_stream(epoll_fd, stm_fd);
                 streams_fd.lock().unwrap().insert(addr.address.clone(), stm_fd);
+                add_write_stream(epoll_fd, stm_fd);
             },
             Err(err)=>{
                 addrs_lost.push(addr.clone());
                 print_error!(&format!("tcp connect, {} {}", err, addr.address));
-                if let Some(mess) = messages.lock().unwrap().get_mut(&addr.address).unwrap().take(){
+                let mess = messages.lock().unwrap()[&addr.address].lock().unwrap().take();
+                if let Some(mess) = mess{
                     save_mess_to_db(mess, db, &listener_name, &addr.listener_topic, &addr.address, mempools);
                 }
             }
@@ -473,12 +475,13 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
             let mut buff: Vec<Message> = Vec::new();
             let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream.stream.by_ref()); 
             let mempool = mempools.lock().unwrap()[&addr_to].clone();
-            loop{  
+            let messages = messages.lock().unwrap()[&addr_to].clone();
+            loop{
                 let mut mess_for_send = None;
                 if let Ok(mut mess_lock) = messages.lock(){
-                    mess_for_send = mess_lock.get_mut(&addr_to).unwrap().take();
+                    mess_for_send = mess_lock.take();
                     if mess_for_send.is_none(){
-                        *mess_lock.get_mut(&addr_to).unwrap() = Some(buff);
+                        *mess_lock = Some(buff);
                         break;
                     }
                 }   
@@ -507,7 +510,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 print_error!(&format!("writer.flush, {}", err));
                 is_shutdown = true;
             }
-            mempool.lock().unwrap()._print_size();
+            //mempool.lock().unwrap()._print_size();
         }
         stream.last_send_mess_number = last_send_mess_number;
         stream.is_active = false;
@@ -538,7 +541,7 @@ fn remove_stream(epoll_fd: i32,
         streams.lock().unwrap().remove(&strm_fd);
         streams_fd.lock().unwrap().remove(&address);
 
-        let mess = messages.lock().unwrap().get_mut(&address).unwrap().take();
+        let mess = messages.lock().unwrap()[&address].lock().unwrap().take();
         if let Some(mess) = mess{
             save_mess_to_db(mess, db, &listener_name, &listener_topic, &address, mempools);            
         }
@@ -621,8 +624,8 @@ fn close_streams(messages: &Arc<Mutex<MessList>>,
             stream.is_close = true;
         }
     }
-    for kv in messages.lock().unwrap().deref_mut(){
-        if let Some(mess_for_send) = kv.1.take(){
+    for kv in messages.lock().unwrap().iter(){
+        if let Some(mess_for_send) = kv.1.lock().unwrap().take(){
             if mess_for_send.is_empty(){
                 continue;
             }
