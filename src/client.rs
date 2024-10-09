@@ -21,12 +21,12 @@ pub struct Client{
 }
 
 impl Client {
-    pub fn new(unique_name: &str, redis_path: &str) -> Option<Client> {
+    pub fn new(unique_name: &str, topic: &str, redis_path: &str) -> Option<Client> {
         let db = redis::Connect::new(unique_name, redis_path).ok()?;
         Some(
             Self{
                 unique_name: unique_name.to_string(),
-                topic: "".to_string(),
+                topic: topic.to_string(),
                 db,
                 listener: None,
                 sender: None,
@@ -37,7 +37,7 @@ impl Client {
             }
         )
     }
-    pub fn run(&mut self, topic: &str, localhost: &str, receive_cb: UCback) -> bool {
+    pub fn run(&mut self, localhost: &str, receive_cb: UCback) -> bool {
         let _lock = self.mtx.lock();
         if self.is_run{
             return true;
@@ -48,15 +48,14 @@ impl Client {
             return false;        
         }
         let listener = listener.unwrap();
-        self.db.set_source_topic(topic);
+        self.db.set_source_topic(&self.topic);
         self.db.set_source_localhost(localhost);
-        if let Err(err) = self.db.regist_topic(topic){
+        if let Err(err) = self.db.regist_topic(&self.topic){
             print_error!(&format!("{}", err));
             return false;
         }        
-        self.topic = topic.to_string();      
-        self.listener = Some(Listener::new(listener, self.unique_name.clone(), self.db.redis_path(), topic.to_string(), receive_cb));
-        self.sender = Some(Sender::new(self.unique_name.clone(), self.db.redis_path(), topic.to_string()));
+        self.listener = Some(Listener::new(listener, &self.unique_name, &self.db.redis_path(), &self.topic, receive_cb));
+        self.sender = Some(Sender::new(&self.unique_name, &self.db.redis_path(), &self.topic));
         self.sender.as_mut().unwrap().load_prev_connects(&mut self.db);
         self.is_run = true;
 

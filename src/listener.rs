@@ -66,7 +66,7 @@ pub struct Listener{
 
 impl Listener {
     pub fn new(listener: TcpListener,
-               unique_name: String, redis_path: String, source_topic: String, receive_cb: UCback)->Listener{
+               unique_name: &str, redis_path: &str, source_topic: &str, receive_cb: UCback)->Listener{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         let wakeup_fd = wakeupfd_create(epoll_fd);
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(HashMap::new()));

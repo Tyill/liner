@@ -72,7 +72,7 @@ pub struct Sender{
 }
 
 impl Sender {
-    pub fn new(unique_name: String, redis_path: String, source_topic: String)->Sender{
+    pub fn new(unique_name: &str, redis_path: &str, source_topic: &str)->Sender{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(HashMap::new()));
         let messages_ = messages.clone();
@@ -88,8 +88,7 @@ impl Sender {
         let wakeup_fd = wakeupfd_create(epoll_fd);
         let is_new_addr = Arc::new(AtomicBool::new(false));
         let is_new_addr_ = is_new_addr.clone();
-        let unique_name_ = unique_name.clone();
-        let db_conn = redis::Connect::new(&unique_name_, &redis_path).expect("couldn't redis::Connect");
+        let db_conn = redis::Connect::new(&unique_name, &redis_path).expect("couldn't redis::Connect");
         let db = Arc::new(Mutex::new(db_conn));
         db.lock().unwrap().set_source_topic(&source_topic);
         let db_ = db.clone();
@@ -169,7 +168,7 @@ impl Sender {
             }
         });
         Self{
-            unique_name,
+            unique_name: unique_name.to_string(),
             epoll_fd,
             addrs_for,
             addrs_new,
