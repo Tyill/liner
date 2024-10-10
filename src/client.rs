@@ -67,6 +67,10 @@ impl Client {
         if !self.is_run{
             return false;
         }
+        if topic == self.topic{
+            print_error!("you can't send on your own topic");
+            return false;
+        }
         if !get_address_topic(topic, &mut self.db, &mut self.address_topic){
             return false           
         }

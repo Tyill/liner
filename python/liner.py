@@ -49,10 +49,9 @@ class Client:
       
         c_localhost = localhost.encode("utf-8")
    
-        def c_rcb(to: bytes, from_: bytes, data: ctypes.c_void_p, dlen: ctypes.c_size_t):
-            data = ctypes.string_at(data, dlen)
-            print(to, from_, data, dlen)
-            receive_cback(str(to), str(from_), data, dlen)
+        def c_rcb(to: ctypes.c_char_p, from_: ctypes.c_char_p, data: ctypes.c_void_p, dlen: ctypes.c_size_t):
+           # data = ctypes.string_at(data, dlen)
+            receive_cback(str(to), str(from_), data)
       
         recvCBackType = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t)    
         self.recvCBack_ = recvCBackType(c_rcb)
@@ -71,4 +70,4 @@ class Client:
         pfun = lib_.ln_send_to
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_bool)
-        return pfun(ctypes.byref(self.hClient_), c_to_topic, c_data.from_buffer(data), c_dlen, c_at_least_once_delivery)
+        return pfun(ctypes.byref(self.hClient_), c_to_topic, c_data.from_buffer_copy(data), c_dlen, c_at_least_once_delivery)

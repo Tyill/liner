@@ -40,10 +40,10 @@ fn  main() {
     liner::ln_run(&mut c1, localhost.as_ptr(), cb1);
     
        
-    let array = vec![0; 10*1024*1024];
+    let array = vec![0; 100];
     for _ in 0..30{
         println!("{} begin send_to", current_time_ms());       
-        for _ in 0..10{
+        for _ in 0..10000{
             liner::ln_send_to(&mut c1,   
                 topic_2.as_ptr(),
                 array.as_ptr(), array.len(), true);
