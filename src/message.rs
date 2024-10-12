@@ -174,9 +174,11 @@ pub struct MessageForReceiver{
 }
 
 impl MessageForReceiver{
-    pub fn new(mess: &Message, mempool: &Mempool)->MessageForReceiver{
-        let raw_data = mess.raw_data(mempool);
-
+    pub fn new(mess: &Message, mempool: &mut Mempool, temp_buffer: &mut Mempool)->MessageForReceiver{
+        let (mem_alloc_pos, mem_alloc_length) = temp_buffer.alloc_with_write(mess.raw_data(mempool));
+        mess.free(mempool);
+        let raw_data =  temp_buffer.read_data(mem_alloc_pos, mem_alloc_length);
+        
         let all_len = std::mem::size_of::<u32>();
         let number_mess_len = std::mem::size_of::<u64>();
         let flags_pos = all_len + number_mess_len; 
@@ -209,8 +211,8 @@ impl MessageForReceiver{
                 data_len,
                 number_mess: mess.number_mess,
                 _decomp_data,
-                mem_alloc_pos: mess.mem_alloc_pos,
-                mem_alloc_length: mess.mem_alloc_length,
+                mem_alloc_pos,
+                mem_alloc_length,
             }
         }
     }

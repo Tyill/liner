@@ -55,12 +55,7 @@ pub struct Listener{
     wakeup_fd: RawFd,
     stream_thread: Option<JoinHandle<()>>,
     receive_thread: Option<JoinHandle<()>>,
-    messages: Arc<Mutex<MessList>>,
-    mempools: Arc<Mutex<MempoolList>>,
-    senders: Arc<Mutex<SenderList>>,
-    db: Arc<Mutex<redis::Connect>>,
     receive_thread_cvar: Arc<(Mutex<bool>, Condvar)>,
-    receive_cb: UCback,
     is_close: Arc<AtomicBool>,
 }
 
@@ -69,12 +64,12 @@ impl Listener {
                unique_name: &str, redis_path: &str, source_topic: &str, receive_cb: UCback)->Listener{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         let wakeup_fd = wakeupfd_create(epoll_fd);
-        let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(HashMap::new()));
-        let mut messages_ = messages.clone();
-        let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(HashMap::new()));
-        let mut mempools_= mempools.clone();
-        let senders: Arc<Mutex<SenderList>> = Arc::new(Mutex::new(HashMap::new()));
-        let mut senders_ = senders.clone();
+        let mut messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(HashMap::new()));
+        let messages_ = messages.clone();
+        let mut mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(HashMap::new()));
+        let mempools_= mempools.clone();
+        let mut senders: Arc<Mutex<SenderList>> = Arc::new(Mutex::new(HashMap::new()));
+        let senders_ = senders.clone();
         let db_conn = redis::Connect::new(&unique_name, &redis_path).expect("couldn't redis::Connect");
         let db = Arc::new(Mutex::new(db_conn));
         db.lock().unwrap().set_source_topic(&source_topic);
@@ -96,41 +91,38 @@ impl Listener {
                 for ev in &events {
                     let stream_fd = ev.u64 as RawFd;
                     if stream_fd == listener_fd{
-                        listener_accept(epoll_fd, &mut streams, &mut senders_, &listener, 
-                                        &mut mempools_, &mut messages_);
+                        listener_accept(epoll_fd, &mut streams, &mut senders, &listener, 
+                                        &mut mempools, &mut messages);
                     }else if ev.events as i32 & libc::EPOLLIN > 0{
                         if stream_fd == wakeup_fd{
                             wakeupfd_reset(wakeup_fd);
                         }else{
                             if let Some(stream) = streams.get(&stream_fd){
                                 if !stream.lock().unwrap().is_close{
-                                    read_stream(epoll_fd, stream_fd, stream, &senders_,
-                                                db_.clone(), &mempools_, &messages_, &receive_thread_cvar_);
+                                    read_stream(epoll_fd, stream_fd, stream, &senders,
+                                                db.clone(), &mempools, &messages, &receive_thread_cvar_);
                                 }else{
-                                    remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders_);
+                                    remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders);
                                 }
                             }
                         }
                     }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
-                        remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders_);
+                        remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders);
                     }else{
                         print_error!(format!("unknown event {}", stream_fd));
                     }
                 }
             }
-            update_last_mess_number(&senders_, &db_);       
+            update_last_mess_number(&senders, &db);       
         });
 
-        let messages_ = messages.clone();
-        let mempools_= mempools.clone();
-        let senders_ = senders.clone();
-        let db_ = db.clone();
         let receive_thread_cvar_ = receive_thread_cvar.clone();
         let is_close = Arc::new(AtomicBool::new(false));
         let is_close_ = is_close.clone();
         let receive_thread = thread::spawn(move|| {
             let mut once_again = true;
             let mut prev_time: [u64; 1] = [common::current_time_ms(); 1];
+            let mut temp_buff: Mempool = Mempool::new();
             while !is_close_.load(Ordering::Relaxed){
                 if !once_again{
                     let (lock, cvar) = &*receive_thread_cvar_;
@@ -147,12 +139,14 @@ impl Listener {
 
                 let mess_buff = mess_for_receive(&messages_);
                 if !mess_buff.is_empty(){
-                    do_receive_cb(mess_buff, &messages_, &mempools_, &senders_, &db_, receive_cb); 
-                }   
+                    do_receive_cb(mess_buff, &mut temp_buff, &mempools_, &senders_, receive_cb); 
+                    once_again = true;
+                } 
                 let ctime = common::current_time_ms();
                 if timeout_update_last_mess_number(ctime, &mut prev_time[0]){                    
                     update_last_mess_number(&senders_, &db_);
-                }                             
+                    check_has_remove_senders(&db_, &senders_, &mempools_, &messages_);
+                }
             }
         });  
         Self{
@@ -161,21 +155,15 @@ impl Listener {
             stream_thread: Some(stream_thread),
             receive_thread: Some(receive_thread),
             receive_thread_cvar,
-            messages,
-            mempools,
-            senders,
-            db,
-            receive_cb,
             is_close,
         }
-    }   
+    }
 }
 
 fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
-                 messages: &Arc<Mutex<MessList>>,
+                 temp_buff: &mut Mempool,
                  mempools: &Arc<Mutex<MempoolList>>,
                  senders: &Arc<Mutex<SenderList>>,
-                 db: &Arc<Mutex<redis::Connect>>,
                  receive_cb: UCback){
 
     let mut mess_for_receive: BTreeMap<RawFd, Vec<MessageForReceiver>> = BTreeMap::new();
@@ -183,21 +171,20 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
         let fd = mess.0;
         let mut mess_buff: Vec<MessageForReceiver> = Vec::with_capacity(mess.1.len());
         let mempool_lock = mempools.lock().unwrap()[&fd].clone();
-        let mempool = mempool_lock.lock().unwrap();
+        let mut mempool = mempool_lock.lock().unwrap();
         for m in mess.1{
-            mess_buff.push(MessageForReceiver::new(&m, &mempool));
+            mess_buff.push(MessageForReceiver::new(&m, &mut mempool, temp_buff));
         }
         mess_for_receive.insert(fd, mess_buff);
     }
     for mess in mess_for_receive{
         let fd = mess.0;
         let mut last_mess_num = 0;
-        let mempool = mempools.lock().unwrap()[&fd].clone();
         for m in mess.1{
             receive_cb(m.topic_to, 
                 m.topic_from, 
                 m.data, m.data_len);
-            m.free(&mut mempool.lock().unwrap());
+            m.free(temp_buff);
             if m.number_mess > last_mess_num{
                 last_mess_num = m.number_mess;
             }
@@ -207,7 +194,6 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
             senders.get_mut(&fd).unwrap().last_mess_num = last_mess_num;
         }
     }
-    check_has_remove_senders(db, senders, mempools, messages);
 }
 
 fn receive_thread_notify(receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
@@ -468,9 +454,7 @@ impl Drop for Listener {
         if let Err(err) = self.receive_thread.take().unwrap().join(){
             print_error!(&format!("wdelay_thread.join, {:?}", err));
         }
-        do_receive_cb(mess_for_receive(&self.messages), &self.messages, &self.mempools, 
-                                                  &self.senders, &self.db, self.receive_cb);
-
+      
         syscall!(close(self.epoll_fd)).expect("couldn't close epoll");
         wakeupfd_notify(self.wakeup_fd);
         if let Err(err) = self.stream_thread.take().unwrap().join(){

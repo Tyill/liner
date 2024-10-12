@@ -2,6 +2,7 @@ use crate::redis;
 use crate::UCback;
 use crate::listener::Listener;
 use crate::sender::Sender;
+use crate::settings;
 use crate::print_error;
 
 use std::net::TcpListener;
@@ -18,6 +19,7 @@ pub struct Client{
     is_run: bool,
     mtx: Mutex<()>,
     address_topic: HashMap<String, Vec<String>>,
+    prev_time: [u64; 2],
 }
 
 impl Client {
@@ -34,6 +36,7 @@ impl Client {
                 is_run: false,
                 mtx: Mutex::new(()),
                 address_topic: HashMap::new(),
+                prev_time: [0; 2]
             }
         )
     }
@@ -71,9 +74,9 @@ impl Client {
             print_error!("you can't send on your own topic");
             return false;
         }
-        if !get_address_topic(topic, &mut self.db, &mut self.address_topic){
-            return false           
-        }
+        let ctime = self.sender.as_ref().unwrap().get_ctime();
+        get_address_topic(topic, &mut self.db, ctime, &mut self.prev_time[0], &mut self.address_topic);
+        
         let address = &self.address_topic[topic];   
         if address.is_empty(){
             print_error!(&format!("not found addr for topic {}", topic));
@@ -104,9 +107,9 @@ impl Client {
             print_error!("you can't send on your own topic");
             return false;
         }
-        if !get_address_topic(topic, &mut self.db, &mut self.address_topic){
-            return false           
-        }
+        let ctime = self.sender.as_ref().unwrap().get_ctime();
+        get_address_topic(topic, &mut self.db, ctime, &mut self.prev_time[0], &mut self.address_topic);
+        
         let address = &self.address_topic[topic];   
         if address.is_empty(){
             print_error!(&format!("not found addr for topic {}", topic));
@@ -153,16 +156,29 @@ impl Client {
     }
 }
 
-fn get_address_topic(topic: &str, db: &mut redis::Connect, address_topic: &mut HashMap<String, Vec<String>>)->bool{
-    if !address_topic.contains_key(topic) || address_topic[topic].is_empty(){
-        let addresses = db.get_addresses_of_topic(topic);
-        if let Err(err) = addresses{
-            print_error!(&format!("{}", err));
-            return false;           
+fn get_address_topic(topic: &str, db: &mut redis::Connect, ctime: u64, prev_time: &mut u64, address_topic: &mut HashMap<String, Vec<String>>){
+        
+    let check_new_timeout = check_new_address_topic(ctime, prev_time);
+           
+    if !address_topic.contains_key(topic) || address_topic[topic].is_empty() || check_new_timeout{
+        match db.get_addresses_of_topic(topic){
+            Ok(addresses)=>{
+                address_topic.insert(topic.to_string(), addresses);
+            },
+            Err(err)=>{
+                print_error!(&format!("{}", err));
+            }
         }
-        address_topic.insert(topic.to_string(), addresses.unwrap());
     }
-    true
+}
+
+fn check_new_address_topic(ctime: u64, prev_time: &mut u64)->bool{
+    if ctime - *prev_time > settings::UPDATE_SENDER_ADDRESSES_TIMEOUT_MS{
+        *prev_time = ctime;
+        true
+    }else{
+        false
+    }
 }
 
 impl Drop for Client {

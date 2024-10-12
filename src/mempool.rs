@@ -50,7 +50,11 @@ impl Mempool{
             (self.new_mem(req_size), req_size)
         }
     }
-    
+    pub fn alloc_with_write(&mut self, value: &[u8])->(usize, usize){
+        let (pos, sz) = self.alloc(value.len());
+        self.write_data(pos, value);
+        (pos, sz)
+    }
     pub fn free(&mut self, mut pos: usize, length: usize){
         let mut endlen = length;
         while endlen > (self.median_size as f32 * 1.5) as usize {
@@ -104,7 +108,6 @@ impl Mempool{
     pub fn read_data(&self, pos: usize, sz: usize)->&[u8]{
         &self.buff[pos.. pos + sz]
     }
-
     fn new_mem(&mut self, req_size: usize)->usize{
         let csz = self.buff.len();
         self.buff.resize(csz + req_size, 0);
