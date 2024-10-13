@@ -49,6 +49,7 @@ struct Address{
 }
 
 type MempoolList = HashMap<String, Arc<Mutex<Mempool>>>; // key - addr
+type MempoolBuffList = HashMap<String, Mempool>;
 type MessList = HashMap<String, Arc<Mutex<Option<Vec<Message>>>>>; 
 type MessBuffList = HashMap<String, Option<Vec<Message>>>; 
 type WriteStreamList = HashMap<RawFd, Arc<Mutex<WriteStream>>>; 
@@ -60,8 +61,9 @@ pub struct Sender{
     addrs_for: HashSet<String>,
     addrs_new: Arc<Mutex<Vec<Address>>>,
     message_buffer: Arc<Mutex<MessBuffList>>, // key - addr
-    messages: Arc<Mutex<MessList>>, // key - addr
+    messages: Arc<Mutex<MessList>>, 
     mempools: Arc<Mutex<MempoolList>>, 
+    mempool_buffer: Arc<Mutex<MempoolBuffList>>, 
     last_mess_number: HashMap<String, u64>,
     is_new_addr: Arc<AtomicBool>,
     is_close: Arc<AtomicBool>,
@@ -138,7 +140,9 @@ impl Sender {
         let ctime = Arc::new(AtomicU64::new(common::current_time_ms()));
         let ctime_ = ctime.clone();
         let mut addrs_new_ = addrs_new.clone();
-        let mempools_ = mempools.clone(); 
+        let mempools_ = mempools.clone();
+        let mempool_buffer: Arc<Mutex<MempoolBuffList>> = Arc::new(Mutex::new(HashMap::new()));
+        let mempool_buffer_ = mempool_buffer.clone();  
         let wdelay_thread = thread::spawn(move||{
             let mut once_again = true;
             let mut prev_time: [u64; 2] = [common::current_time_ms(); 2];
@@ -156,7 +160,8 @@ impl Sender {
                   
                 std::thread::sleep(Duration::from_millis(settings::WRITE_MESS_DELAY_MS));
 
-                if send_mess_to_listener(epoll_fd, &message_buffer_, &messages_, &streams_fd_){
+                if send_mess_to_listener(epoll_fd, &message_buffer_, &messages_, &streams_fd_,
+                                         &mempools_, &mempool_buffer_){
                     once_again = true;
                 }
                 let ctime = common::current_time_ms();
@@ -178,6 +183,7 @@ impl Sender {
             message_buffer,
             messages,
             mempools,
+            mempool_buffer,
             last_mess_number: HashMap::new(),
             wakeup_fd,
             is_new_addr,
@@ -202,8 +208,8 @@ impl Sender {
         let number_mess = self.last_mess_number[addr_to] + 1;
         *self.last_mess_number.get_mut(addr_to).unwrap() = number_mess;
        
-        let mempool = self.mempools.lock().unwrap().get_mut(addr_to).unwrap().clone();
-        let mess = Message::new(&mut mempool.lock().unwrap(), to,
+        let mess = Message::new(&mut self.mempool_buffer.lock().unwrap().get_mut(addr_to).unwrap(),
+                                         to,
                                          from, &self.unique_name,
                                          number_mess, data, at_least_once_delivery);
         self.send_mess_to_buff(mess, addr_to);
@@ -258,6 +264,7 @@ impl Sender {
             self.last_mess_number.insert(addr_to.to_string(), 0);
         }            
         self.mempools.lock().unwrap().insert(addr_to.to_string(), Arc::new(Mutex::new(Mempool::new())));
+        self.mempool_buffer.lock().unwrap().insert(addr_to.to_string(), Mempool::new());
         let mempool = self.mempools.lock().unwrap().get_mut(addr_to).unwrap().clone();
         if let Ok(last_mess) = db.load_last_message_for_sender(&mempool, &listener_name, listener_topic){
             if let Some(mess) = last_mess{
@@ -309,11 +316,20 @@ impl Sender {
 fn send_mess_to_listener(epoll_fd: RawFd,
                          message_buffer: &Arc<Mutex<MessBuffList>>,
                          messages: &Arc<Mutex<MessList>>,
-                         streams_fd: &Arc<Mutex<HashMap<String, RawFd>>>)->bool{
+                         streams_fd: &Arc<Mutex<HashMap<String, RawFd>>>,
+                         mempools: &Arc<Mutex<MempoolList>>,
+                         mempool_buffer: &Arc<Mutex<MempoolBuffList>>)->bool{
     let mut has_mess = false;
     for m in message_buffer.lock().unwrap().iter_mut(){
         if let Some(mut buff) = m.1.take(){
             let addr_to = m.0;
+            {
+                let mempool_dst_lock = mempools.lock().unwrap().get_mut(addr_to).unwrap().clone();
+                for m in &mut buff{
+                    m.change_mempool(mempool_buffer.lock().unwrap().get_mut(addr_to).unwrap(),
+                                     &mut mempool_dst_lock.lock().unwrap())
+                }
+            }            
             let mess_lock = messages.lock().unwrap()[addr_to].clone();
             let mut mess_for_send = mess_lock.lock().unwrap();
             if let Some(mess) = mess_for_send.as_mut(){
@@ -556,7 +572,7 @@ fn remove_stream(epoll_fd: i32,
 }
 
 fn save_mess_to_db(mess: Vec<Message>, db: &Arc<Mutex<redis::Connect>>, listener_name: &str, listener_topic: &str,
-                   addr: &str, mempools: &Arc<Mutex<MempoolList>>){
+                   addr: &str, mempools: &Arc<Mutex<MempoolList>>){                    
     let mut last_send_mess_number: u64 = 0;
     if let Ok(num) = db.lock().unwrap().get_last_mess_number_for_sender(listener_name, listener_topic){
         last_send_mess_number = num;
