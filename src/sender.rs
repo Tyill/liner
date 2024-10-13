@@ -320,16 +320,24 @@ fn send_mess_to_listener(epoll_fd: RawFd,
                          mempools: &Arc<Mutex<MempoolList>>,
                          mempool_buffer: &Arc<Mutex<MempoolBuffList>>)->bool{
     let mut has_mess = false;
+
+    let mut mess_from_buff: HashMap<String, Vec<Message>> = HashMap::new();
     for m in message_buffer.lock().unwrap().iter_mut(){
-        if let Some(mut buff) = m.1.take(){
-            let addr_to = m.0;
-            {
-                let mempool_dst_lock = mempools.lock().unwrap().get_mut(addr_to).unwrap().clone();
-                for m in &mut buff{
-                    m.change_mempool(mempool_buffer.lock().unwrap().get_mut(addr_to).unwrap(),
-                                     &mut mempool_dst_lock.lock().unwrap())
-                }
-            }            
+        if let Some(buff) = m.1.take(){
+            mess_from_buff.insert(m.0.clone(), buff);
+        }
+    }
+    for m in mess_from_buff{
+        let addr_to = &m.0;
+        let mut buff = m.1;
+        {
+            let mempool_dst_lock = mempools.lock().unwrap().get_mut(addr_to).unwrap().clone();
+            for m in &mut buff{
+                m.change_mempool(mempool_buffer.lock().unwrap().get_mut(addr_to).unwrap(),
+                                    &mut mempool_dst_lock.lock().unwrap())
+            }
+        }
+        {   
             let mess_lock = messages.lock().unwrap()[addr_to].clone();
             let mut mess_for_send = mess_lock.lock().unwrap();
             if let Some(mess) = mess_for_send.as_mut(){
@@ -337,11 +345,11 @@ fn send_mess_to_listener(epoll_fd: RawFd,
             }else{
                 *mess_for_send = Some(buff);
             }
-            if let Some(strm_fd) = streams_fd.lock().unwrap().get(addr_to){
-                continue_write_stream(epoll_fd, *strm_fd);
-            }
-            has_mess = true;
         }
+        if let Some(strm_fd) = streams_fd.lock().unwrap().get(addr_to){
+            continue_write_stream(epoll_fd, *strm_fd);
+        }
+        has_mess = true;
     }
     has_mess
 }
