@@ -311,21 +311,29 @@ fn send_mess_to_listener(epoll_fd: RawFd,
                          messages: &Arc<Mutex<MessList>>,
                          streams_fd: &Arc<Mutex<HashMap<String, RawFd>>>)->bool{
     let mut has_mess = false;
+
+    let mut mess_from_buff: HashMap<String, Vec<Message>> = HashMap::new();
     for m in message_buffer.lock().unwrap().iter_mut(){
-        if let Some(mut buff) = m.1.take(){
-            let addr_to = m.0;
-            let mess_lock = messages.lock().unwrap()[addr_to].clone();
+        if let Some(buff) = m.1.take(){
+            mess_from_buff.insert(m.0.clone(), buff);
+        }
+    }
+    for m in mess_from_buff{
+        let addr_to = m.0;
+        let mut buff = m.1;
+        let mess_lock = messages.lock().unwrap()[&addr_to].clone();
+        {
             let mut mess_for_send = mess_lock.lock().unwrap();
             if let Some(mess) = mess_for_send.as_mut(){
                 mess.append(&mut buff);
             }else{
                 *mess_for_send = Some(buff);
             }
-            if let Some(strm_fd) = streams_fd.lock().unwrap().get(addr_to){
-                continue_write_stream(epoll_fd, *strm_fd);
-            }
-            has_mess = true;
         }
+        if let Some(strm_fd) = streams_fd.lock().unwrap().get(&addr_to){
+            continue_write_stream(epoll_fd, *strm_fd);
+        }
+        has_mess = true;
     }
     has_mess
 }

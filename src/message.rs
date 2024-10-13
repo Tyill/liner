@@ -76,6 +76,14 @@ impl Message{
         mempool.free(self.mem_alloc_pos, self.mem_alloc_length);
     }
 
+    pub fn change_mempool(&mut self, mempool_src: &mut Mempool, mempool_dst: &mut Mempool){
+        let data = mempool_src.read_data(self.mem_alloc_pos, self.mem_alloc_length);
+        let (mem_alloc_pos, mem_alloc_length) = mempool_dst.alloc_with_write(data);
+        mempool_src.free(self.mem_alloc_pos, self.mem_alloc_length);
+        self.mem_alloc_pos = mem_alloc_pos;
+        self.mem_alloc_length = mem_alloc_length;
+    }
+
     pub fn raw_data<'a>(& self, mempool: &'a Mempool)->&'a[u8]{
         mempool.read_data(self.mem_alloc_pos, self.mem_alloc_length)
     }
@@ -174,10 +182,8 @@ pub struct MessageForReceiver{
 }
 
 impl MessageForReceiver{
-    pub fn new(mess: &Message, mempool: &mut Mempool, temp_buffer: &mut Mempool)->MessageForReceiver{
-        let (mem_alloc_pos, mem_alloc_length) = temp_buffer.alloc_with_write(mess.raw_data(mempool));
-        mess.free(mempool);
-        let raw_data =  temp_buffer.read_data(mem_alloc_pos, mem_alloc_length);
+    pub fn new(mess: &Message, mempool: &Mempool)->MessageForReceiver{
+         let raw_data =  mess.raw_data(mempool);
         
         let all_len = std::mem::size_of::<u32>();
         let number_mess_len = std::mem::size_of::<u64>();
@@ -211,8 +217,8 @@ impl MessageForReceiver{
                 data_len,
                 number_mess: mess.number_mess,
                 _decomp_data,
-                mem_alloc_pos,
-                mem_alloc_length,
+                mem_alloc_pos: mess.mem_alloc_pos,
+                mem_alloc_length: mess.mem_alloc_length,
             }
         }
     }
