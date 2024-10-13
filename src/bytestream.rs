@@ -66,6 +66,11 @@ where
                     }
                 }else if e != std::io::ErrorKind::Interrupted{
                     print_error!(&format!("{}", e));
+                    if mem_pos > 0{
+                        mempool.lock().unwrap().free(mem_pos, mem_alloc_length);
+                        mem_pos = 0;
+                        mem_fill_length = 0;
+                    }
                     is_shutdown = true;
                     break;                  
                 }
@@ -88,21 +93,27 @@ pub fn write_stream<T>(stream: &mut T, mem_alloc_pos: usize, mess_size: usize, m
 where
     T: Write,
 {
-    let mut buff = [0; 4096];
+    const BUFF_LEN: usize = 4096;
+    let mut buff = [0; BUFF_LEN];
     let mut wsz: usize = 0;
+    let mut is_continue = false;
     while wsz < mess_size{
-        let endlen = std::cmp::min(mess_size - wsz, buff.len());
-        if let Ok(mempool) = mempool.lock(){
-            let wdata = mempool.read_data(mem_alloc_pos + wsz, endlen);
-            buff[..endlen].copy_from_slice(wdata);
-        }           
+        let endlen = std::cmp::min(mess_size - wsz, BUFF_LEN);
+        if !is_continue{
+            if let Ok(mempool) = mempool.lock(){
+                let wdata = mempool.read_data(mem_alloc_pos + wsz, endlen);
+                buff[..endlen].copy_from_slice(wdata);
+            }           
+        }
         match stream.write_all(&buff[..endlen]){
             Ok(_) => {
                 wsz += endlen;
+                is_continue = false;
             },
             Err(err) => {
                 let e = err.kind();
                 if e == std::io::ErrorKind::WouldBlock{
+                    is_continue = true;
                     continue;
                 }else{
                     print_error!(&format!("{}", e));
