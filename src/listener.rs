@@ -47,9 +47,9 @@ struct Sender{
     is_deleted: bool,
 }
 
-type MessList = HashMap<RawFd, Option<Vec<Message>>, BuildNoHashHasher<RawFd>>; 
-type MempoolList = HashMap<RawFd, Arc<Mutex<Mempool>>, BuildNoHashHasher<RawFd>>; 
-type SenderList = HashMap<RawFd, Sender, BuildNoHashHasher<RawFd>>;
+type MessMap = HashMap<RawFd, Option<Vec<Message>>, BuildNoHashHasher<RawFd>>; 
+type MempoolMap = HashMap<RawFd, Arc<Mutex<Mempool>>, BuildNoHashHasher<RawFd>>; 
+type SenderMap = HashMap<RawFd, Sender, BuildNoHashHasher<RawFd>>;
 type ReadStreamMap = HashMap<RawFd, Arc<Mutex<ReadStream>>, BuildNoHashHasher<RawFd>>; 
 
 pub struct Listener{
@@ -66,11 +66,11 @@ impl Listener {
                unique_name: &str, redis_path: &str, source_topic: &str, receive_cb: UCback)->Listener{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         let wakeup_fd = wakeupfd_create(epoll_fd);
-        let mut messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
+        let mut messages: Arc<Mutex<MessMap>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
         let messages_ = messages.clone();
-        let mut mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
+        let mut mempools: Arc<Mutex<MempoolMap>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
         let mempools_= mempools.clone();
-        let mut senders: Arc<Mutex<SenderList>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
+        let mut senders: Arc<Mutex<SenderMap>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
         let senders_ = senders.clone();
         let db_conn = redis::Connect::new(&unique_name, &redis_path).expect("couldn't redis::Connect");
         let db = Arc::new(Mutex::new(db_conn));
@@ -164,8 +164,8 @@ impl Listener {
 
 fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
                  temp_buff: &mut Mempool,
-                 mempools: &Arc<Mutex<MempoolList>>,
-                 senders: &Arc<Mutex<SenderList>>,
+                 mempools: &Arc<Mutex<MempoolMap>>,
+                 senders: &Arc<Mutex<SenderMap>>,
                  receive_cb: UCback){
 
     let mut mess_for_receive: BTreeMap<RawFd, Vec<MessageForReceiver>> = BTreeMap::new();
@@ -205,7 +205,7 @@ fn receive_thread_notify(receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
     cvar.notify_one();
 }
 
-fn mess_for_receive(messages: &Arc<Mutex<MessList>>)->BTreeMap<RawFd, Vec<Message>>{
+fn mess_for_receive(messages: &Arc<Mutex<MessMap>>)->BTreeMap<RawFd, Vec<Message>>{
     let mut mess_buff: BTreeMap<RawFd, Vec<Message>> = BTreeMap::new();
     for mess in messages.lock().unwrap().iter_mut(){
         let fd = *mess.0;
@@ -240,10 +240,10 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
 
 fn listener_accept(epoll_fd: RawFd, 
                    streams: &mut ReadStreamMap,
-                   senders: &mut Arc<Mutex<SenderList>>,
+                   senders: &mut Arc<Mutex<SenderMap>>,
                    listener: &TcpListener,
-                   mempools: &mut Arc<Mutex<MempoolList>>,
-                   messages: &mut Arc<Mutex<MessList>>){
+                   mempools: &mut Arc<Mutex<MempoolMap>>,
+                   messages: &mut Arc<Mutex<MessMap>>){
     match listener.accept() {
         Ok((stream, _addr)) => {
             stream.set_nonblocking(true).expect("couldn't listener set_nonblocking");
@@ -263,10 +263,10 @@ fn listener_accept(epoll_fd: RawFd,
 fn read_stream(epoll_fd: RawFd,
                stream_fd: RawFd,
                stream: &Arc<Mutex<ReadStream>>,
-               senders: &Arc<Mutex<SenderList>>,
+               senders: &Arc<Mutex<SenderMap>>,
                db: Arc<Mutex<redis::Connect>>,
-               mempools: &Arc<Mutex<MempoolList>>,
-               messages: &Arc<Mutex<MessList>>,
+               mempools: &Arc<Mutex<MempoolMap>>,
+               messages: &Arc<Mutex<MessMap>>,
                receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
     if let Ok(mut stream) = stream.try_lock(){
         if !stream.is_active && !stream.is_close{
@@ -349,7 +349,7 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
 }
 
 
-fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
+fn update_last_mess_number(senders: &Arc<Mutex<SenderMap>>,
                            db: &Arc<Mutex<redis::Connect>>){
     for sender in senders.lock().unwrap().iter(){
         let sender = sender.1;
@@ -367,16 +367,16 @@ fn set_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, send
 
 fn remove_stream(epoll_fd: i32, stream_fd: RawFd,
                 streams: &mut ReadStreamMap,
-                senders: &mut Arc<Mutex<SenderList>>,){
+                senders: &mut Arc<Mutex<SenderMap>>,){
     remove_read_stream(epoll_fd, stream_fd);
     senders.lock().unwrap().get_mut(&stream_fd).unwrap().is_deleted = true;
     streams.remove(&stream_fd);
 }
 
 fn check_has_remove_senders(db: &Arc<Mutex<redis::Connect>>,
-                            senders: &Arc<Mutex<SenderList>>,
-                            mempools: &Arc<Mutex<MempoolList>>,
-                            messages: &Arc<Mutex<MessList>>){
+                            senders: &Arc<Mutex<SenderMap>>,
+                            mempools: &Arc<Mutex<MempoolMap>>,
+                            messages: &Arc<Mutex<MessMap>>){
     let mut rem_fds: Vec<RawFd> = Vec::new();
     for sender in senders.lock().unwrap().iter(){
         if sender.1.is_deleted{
