@@ -332,9 +332,12 @@ fn send_mess_to_listener(epoll_fd: RawFd,
         let mut buff = m.1;
         {
             let mempool_dst_lock = mempools.lock().unwrap().get_mut(addr_to).unwrap().clone();
+            let mut mempool_buffer_lock = mempool_buffer.lock().unwrap();
+            let mempool_buffer = mempool_buffer_lock.get_mut(addr_to).unwrap();
+            let mempool_dst = &mut mempool_dst_lock.lock().unwrap();
             for m in &mut buff{
-                m.change_mempool(mempool_buffer.lock().unwrap().get_mut(addr_to).unwrap(),
-                                    &mut mempool_dst_lock.lock().unwrap())
+                m.change_mempool(mempool_buffer,
+                                 mempool_dst);
             }
         }
         {   
