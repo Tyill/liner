@@ -5,6 +5,7 @@ use crate::redis;
 use crate::settings;
 use crate::common;
 use crate::UCback;
+use nohash_hasher::BuildNoHashHasher;
 use crate::print_error;
 
 use std::collections::{HashMap, BTreeMap};
@@ -46,9 +47,10 @@ struct Sender{
     is_deleted: bool,
 }
 
-type MessList = HashMap<RawFd, Option<Vec<Message>>>; 
-type MempoolList = HashMap<RawFd, Arc<Mutex<Mempool>>>; 
-type SenderList = HashMap<RawFd, Sender>; 
+type MessList = HashMap<RawFd, Option<Vec<Message>>, BuildNoHashHasher<RawFd>>; 
+type MempoolList = HashMap<RawFd, Arc<Mutex<Mempool>>, BuildNoHashHasher<RawFd>>; 
+type SenderList = HashMap<RawFd, Sender, BuildNoHashHasher<RawFd>>;
+type ReadStreamMap = HashMap<RawFd, Arc<Mutex<ReadStream>>, BuildNoHashHasher<RawFd>>; 
 
 pub struct Listener{
     epoll_fd: RawFd,
@@ -64,11 +66,11 @@ impl Listener {
                unique_name: &str, redis_path: &str, source_topic: &str, receive_cb: UCback)->Listener{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         let wakeup_fd = wakeupfd_create(epoll_fd);
-        let mut messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(HashMap::new()));
+        let mut messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
         let messages_ = messages.clone();
-        let mut mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(HashMap::new()));
+        let mut mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
         let mempools_= mempools.clone();
-        let mut senders: Arc<Mutex<SenderList>> = Arc::new(Mutex::new(HashMap::new()));
+        let mut senders: Arc<Mutex<SenderList>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
         let senders_ = senders.clone();
         let db_conn = redis::Connect::new(&unique_name, &redis_path).expect("couldn't redis::Connect");
         let db = Arc::new(Mutex::new(db_conn));
@@ -82,7 +84,7 @@ impl Listener {
             let listener_fd = listener.as_raw_fd();
             regist_event(epoll_fd, listener_fd, libc::EPOLL_CTL_ADD).expect("couldn't event regist");
 
-            let mut streams: HashMap<RawFd, Arc<Mutex<ReadStream>>> = HashMap::new();
+            let mut streams: ReadStreamMap = HashMap::with_hasher(BuildNoHashHasher::default());
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
             loop{    
                 if !wait(epoll_fd, &mut events){
@@ -237,7 +239,7 @@ fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
 }
 
 fn listener_accept(epoll_fd: RawFd, 
-                   streams: &mut HashMap<RawFd, Arc<Mutex<ReadStream>>>,
+                   streams: &mut ReadStreamMap,
                    senders: &mut Arc<Mutex<SenderList>>,
                    listener: &TcpListener,
                    mempools: &mut Arc<Mutex<MempoolList>>,
@@ -364,7 +366,7 @@ fn set_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, send
 }
 
 fn remove_stream(epoll_fd: i32, stream_fd: RawFd,
-                streams: &mut HashMap<RawFd, Arc<Mutex<ReadStream>>>,
+                streams: &mut ReadStreamMap,
                 senders: &mut Arc<Mutex<SenderList>>,){
     remove_read_stream(epoll_fd, stream_fd);
     senders.lock().unwrap().get_mut(&stream_fd).unwrap().is_deleted = true;
