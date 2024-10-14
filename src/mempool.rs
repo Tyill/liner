@@ -111,8 +111,8 @@ impl Mempool{
     fn new_mem(&mut self, req_size: usize)->usize{
         let csz = self.buff.len();
         self.buff.resize(csz + req_size, 0);
-        if !self.free_mem.contains_key(&req_size){
-            self.free_mem.insert(req_size, Vec::new());
+        if let std::collections::btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {
+            e.insert(Vec::new());
             let keys: Vec<&usize> = self.free_mem.keys().collect();
             self.median_size = *keys[self.free_mem.len()/2];
         }

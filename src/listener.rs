@@ -72,9 +72,9 @@ impl Listener {
         let mempools_= mempools.clone();
         let mut senders: Arc<Mutex<SenderMap>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
         let senders_ = senders.clone();
-        let db_conn = redis::Connect::new(&unique_name, &redis_path).expect("couldn't redis::Connect");
+        let db_conn = redis::Connect::new(unique_name, redis_path).expect("couldn't redis::Connect");
         let db = Arc::new(Mutex::new(db_conn));
-        db.lock().unwrap().set_source_topic(&source_topic);
+        db.lock().unwrap().set_source_topic(source_topic);
         let db_ = db.clone();
         let receive_thread_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
         let receive_thread_cvar_ = receive_thread_cvar.clone();
@@ -98,14 +98,12 @@ impl Listener {
                     }else if ev.events as i32 & libc::EPOLLIN > 0{
                         if stream_fd == wakeup_fd{
                             wakeupfd_reset(wakeup_fd);
-                        }else{
-                            if let Some(stream) = streams.get(&stream_fd){
-                                if !stream.lock().unwrap().is_close{
-                                    read_stream(epoll_fd, stream_fd, stream, &senders,
-                                                db.clone(), &mempools, &messages, &receive_thread_cvar_);
-                                }else{
-                                    remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders);
-                                }
+                        }else if let Some(stream) = streams.get(&stream_fd){
+                            if !stream.lock().unwrap().is_close{
+                                read_stream(epoll_fd, stream_fd, stream, &senders,
+                                            db.clone(), &mempools, &messages, &receive_thread_cvar_);
+                            }else{
+                                remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders);
                             }
                         }
                     }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{

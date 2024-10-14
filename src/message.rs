@@ -64,10 +64,13 @@ impl Message{
         mempool.write_str(listener_topic_pos, listener_topic);
         mempool.write_str(sender_topic_pos, sender_topic);
         mempool.write_str(sender_name_pos, sender_name);
-        if cdata.is_none(){
-            mempool.write_array(data_pos, data);
-        }else{
-            mempool.write_array(data_pos, &cdata.unwrap());
+        match cdata{
+            Some(cdata)=>{
+                mempool.write_array(data_pos, &cdata);
+            },
+            None=>{
+                mempool.write_array(data_pos, data);
+            }
         }
         Message{number_mess, flags, mess_size, mem_alloc_pos, mem_alloc_length}
     }   
@@ -87,15 +90,7 @@ impl Message{
     pub fn raw_data<'a>(&self, mempool: &'a Mempool)->&'a[u8]{
         mempool.read_data(self.mem_alloc_pos, self.mem_alloc_length)
     }
-
-    pub fn change_mempool(&mut self, mempool_src: &mut Mempool, mempool_dst: &mut Mempool){
-        let data = mempool_src.read_data(self.mem_alloc_pos, self.mem_alloc_length);
-        let (mem_alloc_pos, mem_alloc_length) = mempool_dst.alloc_with_write(data);
-        mempool_src.free(self.mem_alloc_pos, self.mem_alloc_length);
-        self.mem_alloc_pos = mem_alloc_pos;
-        self.mem_alloc_length = mem_alloc_length;
-    }
-
+    
     pub fn from_stream<T>(mempool: &Arc<Mutex<Mempool>>, stream: &mut T, is_shutdown: &mut bool) -> Option<Message>
         where T: Read{
         let (mem_alloc_pos, mem_alloc_length, 

@@ -93,9 +93,9 @@ impl Sender {
         let wakeup_fd = wakeupfd_create(epoll_fd);
         let is_new_addr = Arc::new(AtomicBool::new(false));
         let is_new_addr_ = is_new_addr.clone();
-        let db_conn = redis::Connect::new(&unique_name, &redis_path).expect("couldn't redis::Connect");
+        let db_conn = redis::Connect::new(unique_name, redis_path).expect("couldn't redis::Connect");
         let db = Arc::new(Mutex::new(db_conn));
-        db.lock().unwrap().set_source_topic(&source_topic);
+        db.lock().unwrap().set_source_topic(source_topic);
         let db_ = db.clone();
         let stream_thread = thread::spawn(move|| {
             let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
@@ -212,7 +212,7 @@ impl Sender {
         let number_mess = self.last_mess_number[address_ix] + 1;
         *self.last_mess_number.get_mut(address_ix).unwrap() = number_mess;
        
-        let mess = Message::new(&mut self.mempool_buffer.lock().unwrap().get_mut(address_ix).unwrap(),
+        let mess = Message::new(self.mempool_buffer.lock().unwrap().get_mut(address_ix).unwrap(),
                                          to,
                                          from, &self.unique_name,
                                          number_mess, data, at_least_once_delivery);
@@ -666,8 +666,7 @@ fn close_streams(messages: &Arc<Mutex<MessList>>,
             stream.is_close = true;
         }
     }
-    let mut address_ix: usize = 0;
-    for mess in messages.lock().unwrap().iter(){
+    for (address_ix, mess) in messages.lock().unwrap().iter().enumerate(){
         if let Some(mess_for_send) = mess.lock().unwrap().take(){
             if !mess_for_send.is_empty(){
                 let fd = streams_fd.lock().unwrap()[&address_ix];
@@ -679,7 +678,6 @@ fn close_streams(messages: &Arc<Mutex<MessList>>,
                 save_mess_to_db(mess_for_send, db, listener_name, listener_topic, address_ix, mempools);
             }          
         }
-        address_ix += 1;
     }
 }
 

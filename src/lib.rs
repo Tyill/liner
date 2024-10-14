@@ -21,15 +21,15 @@ pub unsafe extern "C" fn ln_new_client(unique_name: *const i8,
     let topic = CStr::from_ptr(topic).to_str().unwrap();
     let redis_path = CStr::from_ptr(redis_path).to_str().unwrap();
     
-    if unique_name.len() == 0{
+    if unique_name.is_empty(){
         print_error!("unique_name empty");
         return Box::new(None);
     }
-    if topic.len() == 0{
+    if topic.is_empty(){
         print_error!("topic empty");
         return Box::new(None);
     }
-    if redis_path.len() == 0{
+    if redis_path.is_empty(){
         print_error!("redis_path empty");
         return Box::new(None);
     }
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>,
     if !has_client(client){
         return false;
     }    
-    if localhost.len() == 0{
+    if localhost.is_empty(){
         print_error!("localhost empty");
         return false;
     }
@@ -73,7 +73,7 @@ pub unsafe extern "C" fn ln_send_to(client: &mut Box<Option<Client>>,
     if !has_client(client){
         return false;
     }
-    if topic.len() == 0{
+    if topic.is_empty(){
         print_error!("topic name empty");
         return false;
     }
@@ -96,8 +96,8 @@ pub unsafe extern "C" fn ln_send_all(client: &mut Box<Option<Client>>,
     if !has_client(client){
         return false;
     }
-    if topic.len() == 0{
-        print_error!("topic.len() == 0");
+    if topic.is_empty(){
+        print_error!("topic.is_empty()");
         return false;
     }
     if data_size == 0{
@@ -116,8 +116,8 @@ pub unsafe extern "C" fn ln_subscribe(client: &mut Box<Option<Client>>,
     if !has_client(client){
         return false;
     }
-    if topic.len() == 0{
-        print_error!("topic.len() == 0");
+    if topic.is_empty(){
+        print_error!("topic.is_empty()");
         return false;
     }
     let c = client.as_mut();
@@ -132,8 +132,8 @@ pub unsafe extern "C" fn ln_unsubscribe(client: &mut Box<Option<Client>>,
     if !has_client(client){
         return false;
     }
-    if topic.len() == 0{
-        print_error!("topic.len() == 0");
+    if topic.is_empty(){
+        print_error!("topic.is_empty()");
         return false;
     }
     let c = client.as_mut();
@@ -149,7 +149,7 @@ pub extern "C" fn ln_delete_client(client: Box<Option<Client>>)->bool{
     true
 }
 
-fn has_client(client: &Box<Option<Client>>)->bool{
+fn has_client(client: &Option<Client>)->bool{
     if client.is_some(){
         true
     }else{
