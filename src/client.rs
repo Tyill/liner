@@ -74,30 +74,24 @@ impl Client {
             print_error!("you can't send on your own topic");
             return false;
         }
-        let has_address = self.address_topic.contains_key(topic);   
         let ctime = self.sender.as_ref().unwrap().get_ctime();
-        if let Some(addr) = get_address_topic(topic, &mut self.db, ctime, &mut self.prev_time[0], has_address){
+        if let Some(addr) = get_address_topic(topic, &mut self.db, ctime, &mut self.prev_time[0]){
             self.address_topic.insert(topic.to_string(), addr);
         }
-        let address = &self.address_topic[topic];
-        if address.is_empty(){
+        if let Some(address) = self.address_topic.get(topic){       
+            let index = self.last_send_index.entry(topic.to_string()).or_insert(0);
+            if *index >= address.len(){
+                *index = 0;
+            }
+            let addr = &address[*index];
+            let ok = self.sender.as_mut().unwrap().send_to(&mut self.db, addr, 
+                                    topic, &self.topic, data, at_least_once_delivery);
+            *index += 1;
+            ok
+        }else{
             print_error!(&format!("not found addr for topic {}", topic));
-            return false;
-        }  
-        if !self.last_send_index.contains_key(topic){
-            self.last_send_index.insert(topic.to_string(), 0);
+            false
         }
-        let index = self.last_send_index.get_mut(topic).unwrap();
-        if *index >= address.len(){
-            *index = 0;
-        }
-        let addr = &address[*index];
-        let ok = self.sender
-        .as_mut().unwrap().send_to(&mut self.db, addr, 
-                                topic, &self.topic, data, at_least_once_delivery);
-
-        *index += 1;
-        ok
     }
 
     pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
@@ -109,22 +103,21 @@ impl Client {
             print_error!("you can't send on your own topic");
             return false;
         }
-        let has_address = self.address_topic.contains_key(topic);   
         let ctime = self.sender.as_ref().unwrap().get_ctime();
-        if let Some(addr) = get_address_topic(topic, &mut self.db, ctime, &mut self.prev_time[0], has_address){
+        if let Some(addr) = get_address_topic(topic, &mut self.db, ctime, &mut self.prev_time[0]){
             self.address_topic.insert(topic.to_string(), addr);
         }
-        let address = &self.address_topic[topic];   
-        if address.is_empty(){
+        if let Some(address) = self.address_topic.get(topic){       
+            let mut ok = false;
+            for addr in address{
+                ok &= self.sender.as_mut().unwrap().send_to(&mut self.db, addr, 
+                                        topic, &self.topic, data, at_least_once_delivery);
+            }
+            ok
+        }else{
             print_error!(&format!("not found addr for topic {}", topic));
-            return false;
-        }       
-        let mut ok = false;
-        for addr in address{
-            ok &= self.sender.as_mut().unwrap().send_to(&mut self.db, addr, 
-                                    topic, &self.topic, data, at_least_once_delivery);
+            false
         }
-        ok
     }
 
     pub fn subscribe(&mut self, topic: &str) -> bool {
@@ -160,11 +153,9 @@ impl Client {
     }
 }
 
-fn get_address_topic(topic: &str, db: &mut redis::Connect, ctime: u64, prev_time: &mut u64, has_address: bool)->Option<Vec<String>>{
+fn get_address_topic(topic: &str, db: &mut redis::Connect, ctime: u64, prev_time: &mut u64)->Option<Vec<String>>{
         
-    let check_new_timeout = check_new_address_topic(ctime, prev_time);
-           
-    if !has_address || check_new_timeout{
+    if check_new_address_topic(ctime, prev_time){
         match db.get_addresses_of_topic(topic){
             Ok(addresses)=>{
                 if !addresses.is_empty(){

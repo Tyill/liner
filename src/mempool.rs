@@ -1,5 +1,6 @@
 
 use std::{collections::BTreeMap, usize};
+use std::collections::btree_map;
 
 
 pub struct Mempool{
@@ -20,7 +21,7 @@ impl Mempool{
         println!("mempool sz {}", self.buff.len());
     }
     pub fn alloc(&mut self, req_size: usize)->(usize, usize){    
-        let mut length = usize::MAX;
+        let mut length = 0;
         {           
             let keys: Vec<&usize> = self.free_mem.keys().collect();
             let mut ix;
@@ -44,11 +45,21 @@ impl Mempool{
                 }
             }
         }
-        if length < usize::MAX{
+        if length > 0{
             (self.free_mem.get_mut(&length).unwrap().pop().unwrap(), length)
         }else{
             (self.new_mem(req_size), req_size)
         }
+    }
+    fn new_mem(&mut self, req_size: usize)->usize{
+        let csz = self.buff.len();
+        self.buff.resize(csz + req_size, 0);
+        if let btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {
+            e.insert(Vec::new());
+            let keys: Vec<&usize> = self.free_mem.keys().collect();
+            self.median_size = *keys[self.free_mem.len()/2];
+        }
+        csz
     }
     pub fn alloc_with_write(&mut self, value: &[u8])->(usize, usize){
         let (pos, sz) = self.alloc(value.len());
@@ -107,16 +118,6 @@ impl Mempool{
     }
     pub fn read_data(&self, pos: usize, sz: usize)->&[u8]{
         &self.buff[pos.. pos + sz]
-    }
-    fn new_mem(&mut self, req_size: usize)->usize{
-        let csz = self.buff.len();
-        self.buff.resize(csz + req_size, 0);
-        if let std::collections::btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {
-            e.insert(Vec::new());
-            let keys: Vec<&usize> = self.free_mem.keys().collect();
-            self.median_size = *keys[self.free_mem.len()/2];
-        }
-        csz
     }
 }
 

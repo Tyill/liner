@@ -208,7 +208,7 @@ impl Sender {
             self.addrs_for.insert(addr_to.to_string(), self.addrs_for.len());
             is_new_addr = true;
         }
-        let address_ix = *self.addrs_for.get(addr_to).unwrap();
+        let address_ix = self.addrs_for[addr_to];
         let number_mess = self.last_mess_number[address_ix] + 1;
         *self.last_mess_number.get_mut(address_ix).unwrap() = number_mess;
        
@@ -521,8 +521,14 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 let mut mess_for_send = None;
                 if let Ok(mut mess_lock) = messages.lock(){
                     mess_for_send = mess_lock.take();
-                    if mess_for_send.is_none(){
-                        *mess_lock = Some(buff);
+                    let mess_for_send_is_none = mess_for_send.is_none();
+                    if mess_for_send_is_none || is_shutdown{
+                        if !mess_for_send_is_none{
+                            buff.append(&mut mess_for_send.unwrap());
+                        }
+                        if !buff.is_empty(){
+                            *mess_lock = Some(buff);
+                        }
                         break;
                     }
                 }   
@@ -548,7 +554,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 }
             }
             if let Err(err) = writer.flush(){
-                print_error!(&format!("writer.flush, {}", err));
+                print_error!(&format!("writer.flush, {} {}", err, err.kind()));
                 is_shutdown = true;
             }
             //mempool.lock().unwrap()._print_size();
