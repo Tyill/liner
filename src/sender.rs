@@ -553,10 +553,13 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                     }
                 }
             }
-            if let Err(err) = writer.flush(){
-                print_error!(&format!("writer.flush, {} {}", err, err.kind()));
-                is_shutdown = true;
-            }
+            while let Err(err) = writer.flush() {
+                print_error!(&format!("writer.flush, {}, {}", err, err.kind()));
+                if err.kind() != std::io::ErrorKind::WouldBlock{
+                    is_shutdown = true;
+                    break;
+                }
+            } 
             //mempool.lock().unwrap()._print_size();
         }
         stream.last_send_mess_number = last_send_mess_number;
