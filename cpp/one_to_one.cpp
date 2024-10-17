@@ -6,17 +6,17 @@
 #include <chrono>
 #include <thread>
 
-void cb1(char* to, char* from,  char* data, size_t data_size){
- //  std::cout << "cb1" << to << from << data << data_size << std::endl;
-}
-
 const int MESS_SEND_COUNT = 10000;
-const int MESS_SIZE = 100;
+const int MESS_SIZE = 1024;
 const int SEND_CYCLE_COUNT = 30;
 
 int receive_count = 0;
 clock_t send_begin = clock();
 clock_t send_end = clock();
+
+void cb1(char* to, char* from,  char* data, size_t data_size){
+ //  std::cout << "cb1" << to << from << data << data_size << std::endl;
+}
 
 void cb2(char* to, char* from,  char* data, size_t data_size){
      
