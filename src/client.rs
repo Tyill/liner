@@ -12,6 +12,7 @@ use std::collections::HashMap;
 pub struct Client{
     unique_name: String,
     topic: String,
+    localhost: String,
     db: redis::Connect,
     listener: Option<Listener>,
     sender: Option<Sender>,
@@ -23,12 +24,15 @@ pub struct Client{
 }
 
 impl Client {
-    pub fn new(unique_name: &str, topic: &str, redis_path: &str) -> Option<Client> {
-        let db = redis::Connect::new(unique_name, redis_path).ok()?;
+    pub fn new(unique_name: &str, topic: &str, localhost: &str, redis_path: &str) -> Option<Client> {
+        let mut db = redis::Connect::new(unique_name, redis_path).ok()?;
+        db.set_source_topic(topic);
+        db.set_source_localhost(localhost);        
         Some(
             Self{
                 unique_name: unique_name.to_string(),
                 topic: topic.to_string(),
+                localhost: localhost.to_string(),
                 db,
                 listener: None,
                 sender: None,
@@ -40,24 +44,22 @@ impl Client {
             }
         )
     }
-    pub fn run(&mut self, localhost: &str, receive_cb: UCback) -> bool {
+    pub fn run(&mut self, receive_cb: UCback) -> bool {
         let _lock = self.mtx.lock();
         if self.is_run{
             print_error!("client already is running");
             return true;
         }
-        let listener = TcpListener::bind(localhost);
+        if let Err(err) = self.db.regist_topic(&self.topic){
+            print_error!(&format!("{}", err));
+            return false;
+        }
+        let listener = TcpListener::bind(&self.localhost);
         if let Err(err) = listener {
             print_error!(&format!("{}", err));
             return false;        
         }
         let listener = listener.unwrap();
-        self.db.set_source_topic(&self.topic);
-        self.db.set_source_localhost(localhost);
-        if let Err(err) = self.db.regist_topic(&self.topic){
-            print_error!(&format!("{}", err));
-            return false;
-        }        
         self.listener = Some(Listener::new(listener, &self.unique_name, &self.db.redis_path(), &self.topic, receive_cb));
         self.sender = Some(Sender::new(&self.unique_name, &self.db.redis_path(), &self.topic));
         self.sender.as_mut().unwrap().load_prev_connects(&mut self.db);
@@ -76,8 +78,9 @@ impl Client {
             print_error!("you can't send on your own topic");
             return false;
         }
+        let has_addr = self.address_topic.contains_key(topic);
         let ctime = self.sender.as_ref().unwrap().get_ctime();
-        if let Some(addr) = get_address_topic(topic, &mut self.db, ctime, &mut self.prev_time[0]){
+        if let Some(addr) = get_address_topic(topic, &mut self.db, !has_addr, ctime, &mut self.prev_time[0]){
             self.address_topic.insert(topic.to_string(), addr);
         }
         if let Some(address) = self.address_topic.get(topic){       
@@ -106,8 +109,9 @@ impl Client {
             print_error!("you can't send on your own topic");
             return false;
         }
+        let has_addr = self.address_topic.contains_key(topic);
         let ctime = self.sender.as_ref().unwrap().get_ctime();
-        if let Some(addr) = get_address_topic(topic, &mut self.db, ctime, &mut self.prev_time[0]){
+        if let Some(addr) = get_address_topic(topic, &mut self.db, !has_addr, ctime, &mut self.prev_time[0]){
             self.address_topic.insert(topic.to_string(), addr);
         }
         if let Some(address) = self.address_topic.get(topic){       
@@ -136,7 +140,7 @@ impl Client {
         if let Err(err) = self.db.regist_topic(topic){
             print_error!(&format!("{}", err));
             return false;
-        }        
+        } 
         true
     }
 
@@ -153,7 +157,7 @@ impl Client {
         if let Err(err) = self.db.unregist_topic(topic){
             print_error!(&format!("{}", err));
             return false;
-        }        
+        } 
         true
     }
 
@@ -183,9 +187,9 @@ impl Client {
     }
 }
 
-fn get_address_topic(topic: &str, db: &mut redis::Connect, ctime: u64, prev_time: &mut u64)->Option<Vec<String>>{
+fn get_address_topic(topic: &str, db: &mut redis::Connect, force: bool, ctime: u64, prev_time: &mut u64)->Option<Vec<String>>{
         
-    if check_new_address_topic(ctime, prev_time){
+    if force || check_new_address_topic(ctime, prev_time){
         match db.get_addresses_of_topic(true, topic){
             Ok(addresses)=>{
                 if !addresses.is_empty(){

@@ -43,9 +43,10 @@ typedef void* hClient;
 /// Create new client
 /// @param unique_name
 /// @param topic - current topic
+/// @param localhost - local ip
 /// @param redis_path
 /// @return hClient
-LINER_API hClient ln_new_client(char* unique_name, char* topic, char* redis_path);
+LINER_API hClient ln_new_client(char* unique_name, char* topic, char* localhost, char* redis_path);
 
 /// Check has client
 /// @return true - ok
@@ -53,10 +54,9 @@ LINER_API BOOL ln_has_client(hClient* client);
 
 /// Run transfer data
 /// @param hClient
-/// @param localhost - local ip
 /// @param receive_cb - callback for receive data from other topics
 /// @return true - ok
-LINER_API BOOL ln_run(hClient* client, char* localhost, ln_receive_cb receive_cb);
+LINER_API BOOL ln_run(hClient* client, ln_receive_cb receive_cb);
 
 /// Send data to other topic - only to one
 /// @param hClient

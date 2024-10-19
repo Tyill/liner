@@ -26,20 +26,22 @@ fn  main() {
     let unique1 = CString::new("client1").unwrap();
     let unique2 = CString::new("client2").unwrap();
     let dbpath = CString::new("redis://127.0.0.1/").unwrap();
-
+    let localhost1 = CString::new("localhost:2255").unwrap();
+    let localhost2 = CString::new("localhost:2256").unwrap();
+   
     let topic_1 = CString::new("topic_client1").unwrap();
-     let mut c1 = liner::ln_new_client(unique1.as_ptr(), topic_1.as_ptr(), dbpath.as_ptr());
+    let mut c1 = liner::ln_new_client(unique1.as_ptr(),
+                                                           topic_1.as_ptr(),
+                                                           localhost1.as_ptr(),
+                                                           dbpath.as_ptr());
     
     let topic_2 = CString::new("topic_client2").unwrap();
-    let mut c2 = liner::ln_new_client(unique2.as_ptr(), topic_2.as_ptr(), dbpath.as_ptr());
-   
-    let localhost = CString::new("localhost:2255").unwrap();
-    liner::ln_run(&mut c1, localhost.as_ptr(), cb1);
-   
-    let localhost = CString::new("localhost:2256").unwrap();
-    liner::ln_run(&mut c2, localhost.as_ptr(), cb2);
- 
-       
+    let mut c2 = liner::ln_new_client(unique2.as_ptr(), 
+                                                           topic_2.as_ptr(),
+                                                           localhost2.as_ptr(),
+                                                           dbpath.as_ptr());
+    liner::ln_run(&mut c1, cb1);
+    liner::ln_run(&mut c2, cb2);
     let array = [0; 100];
     for _ in 0..10{
         println!("{} begin send_to", current_time_ms());       
