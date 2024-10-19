@@ -43,6 +43,7 @@ impl Client {
     pub fn run(&mut self, localhost: &str, receive_cb: UCback) -> bool {
         let _lock = self.mtx.lock();
         if self.is_run{
+            print_error!("client already is running");
             return true;
         }
         let listener = TcpListener::bind(localhost);
@@ -68,6 +69,7 @@ impl Client {
     pub fn send_to(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
         let _lock = self.mtx.lock();
         if !self.is_run{
+            print_error!("you can't send_to because client not is running");
             return false;
         }
         if topic == self.topic{
@@ -97,6 +99,7 @@ impl Client {
     pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
         let _lock = self.mtx.lock();
         if !self.is_run{
+            print_error!("you can't send_all because client not is running");
             return false;
         }
         if topic == self.topic{
@@ -122,7 +125,8 @@ impl Client {
 
     pub fn subscribe(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        if !self.is_run{
+        if self.is_run{
+            print_error!("you can't subscribe because client already is running");
             return false;
         }
         if topic == self.topic{
@@ -138,7 +142,8 @@ impl Client {
 
     pub fn unsubscribe(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        if !self.is_run{
+        if self.is_run{
+            print_error!("you can't unsubscribe because client already is running");
             return false;
         }
         if topic == self.topic{
@@ -151,12 +156,37 @@ impl Client {
         }        
         true
     }
+
+    pub fn clear_stored_messages(&mut self) -> bool {
+        let _lock = self.mtx.lock();
+        if self.is_run{
+            print_error!("you can't clear_stored_messages because client already is running");
+            return false;
+        }
+        if let Err(err) = self.db.clear_stored_messages(){
+            print_error!(&format!("{}", err));
+            return false;
+        }
+        true
+    }
+    pub fn clear_addresses_of_topic(&mut self) -> bool {
+        let _lock = self.mtx.lock();
+        if self.is_run{
+            print_error!("you can't clear_addresses_of_topic because client already is running");
+            return false;
+        }
+        if let Err(err) = self.db.clear_addresses_of_topic(){
+            print_error!(&format!("{}", err));
+            return false;
+        }
+        true
+    }
 }
 
 fn get_address_topic(topic: &str, db: &mut redis::Connect, ctime: u64, prev_time: &mut u64)->Option<Vec<String>>{
         
     if check_new_address_topic(ctime, prev_time){
-        match db.get_addresses_of_topic(topic){
+        match db.get_addresses_of_topic(true, topic){
             Ok(addresses)=>{
                 if !addresses.is_empty(){
                     return Some(addresses);

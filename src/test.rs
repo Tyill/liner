@@ -23,27 +23,27 @@ extern "C" fn cb2(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: u
 
 fn  main() {
     unsafe {
-    let unique1 = CString::new("unique1").unwrap();
-    let unique2 = CString::new("unique2").unwrap();
+    let unique1 = CString::new("client1").unwrap();
+    let unique2 = CString::new("client2").unwrap();
     let dbpath = CString::new("redis://127.0.0.1/").unwrap();
 
-    let topic_2 = CString::new("2").unwrap();
-    let localhost = CString::new("localhost:2256").unwrap();
-    let mut c2 = liner::ln_new_client(unique2.as_ptr(), topic_2.as_ptr(), dbpath.as_ptr());
-    liner::ln_run(&mut c2, localhost.as_ptr(), cb2);
-
-    thread::sleep(time::Duration::from_millis(1000));
-
-    let topic_1 = CString::new("1").unwrap();
-    let localhost = CString::new("localhost:2255").unwrap();
-    let mut c1 = liner::ln_new_client(unique1.as_ptr(), topic_1.as_ptr(), dbpath.as_ptr());
-    liner::ln_run(&mut c1, localhost.as_ptr(), cb1);
+    let topic_1 = CString::new("topic_client1").unwrap();
+     let mut c1 = liner::ln_new_client(unique1.as_ptr(), topic_1.as_ptr(), dbpath.as_ptr());
     
+    let topic_2 = CString::new("topic_client2").unwrap();
+    let mut c2 = liner::ln_new_client(unique2.as_ptr(), topic_2.as_ptr(), dbpath.as_ptr());
+   
+    let localhost = CString::new("localhost:2255").unwrap();
+    liner::ln_run(&mut c1, localhost.as_ptr(), cb1);
+   
+    let localhost = CString::new("localhost:2256").unwrap();
+    liner::ln_run(&mut c2, localhost.as_ptr(), cb2);
+ 
        
     let array = [0; 100];
-    for _ in 0..30{
+    for _ in 0..10{
         println!("{} begin send_to", current_time_ms());       
-        for _ in 0..10000{
+        for _ in 0..1{
             liner::ln_send_to(&mut c1,   
                 topic_2.as_ptr(),
                 array.as_ptr(), array.len(), true);

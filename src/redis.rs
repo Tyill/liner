@@ -53,6 +53,33 @@ impl Connect {
         self.init_addresses_of_topic(topic)?;
         Ok(())
     }
+    pub fn clear_addresses_of_topic(&mut self)->RedisResult<()>{
+        let source_topic = self.source_topic.to_string();
+        let dbconn = self.get_dbconn()?; 
+        dbconn.del(&format!("topic:{}:addr", source_topic))?;
+        Ok(())
+    }
+    pub fn clear_stored_messages(&mut self)->RedisResult<()>{
+        let key = format!("{}:{}", self.unique_name, self.source_topic);
+        let addr_topic: Vec<(String, String)>;
+        {
+            let dbconn = self.get_dbconn()?;
+            addr_topic = dbconn.hgetall(&format!("sender:{}:listener", key))?;
+        }
+        for t in addr_topic{
+            let listener_name = self.get_listener_unique_name(&t.1, &t.0)?;
+            let listener_topic = t.1;
+
+            let key = format!("{}:{}:{}", key, listener_name, listener_topic);
+            let dbconn = self.get_dbconn()?;
+            dbconn.del(&format!("connection:{}:messages", key))?;
+            dbconn.del(&format!("connection:{}:mess_number", key))?;
+        }
+        let dbconn = self.get_dbconn()?;
+        dbconn.del(&format!("sender:{}:listener", key))?;       
+        Ok(())
+    }
+    
        
     pub fn save_listener_for_sender(&mut self, listener_addr: &str, listener_topic: &str)->RedisResult<()>{
         let key = format!("{}:{}", self.unique_name, self.source_topic);
@@ -66,8 +93,8 @@ impl Connect {
         let addr_topic: Vec<(String, String)> = dbconn.hgetall(&format!("sender:{}:listener", key))?;
         Ok(addr_topic)
     }
-    pub fn get_addresses_of_topic(&mut self, topic: &str)->RedisResult<Vec<String>>{
-        if !self.topic_addr_cache.contains_key(topic){
+    pub fn get_addresses_of_topic(&mut self, without_cache: bool, topic: &str)->RedisResult<Vec<String>>{
+        if !self.topic_addr_cache.contains_key(topic) || without_cache{
             self.init_addresses_of_topic(topic)?;
         }
         Ok(self.topic_addr_cache[topic].to_vec())

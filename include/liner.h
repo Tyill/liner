@@ -94,6 +94,16 @@ LINER_API BOOL ln_subscribe(hClient* client, char* topic);
 /// @return true - ok
 LINER_API BOOL ln_unsubscribe(hClient* client, char* topic);
 
+/// Clear stored messages
+/// @param hClient
+/// @return true - ok
+LINER_API BOOL ln_clear_stored_messages(hClient* client);
+
+/// Clear addresses of topic
+/// @param hClient
+/// @return true - ok
+LINER_API BOOL ln_clear_addresses_of_topic(hClient* client);
+
 /// Delete client
 /// @param hClient
 /// @return true - ok

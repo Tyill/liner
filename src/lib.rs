@@ -140,6 +140,26 @@ pub unsafe extern "C" fn ln_unsubscribe(client: &mut Box<Option<Client>>,
     c.as_mut().unwrap().unsubscribe(topic)
 }
 
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn ln_clear_stored_messages(client: &mut Box<Option<Client>>)->bool{
+    if !has_client(client){
+        return false;
+    }
+    let c = client.as_mut();
+    c.as_mut().unwrap().clear_stored_messages()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn ln_clear_addresses_of_topic(client: &mut Box<Option<Client>>)->bool{
+    if !has_client(client){
+        return false;
+    }
+    let c = client.as_mut();
+    c.as_mut().unwrap().clear_addresses_of_topic()
+}
+
 #[no_mangle]
 pub extern "C" fn ln_delete_client(client: Box<Option<Client>>)->bool{
     if !has_client(&client){

@@ -61,10 +61,17 @@ int main(int argc, char* argv[])
     auto hclient2 = ln_new_client("client2", "topic_client2", "redis://127.0.0.1/");
     auto hclient3 = ln_new_client("client3", "topic_client3", "redis://127.0.0.1/");
     auto hserver1 = ln_new_client("server1", "topic_server1", "redis://127.0.0.1/");
-   
-    // ln_subscribe(&hclient1, "topic_for_subscr");
-    // ln_subscribe(&hclient2, "topic_for_subscr");
-    // ln_subscribe(&hclient3, "topic_for_subscr");
+    
+    ln_clear_addresses_of_topic(&hclient1);
+    ln_clear_addresses_of_topic(&hclient2);
+    ln_clear_addresses_of_topic(&hclient3);
+    
+    ln_clear_addresses_of_topic(&hserver1);
+    ln_clear_stored_messages(&hserver1);
+
+    ln_subscribe(&hclient1, "topic_for_subscr");
+    ln_subscribe(&hclient2, "topic_for_subscr");
+    ln_subscribe(&hclient3, "topic_for_subscr");
 
     ln_run(&hclient1, "localhost:2255", cb_client1);
     ln_run(&hclient2, "localhost:2256", cb_client2);
@@ -79,11 +86,11 @@ int main(int argc, char* argv[])
             ln_send_to(&hserver1, "topic_client1", data, sizeof(data), TRUE);
             ln_send_to(&hserver1, "topic_client2", data, sizeof(data), TRUE);
             ln_send_to(&hserver1, "topic_client3", data, sizeof(data), TRUE);
-           // ln_send_to(&hserver1, "topic_for_subscr", data, sizeof(data), TRUE);
+            ln_send_to(&hserver1, "topic_for_subscr", data, sizeof(data), TRUE);
         }
         send_end = clock();
         std::cout << "send_to " << 1000.0 * (send_end - send_begin) / CLOCKS_PER_SEC << " ms" << std::endl;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10000));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     }
     ln_delete_client(hclient1);
     ln_delete_client(hclient2);
