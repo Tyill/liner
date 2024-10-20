@@ -2,7 +2,47 @@
 
 Redis based message serverless broker.  
 
-## Examples of use
+Python example:
+``` Python
+
+def foo():
+    client1 = liner.Client("client1", "topic_client", "localhost:2255", "redis://127.0.0.1/")
+    client2 = liner.Client("client2", "topic_client", "localhost:2256", "redis://127.0.0.1/")
+    server = liner.Client("server", "topic_server", "localhost:2257", "redis://127.0.0.1/")
+    
+    client1.run(receive_cback1)
+    client2.run(receive_cback2)
+    server.run(receive_server)
+    
+    b = b'hello world'
+    server.send_all("topic_client", b, len(b), True)
+    
+
+def receive_cback1(to: str, from_: str, data):
+    print(f"receive_from {from_}, data: {data}")
+
+def receive_cback2(to: str, from_: str, data: bytes):
+    print(f"receive_from {from_}, data: {data}")
+
+def receive_server(to: str, from_: str, data: bytes):
+    print(f"receive_from {from_}, data: {data}")
+    
+```
+
+### Features
+
+ - high speed transmission of multiple messages ([benchmark](https://github.com/Tyill/liner/blob/main/benchmark))
+
+ - delivery guarantee: at least once delivery (using redis db)
+
+ - message size is not predetermined and is not limited
+
+ - easy api: create client, run client and send data to 
+
+ - interface for Python and CPP
+ 
+ 
+### Examples of use
 
 One to one: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_one.py) [CPP](https://github.com/Tyill/liner/blob/main/cpp/one_to_one.cpp)
 
@@ -34,6 +74,8 @@ Producer-consumer: [Python](https://github.com/Tyill/liner/blob/main/python/prod
  <img src="docs/producer_consumer.gif" 
   width="500" height="200" alt="lorem">
 </p>
+
+### [Benchmark](https://github.com/Tyill/liner/blob/main/benchmark)
 
 ### [Tests](https://github.com/Tyill/liner/blob/main/src/test_10k.rs)
 
