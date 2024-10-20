@@ -18,7 +18,7 @@ def foo():
     server.send_all("topic_client", b, len(b), True)
     
 
-def receive_cback1(to: str, from_: str, data):
+def receive_cback1(to: str, from_: str, data: bytes):
     print(f"receive_from {from_}, data: {data}")
 
 def receive_cback2(to: str, from_: str, data: bytes):
@@ -48,7 +48,7 @@ One to one: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_one.
 
 <p float="left">
  <img src="docs/one_to_one.gif" 
-  width="500" height="200" alt="lorem">
+  width="500" height="180" alt="lorem">
 </p>
 
 One to one for many: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_one_for_many.py) [CPP](https://github.com/Tyill/liner/blob/main/cpp/one_to_one_for_many.cpp)
