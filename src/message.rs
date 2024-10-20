@@ -135,7 +135,15 @@ impl Message{
         let sender_topic_pos = listener_topic_pos + listener_len as usize;
         let sender_topic_len = mempool.read_u32(sender_topic_pos) + std::mem::size_of::<u32>() as u32;
         io_name.clone_from(&mempool.read_string(sender_topic_pos + sender_topic_len as usize));
-    }    
+    }
+    pub fn listener_topic(&self, mempool: &Mempool, io_topic: &mut String){
+        let all_len = std::mem::size_of::<u32>();
+        let number_mess_len = std::mem::size_of::<u64>(); 
+        let flags_pos = self.mem_alloc_pos + all_len + number_mess_len;
+        let flags_len = std::mem::size_of::<u8>(); 
+        let listener_topic_pos = flags_pos + flags_len;
+        io_topic.clone_from(&mempool.read_string(listener_topic_pos));
+    }  
 }
 
 fn get_number_mess(mempool: &Mempool, mem_pos:usize)->u64{

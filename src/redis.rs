@@ -67,20 +67,19 @@ impl Connect {
             addr_topic = dbconn.hgetall(&format!("sender:{}:listener", key))?;
         }
         for t in addr_topic{
-            let listener_name = self.get_listener_unique_name(&t.1, &t.0)?;
-            let listener_topic = t.1;
-
-            let key = format!("{}:{}:{}", key, listener_name, listener_topic);
-            let dbconn = self.get_dbconn()?;
-            dbconn.del(&format!("connection:{}:messages", key))?;
-            dbconn.del(&format!("connection:{}:mess_number", key))?;
+            if let Ok(listener_name) = self.get_listener_unique_name(&t.1, &t.0){
+                let listener_topic = t.1;
+                let key = format!("{}:{}:{}", key, listener_name, listener_topic);
+                let dbconn = self.get_dbconn()?;
+                dbconn.del(&format!("connection:{}:messages", key))?;
+                dbconn.del(&format!("connection:{}:mess_number", key))?;
+            }
         }
         let dbconn = self.get_dbconn()?;
         dbconn.del(&format!("sender:{}:listener", key))?;       
         Ok(())
     }
-    
-       
+           
     pub fn save_listener_for_sender(&mut self, listener_addr: &str, listener_topic: &str)->RedisResult<()>{
         let key = format!("{}:{}", self.unique_name, self.source_topic);
         let dbconn = self.get_dbconn()?;
@@ -120,15 +119,15 @@ impl Connect {
         Ok(())
     }
    
-    pub fn set_last_mess_number_from_listener(&mut self, sender_name: &str, sender_topic: &str, val: u64)->RedisResult<()>{
-        let key = format!("{}:{}:{}:{}", sender_name, sender_topic, self.unique_name, self.source_topic);
+    pub fn set_last_mess_number_from_listener(&mut self, sender_name: &str, sender_topic: &str, listener_topic: &str, val: u64)->RedisResult<()>{
+        let key = format!("{}:{}:{}:{}", sender_name, sender_topic, self.unique_name, listener_topic);
         let dbconn = self.get_dbconn()?;
         dbconn.set(&format!("connection:{}:mess_number", key), val)?;
         self.last_mess_number.insert(key, val);
         Ok(())
     }  
-    pub fn get_last_mess_number_for_listener(&mut self, sender_name: &str, sender_topic: &str)->RedisResult<u64>{
-        let key = format!("{}:{}:{}:{}", sender_name, sender_topic, self.unique_name, self.source_topic);
+    pub fn get_last_mess_number_for_listener(&mut self, sender_name: &str, sender_topic: &str, listener_topic: &str)->RedisResult<u64>{
+        let key = format!("{}:{}:{}:{}", sender_name, sender_topic, self.unique_name, listener_topic);
         if !self.last_mess_number.contains_key(&key){
             let dbconn = self.get_dbconn()?; 
             let res: String = dbconn.get(&format!("connection:{}:mess_number", key))?;

@@ -42,6 +42,7 @@ struct ReadStream{
 struct Sender{
     sender_topic: String,
     sender_name: String,
+    listener_topic: String,
     last_mess_num: u64,
     last_mess_num_preview: u64,
     is_deleted: bool,
@@ -247,7 +248,7 @@ fn listener_accept(epoll_fd: RawFd,
             stream.set_nonblocking(true).expect("couldn't listener set_nonblocking");
             let stream_fd = stream.as_raw_fd();
             streams.insert(stream_fd, Arc::new(Mutex::new(ReadStream{stream, is_active: false, is_close: false})));    
-            senders.lock().unwrap().insert(stream_fd, Sender{sender_topic: "".to_string(), sender_name: "".to_string(),
+            senders.lock().unwrap().insert(stream_fd, Sender{sender_topic: "".to_string(), sender_name: "".to_string(), listener_topic: "".to_string(),
                                                                   last_mess_num: 0, last_mess_num_preview: 0, is_deleted: false});
             mempools.lock().unwrap().insert(stream_fd, Arc::new(Mutex::new(Mempool::new())));
             messages.lock().unwrap().insert(stream_fd, None);
@@ -298,8 +299,9 @@ fn read_stream(epoll_fd: RawFd,
                 if sender.sender_name.is_empty(){
                     mess.sender_topic(&mempool.lock().unwrap(), &mut sender.sender_topic);
                     mess.sender_name(&mempool.lock().unwrap(), &mut sender.sender_name);
+                    mess.listener_topic(&mempool.lock().unwrap(), &mut sender.listener_topic);
                 } 
-                last_mess_num = get_last_mess_number(&db, &sender.sender_name, &sender.sender_topic, 0);                    
+                last_mess_num = get_last_mess_number(&db, &sender.sender_name, &sender.sender_topic, &sender.listener_topic, 0);                    
             }
             if mess.number_mess > last_mess_num{
                 last_mess_num = mess.number_mess;
@@ -352,13 +354,13 @@ fn update_last_mess_number(senders: &Arc<Mutex<SenderMap>>,
     for sender in senders.lock().unwrap().iter(){
         let sender = sender.1;
         if !sender.sender_name.is_empty() && sender.last_mess_num > 0{
-            set_last_mess_number(db, &sender.sender_name, &sender.sender_topic, sender.last_mess_num);
+            set_last_mess_number(db, &sender.sender_name, &sender.sender_topic, &sender.listener_topic, sender.last_mess_num);
         }
     }
 }
 
-fn set_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, sender_topic: &str, last_mess_num: u64){
-    if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(sender_name, sender_topic, last_mess_num){
+fn set_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, sender_topic: &str, listener_topic: &str, last_mess_num: u64){
+    if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(sender_name, sender_topic, listener_topic,last_mess_num){
         print_error!(&format!("couldn't db.set_last_mess_number: {}", err));
     }
 }
@@ -379,7 +381,7 @@ fn check_has_remove_senders(db: &Arc<Mutex<redis::Connect>>,
     for sender in senders.lock().unwrap().iter(){
         if sender.1.is_deleted{
             if !sender.1.sender_name.is_empty() && sender.1.last_mess_num > 0{
-                set_last_mess_number(db, &sender.1.sender_name, &sender.1.sender_topic, sender.1.last_mess_num);
+                set_last_mess_number(db, &sender.1.sender_name, &sender.1.sender_topic, &sender.1.listener_topic, sender.1.last_mess_num);
             }
             rem_fds.push(*sender.0);
         }
@@ -391,8 +393,8 @@ fn check_has_remove_senders(db: &Arc<Mutex<redis::Connect>>,
     }
 }
 
-fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, sender_topic: &str, default_mess_number: u64)->u64{
-    match db.lock().unwrap().get_last_mess_number_for_listener(sender_name, sender_topic){
+fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, sender_topic: &str, listener_topic: &str, default_mess_number: u64)->u64{
+    match db.lock().unwrap().get_last_mess_number_for_listener(sender_name, sender_topic, listener_topic){
         Ok(num)=>{
             num
         },
