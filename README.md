@@ -18,7 +18,7 @@ Redis based message serverless broker.
 
 <p float="left">
  <img src="docs/one_to_one_for_many.gif" 
-  width="400" height="200" alt="lorem">
+  width="500" height="200" alt="lorem">
 </p>
 
 [Python](https://github.com/Tyill/liner/blob/main/python/one_to_one_for_many.py)
