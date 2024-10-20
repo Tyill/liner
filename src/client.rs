@@ -115,7 +115,7 @@ impl Client {
             self.address_topic.insert(topic.to_string(), addr);
         }
         if let Some(address) = self.address_topic.get(topic){       
-            let mut ok = false;
+            let mut ok = true;
             for addr in address{
                 ok &= self.sender.as_mut().unwrap().send_to(&mut self.db, addr, 
                                         topic, &self.topic, data, at_least_once_delivery);

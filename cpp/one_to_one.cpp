@@ -30,17 +30,17 @@ void cb2(char* to, char* from,  char* data, size_t data_size){
 
 int main(int argc, char* argv[])
 {  
-    auto hclient1 = ln_new_client("unique1", "topic1", "redis://127.0.0.1/");
-    auto hclient2 = ln_new_client("unique2", "topic2", "redis://127.0.0.1/");
+    auto hclient1 = ln_new_client("client1", "topic_client1", "localhost:2255", "redis://127.0.0.1/");
+    auto hclient2 = ln_new_client("client2", "topic_client2", "localhost:2256", "redis://127.0.0.1/");
  
-    bool ok = ln_run(&hclient1, "localhost:2255", cb1);
-    ln_run(&hclient2, "localhost:2256", cb2);
+    ln_run(&hclient1, cb1);
+    ln_run(&hclient2, cb2);
  
     char data[MESS_SIZE];
     for (int i = 0; i < SEND_CYCLE_COUNT; ++i){
         send_begin = clock();
         for (int j = 0; j < MESS_SEND_COUNT; ++j){
-            ln_send_to(&hclient1, "topic2", data, sizeof(data), TRUE);
+            ln_send_to(&hclient1, "topic_client2", data, sizeof(data), TRUE);
         }
         send_end = clock();
         std::cout << "send_to " << 1000.0 * (send_end - send_begin) / CLOCKS_PER_SEC << " ms" << std::endl;

@@ -37,10 +37,10 @@ void cb_client2(char* to, char* from,  char* data, size_t data_size){
         ++receive_count_2;
         std::cout << "client2 " << to << " receive_count_2 "  << receive_count_2 << std::endl;
     }
-    //else if (std::string(to) == "topic_for_subscr"){
+    else if (std::string(to) == "topic_for_subscr"){
         ++receive_count_subscr_2;
         std::cout << "client2 " << to << " receive_count_subscr_2 "  << receive_count_subscr_2 << std::endl;
-   // }
+    }
 }
 
 void cb_client3(char* to, char* from,  char* data, size_t data_size){
@@ -61,18 +61,17 @@ int main(int argc, char* argv[])
     auto hclient2 = ln_new_client("client2", "topic_client2", "localhost:2256", "redis://127.0.0.1/");
     auto hclient3 = ln_new_client("client3", "topic_client3", "localhost:2257", "redis://127.0.0.1/");
     auto hserver1 = ln_new_client("server1", "topic_server1", "localhost:2258", "redis://127.0.0.1/");
-    
-    ln_clear_addresses_of_topic(&hclient1);
-    ln_clear_addresses_of_topic(&hclient2);
-    ln_clear_addresses_of_topic(&hclient3);
-    
+
+    ln_clear_stored_messages(&hserver1);
     ln_clear_stored_messages(&hclient1);
     ln_clear_stored_messages(&hclient2);
     ln_clear_stored_messages(&hclient3);
 
     ln_clear_addresses_of_topic(&hserver1);
-    ln_clear_stored_messages(&hserver1);
-
+    ln_clear_addresses_of_topic(&hclient1);
+    ln_clear_addresses_of_topic(&hclient2);
+    ln_clear_addresses_of_topic(&hclient3);
+   
     ln_subscribe(&hclient1, "topic_for_subscr");
     ln_subscribe(&hclient2, "topic_for_subscr");
     ln_subscribe(&hclient3, "topic_for_subscr");
@@ -87,9 +86,9 @@ int main(int argc, char* argv[])
     for (int i = 0; i < SEND_CYCLE_COUNT; ++i){
         send_begin = clock();
         for (int j = 0; j < MESS_SEND_COUNT; ++j){
-            //ln_send_to(&hserver1, "topic_client1", data, sizeof(data), TRUE);
-            // ln_send_to(&hserver1, "topic_client2", data, sizeof(data), TRUE);
-            // ln_send_to(&hserver1, "topic_client3", data, sizeof(data), TRUE);
+            ln_send_to(&hserver1, "topic_client1", data, sizeof(data), TRUE);
+            ln_send_to(&hserver1, "topic_client2", data, sizeof(data), TRUE);
+            ln_send_to(&hserver1, "topic_client3", data, sizeof(data), TRUE);
             ln_send_to(&hserver1, "topic_for_subscr", data, sizeof(data), TRUE);
         }
         send_end = clock();

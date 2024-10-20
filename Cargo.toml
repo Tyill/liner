@@ -7,8 +7,12 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "test"
-path = "src/test.rs"
+name = "test_10k"
+path = "src/test_10k.rs"
+
+#[[bin]]
+#name = "test_subscr"
+#path = "src/test_subscr.rs"
 
 [dependencies]
 redis = "0.26.1"
