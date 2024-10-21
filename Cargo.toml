@@ -10,6 +10,11 @@ exclude = [
 "python/*",
 "target/*",
 ]
+description = "Redis based message serverless broker."
+readme = "README.md"
+repository = "https://github.com/Tyill/liner"
+authors = ["Alexander Medvedev al_medved@mail.ru"]
+license = "MIT"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
