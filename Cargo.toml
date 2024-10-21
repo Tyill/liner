@@ -1,7 +1,15 @@
 [package]
-name = "liner"
+name = "liner_broker"
 version = "1.0.0"
 edition = "2021"
+exclude = [
+"docs/*",
+".vscode/*",
+"cpp/*",
+"include/*",
+"python/*",
+"target/*",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

@@ -30,19 +30,19 @@ fn  main() {
     let dbpath = CString::new("redis://127.0.0.1/").unwrap();
 
     let topic_1 = CString::new("topic_client1").unwrap();
-    let mut hclient1 = liner::ln_new_client(client1.as_ptr(), topic_1.as_ptr(), localhost1.as_ptr(), dbpath.as_ptr());
+    let mut hclient1 = liner_broker::ln_new_client(client1.as_ptr(), topic_1.as_ptr(), localhost1.as_ptr(), dbpath.as_ptr());
     
     let topic_2 = CString::new("topic_client2").unwrap();
-    let mut hclient2 = liner::ln_new_client(client2.as_ptr(), topic_2.as_ptr(), localhost2.as_ptr(), dbpath.as_ptr());
+    let mut hclient2 = liner_broker::ln_new_client(client2.as_ptr(), topic_2.as_ptr(), localhost2.as_ptr(), dbpath.as_ptr());
    
-    liner::ln_run(&mut hclient1, cb1);
-    liner::ln_run(&mut hclient2, cb2);
+    liner_broker::ln_run(&mut hclient1, cb1);
+    liner_broker::ln_run(&mut hclient2, cb2);
        
     let array = [0; 100];
     for _ in 0..10{
         println!("{} begin send_to", current_time_ms());       
         for _ in 0..10000{
-            liner::ln_send_to(&mut hclient1,   
+            liner_broker::ln_send_to(&mut hclient1,   
                 topic_2.as_ptr(),
                 array.as_ptr(), array.len(), true);
         }
