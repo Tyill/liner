@@ -1,7 +1,9 @@
 [package]
 name = "liner_broker"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
+keywords = ["broker", "serverless", "redis"]
+categories = ["concurrency", "asynchronous", "development tools"]
 exclude = [
 "docs/*",
 ".vscode/*",
