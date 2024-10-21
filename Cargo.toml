@@ -1,8 +1,8 @@
 [package]
 name = "liner_broker"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
-keywords = ["broker", "serverless", "redis"]
+keywords = ["broker", "serverless", "redis", "network"]
 categories = ["concurrency", "asynchronous"]
 exclude = [
 "docs/*",

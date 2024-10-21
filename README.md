@@ -1,6 +1,7 @@
 # liner
 
 Redis based message serverless broker.  
+Data transfer via TCP.
 
 Python example:
 ``` Python
