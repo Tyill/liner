@@ -42,6 +42,10 @@ def receive_server(to: str, from_: str, data: bytes):
 
  - interface for Python and CPP
  
+### Build (only linux)
+ - install [Rust and Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
+ - download the liner repo
+ - cd liner repo and execute in console: `cargo build`
  
 ### Examples of use
 
