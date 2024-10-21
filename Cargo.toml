@@ -20,12 +20,12 @@ license = "MIT"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "test_10k"
-path = "src/test_10k.rs"
+name = "test_subscr"
+path = "test/test_subscr.rs"
 
-#[[bin]]
-#name = "test_subscr"
-#path = "src/test_subscr.rs"
+[[bin]]
+name = "throughput_10k"
+path = "benchmark/throughput_10k.rs"
 
 [dependencies]
 redis = "0.26.1"
