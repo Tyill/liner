@@ -77,7 +77,11 @@ Producer-consumer: [Python](https://github.com/Tyill/liner/blob/main/python/prod
 
 ### [Benchmark](https://github.com/Tyill/liner/blob/main/benchmark)
 
-### [Tests](https://github.com/Tyill/liner/blob/main/src/test_10k.rs)
+### [Tests](https://github.com/Tyill/liner/blob/main/test)
+
+### [Wiki](https://github.com/Tyill/liner/wiki)
+
+### [Crates.io](https://crates.io/crates/liner_broker)
 
 ### License
 Licensed under an [MIT-2.0]-[license](LICENSE).
