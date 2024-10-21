@@ -27,7 +27,7 @@ fn  main() {
     let client2 = CString::new("client2").unwrap();
     let localhost1 = CString::new("localhost:2255").unwrap();
     let localhost2 = CString::new("localhost:2256").unwrap();   
-    let dbpath = CString::new("redis://127.0.0.1/").unwrap();
+    let dbpath = CString::new("redis://localhost/").unwrap();
 
     let topic_1 = CString::new("topic_client1").unwrap();
     let mut hclient1 = liner_broker::ln_new_client(client1.as_ptr(), topic_1.as_ptr(), localhost1.as_ptr(), dbpath.as_ptr());

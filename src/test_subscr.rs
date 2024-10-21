@@ -48,7 +48,7 @@ fn  main() {
     let client2 = CString::new("client2").unwrap();
     let client3 = CString::new("client3").unwrap();
     let server1 = CString::new("server1").unwrap();
-    let dbpath = CString::new("redis://127.0.0.1/").unwrap();
+    let dbpath = CString::new("redis://localhost/").unwrap();
     let localhost1 = CString::new("localhost:2255").unwrap();
     let localhost2 = CString::new("localhost:2256").unwrap();
     let localhost3 = CString::new("localhost:2257").unwrap();

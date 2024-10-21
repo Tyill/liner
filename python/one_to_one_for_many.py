@@ -27,9 +27,9 @@ def receive_cback_server(to: str, from_: str, data: bytes):
     pass  
     
 def func(): 
-    hClient1 = liner.Client("client1", "topic_client", "localhost:2255", "redis://127.0.0.1/")
-    hClient2 = liner.Client("client2", "topic_client", "localhost:2256", "redis://127.0.0.1/")
-    hServer1 = liner.Client("server1", "topic_server1", "localhost:2257", "redis://127.0.0.1/")
+    hClient1 = liner.Client("client1", "topic_client", "localhost:2255", "redis://localhost/")
+    hClient2 = liner.Client("client2", "topic_client", "localhost:2256", "redis://localhost/")
+    hServer1 = liner.Client("server1", "topic_server1", "localhost:2257", "redis://localhost/")
 
     hServer1.clear_stored_messages()
     hClient1.clear_stored_messages()

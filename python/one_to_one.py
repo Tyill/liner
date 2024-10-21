@@ -28,8 +28,8 @@ def receive_cback2(to: str, from_: str, data: bytes):
         print(f"receive_from {round((time.time() - send_end)* 1000, 3)} ms data: {data}")
     
 def func(): 
-    hClient1 = liner.Client("client1", "topic_client1", "localhost:2255", "redis://127.0.0.1/")
-    hClient2 = liner.Client("client2", "topic_client2", "localhost:2256", "redis://127.0.0.1/")
+    hClient1 = liner.Client("client1", "topic_client1", "localhost:2255", "redis://localhost/")
+    hClient2 = liner.Client("client2", "topic_client2", "localhost:2256", "redis://localhost/")
 
     hClient1.clear_stored_messages()
     hClient2.clear_stored_messages()

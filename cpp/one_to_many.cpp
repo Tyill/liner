@@ -39,10 +39,10 @@ void cb_client3(char* to, char* from,  char* data, size_t data_size){
 
 int main(int argc, char* argv[])
 {  
-    auto hclient1 = ln_new_client("client1", "topic_client", "localhost:2255", "redis://127.0.0.1/");
-    auto hclient2 = ln_new_client("client2", "topic_client", "localhost:2256", "redis://127.0.0.1/");
-    auto hclient3 = ln_new_client("client3", "topic_client", "localhost:2257", "redis://127.0.0.1/");
-    auto hserver1 = ln_new_client("server1", "topic_server", "localhost:2258", "redis://127.0.0.1/");
+    auto hclient1 = ln_new_client("client1", "topic_client", "localhost:2255", "redis://localhost/");
+    auto hclient2 = ln_new_client("client2", "topic_client", "localhost:2256", "redis://localhost/");
+    auto hclient3 = ln_new_client("client3", "topic_client", "localhost:2257", "redis://localhost/");
+    auto hserver1 = ln_new_client("server1", "topic_server", "localhost:2258", "redis://localhost/");
  
     ln_run(&hclient1, cb_client1);
     ln_run(&hclient2, cb_client2);

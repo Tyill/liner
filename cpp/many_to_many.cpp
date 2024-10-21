@@ -39,12 +39,12 @@ void cb_client3(char* to, char* from,  char* data, size_t data_size){
 
 int main(int argc, char* argv[])
 {  
-    auto hclient1 = ln_new_client("client1", "topic_client", "localhost:2255", "redis://127.0.0.1/");
-    auto hclient2 = ln_new_client("client2", "topic_client", "localhost:2256", "redis://127.0.0.1/");
-    auto hclient3 = ln_new_client("client3", "topic_client", "localhost:2257", "redis://127.0.0.1/");
-    auto hserver1 = ln_new_client("server1", "topic_server1", "localhost:2258", "redis://127.0.0.1/");
-    auto hserver2 = ln_new_client("server2", "topic_server2", "localhost:2259", "redis://127.0.0.1/");
-    auto hserver3 = ln_new_client("server3", "topic_server3", "localhost:2260", "redis://127.0.0.1/");
+    auto hclient1 = ln_new_client("client1", "topic_client", "localhost:2255", "redis://localhost/");
+    auto hclient2 = ln_new_client("client2", "topic_client", "localhost:2256", "redis://localhost/");
+    auto hclient3 = ln_new_client("client3", "topic_client", "localhost:2257", "redis://localhost/");
+    auto hserver1 = ln_new_client("server1", "topic_server1", "localhost:2258", "redis://localhost/");
+    auto hserver2 = ln_new_client("server2", "topic_server2", "localhost:2259", "redis://localhost/");
+    auto hserver3 = ln_new_client("server3", "topic_server3", "localhost:2260", "redis://localhost/");
  
     ln_run(&hclient1, cb_client1);
     ln_run(&hclient2, cb_client2);
