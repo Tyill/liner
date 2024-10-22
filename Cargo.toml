@@ -29,6 +29,26 @@ path = "test/test_subscr.rs"
 name = "throughput_10k"
 path = "benchmark/throughput_10k.rs"
 
+[[bin]]
+name = "one_to_one"
+path = "rust/one_to_one.rs"
+
+[[bin]]
+name = "one_to_one_for_many"
+path = "rust/one_to_one_for_many.rs"
+
+[[bin]]
+name = "one_to_many"
+path = "rust/one_to_many.rs"
+
+[[bin]]
+name = "many_to_many"
+path = "rust/many_to_many.rs"
+
+[[bin]]
+name = "producer_consumer"
+path = "rust/producer_consumer.rs"
+
 [dependencies]
 redis = "0.26.1"
 rayon = "1.10"
