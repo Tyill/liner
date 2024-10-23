@@ -8,3 +8,4 @@ pub const WRITE_MESS_DELAY_MS: u64 = 1;
 pub const READ_MESS_DELAY_MS: u64 = 1;
 pub const MIN_SIZE_DATA_FOR_COMPRESS_BYTE: usize = 1024*1024;
 pub const DATA_COMPRESS_LEVEL: i32 = 0; // A level of `0` uses zstd's default (currently `3`).
+pub const IS_CHECK_NEW_ADDRESS_TOPIC_ENABLE: bool = false;
