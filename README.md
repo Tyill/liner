@@ -85,7 +85,7 @@ Producer-consumer: [Python](https://github.com/Tyill/liner/blob/main/python/prod
 
 ### [Tests](https://github.com/Tyill/liner/blob/main/test)
 
-### [Docs](https://docs.rs/liner_broker/1.0.4/liner_broker/)
+### [Docs](https://docs.rs/liner_broker/1.0.5/liner_broker/)
 
 ### License
 Licensed under an [MIT-2.0]-[license](LICENSE).
