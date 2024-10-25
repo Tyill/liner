@@ -5,7 +5,6 @@ Data transfer via TCP.
 
 Python example:
 ``` Python
-
 def foo():
     client1 = liner.Client("client1", "topic_client", "localhost:2255", "redis://localhost/")
     client2 = liner.Client("client2", "topic_client", "localhost:2256", "redis://localhost/")
@@ -16,7 +15,7 @@ def foo():
     server.run(receive_server)
     
     b = b'hello world'
-    server.send_all("topic_client", b, len(b), True)
+    server.send_all("topic_client", b)
     
 
 def receive_cback1(to: str, from_: str, data: bytes):
