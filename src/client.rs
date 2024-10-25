@@ -189,7 +189,7 @@ impl Client {
 
 fn get_address_topic(topic: &str, db: &mut redis::Connect, force: bool, ctime: u64, prev_time: &mut u64)->Option<Vec<String>>{
         
-    if force || check_new_address_topic(ctime, prev_time){
+    if force || (settings::IS_CHECK_NEW_ADDRESS_TOPIC_ENABLE && check_new_address_topic_by_time(ctime, prev_time)){
         match db.get_addresses_of_topic(true, topic){
             Ok(addresses)=>{
                 if !addresses.is_empty(){
@@ -204,7 +204,7 @@ fn get_address_topic(topic: &str, db: &mut redis::Connect, force: bool, ctime: u
     None
 }
 
-fn check_new_address_topic(ctime: u64, prev_time: &mut u64)->bool{
+fn check_new_address_topic_by_time(ctime: u64, prev_time: &mut u64)->bool{
     if ctime - *prev_time > settings::UPDATE_SENDER_ADDRESSES_TIMEOUT_MS{
         *prev_time = ctime;
         true

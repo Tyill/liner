@@ -135,9 +135,10 @@ impl Listener {
                     }
                 }
                 once_again = !once_again;
-
-                std::thread::sleep(Duration::from_millis(settings::READ_MESS_DELAY_MS));
-
+                
+                if settings::READ_MESS_DELAY_MS > 0{
+                    std::thread::sleep(Duration::from_millis(settings::READ_MESS_DELAY_MS));
+                }    
                 let mess_buff = mess_for_receive(&messages_);
                 if !mess_buff.is_empty(){
                     do_receive_cb(mess_buff, &mut temp_buff, &mempools_, &senders_, receive_cb); 
