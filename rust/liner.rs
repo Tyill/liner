@@ -3,23 +3,60 @@ use std::ffi::CString;
 //use std::ffi::CStr;
 use std::{thread, time};
 
-mod liner;
 
-const MESS_SEND_COUNT: usize = 10;
-const MESS_SIZE: usize = 100;
-const SEND_CYCLE_COUNT: usize = 10;
+type UCback = fn(to: &str, from: &str, data: &[u8]);
 
-static mut receive_count_1: u64 = 0;
-static mut receive_count_2: u64 = 0;
-static mut receive_count_3: u64 = 0;
-static mut send_begin: u64 = 0;
-static mut send_end: u64 = 0;
+pub struct Liner{
+    hclient: Box<Option<liner_broker::Client>>,
+    ucback: UCback,
+}
 
-extern "C" fn cb1(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){
-    unsafe {    
-        receive_count_1 += 1;
+impl Liner {
+    pub fn new(unique_name: &str,
+        topic: &str,
+        localhost: &str,
+        redis_path: &str,
+        ucback: UCback)->Liner{
+    unsafe{
+        let unique = CString::new(unique_name).unwrap();
+        let dbpath = CString::new(redis_path).unwrap();
+        let localhost = CString::new(localhost).unwrap();
+        let topic_client = CString::new(topic).unwrap();
+        let hclient = liner_broker::ln_new_client(unique.as_ptr(),
+                                                        topic_client.as_ptr(),
+                                                        localhost.as_ptr(),
+                                                        dbpath.as_ptr());
+        if liner_broker::ln_has_client(&hclient){
+            Self{hclient, ucback}
+        }else{
+            panic!("error create client");
+        }
+    }   
+    }
+    pub fn run(&mut self)->bool{
+        unsafe{
+        let topic = CString::new(topic).unwrap();
+        liner_broker::ln_send_to(&mut self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
+        }
+    }
+    pub fn send_to(&mut self, topic: &str, data: &[u8])->bool{
+        unsafe{
+        let topic = CString::new(topic).unwrap();
+        liner_broker::ln_send_to(&mut self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
+        }
+    }
+    pub fn send_all(&mut self, topic: &str, data: &[u8])->bool{
+        unsafe{
+        let topic = CString::new(topic).unwrap();
+        liner_broker::ln_send_all(&mut self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
+        }
+    }
+    fn cb1(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){
+    
     }
 }
+}
+
 
 extern "C" fn cb2(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){
     unsafe {    
