@@ -6,7 +6,7 @@ import liner
 module_path = os.path.dirname(os.path.abspath(__file__))
 liner.loadLib(module_path + "/../target/release/libliner.so")
 
-MESS_SEND_COUNT = 1
+MESS_SEND_COUNT = 1000
 MESS_SIZE = 100
 SEND_CYCLE_COUNT = 10
 
@@ -51,7 +51,7 @@ def func():
     for i in range(SEND_CYCLE_COUNT):
         send_begin = time.time()
         for j in range(MESS_SEND_COUNT):
-            if not hClient1.send_to("topic_client2", b, len(b), True):
+            if not hClient1.send_to("topic_client2", b):
                 raise Exception('error send_to')  
         send_end = time.time()
         print("send_to", round((send_end - send_begin) * 1000, 3), "ms")

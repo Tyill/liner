@@ -54,7 +54,7 @@ def func():
     for i in range(SEND_CYCLE_COUNT):
         send_begin = time.time()
         for j in range(MESS_SEND_COUNT):
-            if not hServer1.send_all("topic_client", b, len(b), True):
+            if not hServer1.send_all("topic_client", b):
                 raise Exception('error send_all')  
         send_end = time.time()
         print("send_to", round((send_end - send_begin) * 1000, 3), "ms")

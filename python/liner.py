@@ -59,10 +59,10 @@ class Client:
         pfun.argtypes = (ctypes.c_void_p, recvCBackType)
         return pfun(ctypes.byref(self.hClient_), self.recvCBack_)
     
-    def send_to(self, to_topic: str, data: bytearray, dlen: int, at_least_once_delivery: bool)->bool:
+    def send_to(self, to_topic: str, data: bytearray, at_least_once_delivery: bool = True)->bool:
         c_to_topic = to_topic.encode("utf-8")
         c_at_least_once_delivery = ctypes.c_bool(at_least_once_delivery)
-        c_dlen = ctypes.c_size_t(dlen)
+        c_dlen = ctypes.c_size_t(len(data))
         c_data = ctypes.c_char * len(data)
    
         pfun = lib_.ln_send_to
@@ -70,10 +70,10 @@ class Client:
         pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_bool)
         return pfun(ctypes.byref(self.hClient_), c_to_topic, c_data.from_buffer_copy(data), c_dlen, c_at_least_once_delivery)
     
-    def send_all(self, to_topic: str, data: bytearray, dlen: int, at_least_once_delivery: bool)->bool:
+    def send_all(self, to_topic: str, data: bytearray, at_least_once_delivery: bool = True)->bool:
         c_to_topic = to_topic.encode("utf-8")
         c_at_least_once_delivery = ctypes.c_bool(at_least_once_delivery)
-        c_dlen = ctypes.c_size_t(dlen)
+        c_dlen = ctypes.c_size_t(len(data))
         c_data = ctypes.c_char * len(data)
    
         pfun = lib_.ln_send_all
