@@ -21,9 +21,9 @@ license = "MIT"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[[bin]]
-name = "test_subscr"
-path = "test/test_subscr.rs"
+#[[bin]]
+#name = "test"
+#path = "test/test.rs"
 
 [[bin]]
 name = "throughput_10k"

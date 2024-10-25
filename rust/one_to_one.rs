@@ -1,6 +1,6 @@
 use std::time::SystemTime;
 use std::ffi::CString;
-//use std::ffi::CStr;
+use std::ffi::CStr;
 use std::{thread, time};
 
 
@@ -13,7 +13,10 @@ static mut send_begin: u64 = 0;
 static mut send_end: u64 = 0;
 
 extern "C" fn cb1(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){
-  
+    unsafe {
+        let from = CStr::from_ptr(_from);
+        println!("receive_from {}", from.to_str().unwrap());
+    }
 }
 
 extern "C" fn cb2(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){

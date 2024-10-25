@@ -160,9 +160,10 @@ impl Sender {
                     }
                 }
                 once_again = !once_again;
-                  
-                std::thread::sleep(Duration::from_millis(settings::WRITE_MESS_DELAY_MS));
-
+                
+                if settings::WRITE_MESS_DELAY_MS > 0{
+                    std::thread::sleep(Duration::from_millis(settings::WRITE_MESS_DELAY_MS));
+                }
                 if send_mess_to_listener(epoll_fd, &message_buffer_, &messages_, &streams_fd_,
                                          &mempools_, &mempool_buffer_){
                     once_again = true;
