@@ -158,7 +158,10 @@ pub unsafe extern "C" fn ln_has_client(client: &Box<Option<Client>>)->bool{
     has_client(client)
 }
 
-type UCback = extern "C" fn(to: *const i8, from: *const i8, data: *const u8, dsize: usize);
+pub struct UData(*const libc::c_void);
+type UCback = extern "C" fn(to: *const i8, from: *const i8, data: *const u8, dsize: usize, udata: *const libc::c_void);
+
+unsafe impl Send for UData {}
 
 /// Launching a client to send messages and listen for incoming messages. 
 /// 
@@ -190,12 +193,14 @@ type UCback = extern "C" fn(to: *const i8, from: *const i8, data: *const u8, dsi
 /// ```
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>, receive_cb: UCback)->bool{
+pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>, receive_cb: UCback, udata: *const libc::c_void)->bool{
     if !has_client(client){
         return false;
     }    
     let c = client.as_mut();
-    c.as_mut().unwrap().run(receive_cb)
+
+    let udata: UData = UData(udata);
+    c.as_mut().unwrap().run(receive_cb, udata)
 }
 /// Send message to other client.
 /// Call only when the client is already running. 

@@ -8,31 +8,31 @@ const MESS_SEND_COUNT: usize = 10;
 const MESS_SIZE: usize = 100;
 const SEND_CYCLE_COUNT: usize = 10;
 
-static mut receive_count_1: u64 = 0;
-static mut receive_count_2: u64 = 0;
-static mut receive_count_3: u64 = 0;
-static mut send_begin: u64 = 0;
-static mut send_end: u64 = 0;
+static mut RECEIVE_COUNT_1: u64 = 0;
+static mut RECEIVE_COUNT_2: u64 = 0;
+static mut RECEIVE_COUNT_3: u64 = 0;
+static mut SEND_BEGIN: u64 = 0;
+static mut SEND_END: u64 = 0;
 
-extern "C" fn cb1(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){
+extern "C" fn cb1(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize, _udata: *const libc::c_void){
     unsafe {    
-        receive_count_1 += 1;
+        RECEIVE_COUNT_1 += 1;
     }
 }
 
-extern "C" fn cb2(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){
+extern "C" fn cb2(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize, _udata: *const libc::c_void){
     unsafe {    
-        receive_count_2 += 1;
+        RECEIVE_COUNT_2 += 1;
     }
 }
 
-extern "C" fn cb3(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){
+extern "C" fn cb3(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize, _udata: *const libc::c_void){
     unsafe {    
-        receive_count_3 += 1;
+        RECEIVE_COUNT_3 += 1;
     }
 }
 
-extern "C" fn cb_server(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){
+extern "C" fn cb_server(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize, _udata: *const libc::c_void){
     
 }
 
@@ -85,26 +85,26 @@ fn  main() {
         liner_broker::ln_subscribe(&mut hclient2, topic_subscr.as_ptr());
         liner_broker::ln_subscribe(&mut hclient3, topic_subscr.as_ptr());
 
-        liner_broker::ln_run(&mut hclient1, cb1);
-        liner_broker::ln_run(&mut hclient2, cb2);
-        liner_broker::ln_run(&mut hclient3, cb3);
+        liner_broker::ln_run(&mut hclient1, cb1, std::ptr::null_mut());
+        liner_broker::ln_run(&mut hclient2, cb2, std::ptr::null_mut());
+        liner_broker::ln_run(&mut hclient3, cb3, std::ptr::null_mut());
     
-        liner_broker::ln_run(&mut hserver1, cb_server);
+        liner_broker::ln_run(&mut hserver1, cb_server, std::ptr::null_mut());
     
     let array = [0; MESS_SIZE];
     for _ in 0..SEND_CYCLE_COUNT{
-        send_begin = current_time_ms();
+        SEND_BEGIN = current_time_ms();
         for _ in 0..MESS_SEND_COUNT{
             liner_broker::ln_send_all(&mut hserver1, topic_subscr.as_ptr(), array.as_ptr(), array.len(), true);
         }
-        send_end = current_time_ms();
-        println!("send_to {} ms", send_end - send_begin);       
+        SEND_END = current_time_ms();
+        println!("send_to {} ms", SEND_END - SEND_BEGIN);       
       
         thread::sleep(time::Duration::from_millis(1000));
     }
-    println!("receive_count_1 {}", receive_count_1);       
-    println!("receive_count_2 {}", receive_count_2);       
-    println!("receive_count_3 {}", receive_count_3);       
+    println!("RECEIVE_COUNT_1 {}", RECEIVE_COUNT_1);       
+    println!("RECEIVE_COUNT_2 {}", RECEIVE_COUNT_2);       
+    println!("RECEIVE_COUNT_3 {}", RECEIVE_COUNT_3);       
       
 }
 }
