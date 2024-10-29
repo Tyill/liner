@@ -16,11 +16,11 @@ int receive_count_subscr_1 = 0, receive_count_subscr_2 = 0, receive_count_subscr
 clock_t send_begin = clock();
 clock_t send_end = clock();
 
-void cb_server(char* to, char* from,  char* data, size_t data_size){
+void cb_server(char* to, char* from,  char* data, size_t data_size, void* udata){
  //  std::cout << "cb1" << to << from << data << data_size << std::endl;
 }
 
-void cb_client1(char* to, char* from,  char* data, size_t data_size){
+void cb_client1(char* to, char* from,  char* data, size_t data_size, void* udata){
     if (std::string(to) == "topic_client1"){
         ++receive_count_1;
         std::cout << "client1 " << to << " receive_count_1 "  << receive_count_1 << std::endl;
@@ -31,7 +31,7 @@ void cb_client1(char* to, char* from,  char* data, size_t data_size){
     }
 }
 
-void cb_client2(char* to, char* from,  char* data, size_t data_size){
+void cb_client2(char* to, char* from,  char* data, size_t data_size, void* udata){
      
     if (std::string(to) == "topic_client2"){
         ++receive_count_2;
@@ -43,7 +43,7 @@ void cb_client2(char* to, char* from,  char* data, size_t data_size){
     }
 }
 
-void cb_client3(char* to, char* from,  char* data, size_t data_size){
+void cb_client3(char* to, char* from,  char* data, size_t data_size, void* udata){
      
     if (std::string(to) == "topic_client3"){
         ++receive_count_3;
@@ -76,11 +76,11 @@ int main(int argc, char* argv[])
     ln_subscribe(&hclient2, "topic_for_subscr");
     ln_subscribe(&hclient3, "topic_for_subscr");
 
-    ln_run(&hclient1, cb_client1);
-    ln_run(&hclient2, cb_client2);
-    ln_run(&hclient3, cb_client3);
+    ln_run(&hclient1, cb_client1, nullptr);
+    ln_run(&hclient2, cb_client2, nullptr);
+    ln_run(&hclient3, cb_client3, nullptr);
 
-    ln_run(&hserver1, cb_server);
+    ln_run(&hserver1, cb_server, nullptr);
   
     char data[MESS_SIZE];
     for (int i = 0; i < SEND_CYCLE_COUNT; ++i){

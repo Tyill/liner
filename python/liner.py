@@ -47,17 +47,17 @@ class Client:
         :param ucb: def func(to: str, from: str, data: bytes)
         """
             
-        def c_rcb(to: ctypes.c_char_p, from_: ctypes.c_char_p, data: ctypes.c_void_p, dlen: ctypes.c_size_t):
+        def c_rcb(to: ctypes.c_char_p, from_: ctypes.c_char_p, data: ctypes.c_void_p, dlen: ctypes.c_size_t, udata: ctypes.c_void_p):
             data = ctypes.string_at(data, dlen)
             receive_cback(str(to), str(from_), data)
       
-        recvCBackType = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t)    
+        recvCBackType = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p)    
         self.recvCBack_ = recvCBackType(c_rcb)
 
         pfun = lib_.ln_run
         pfun.restype = ctypes.c_bool
-        pfun.argtypes = (ctypes.c_void_p, recvCBackType)
-        return pfun(ctypes.byref(self.hClient_), self.recvCBack_)
+        pfun.argtypes = (ctypes.c_void_p, recvCBackType, ctypes.c_void_p)
+        return pfun(ctypes.byref(self.hClient_), self.recvCBack_, ctypes.c_void_p())
     
     def send_to(self, to_topic: str, data: bytearray, at_least_once_delivery: bool = True)->bool:
         c_to_topic = to_topic.encode("utf-8")

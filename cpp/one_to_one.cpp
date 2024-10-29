@@ -14,11 +14,11 @@ int receive_count = 0;
 clock_t send_begin = clock();
 clock_t send_end = clock();
 
-void cb1(char* to, char* from,  char* data, size_t data_size){
+void cb1(char* to, char* from,  char* data, size_t data_size, void* udata){
  //  std::cout << "cb1" << to << from << data << data_size << std::endl;
 }
 
-void cb2(char* to, char* from,  char* data, size_t data_size){
+void cb2(char* to, char* from,  char* data, size_t data_size, void* udata){
      
     receive_count += 1;
 
@@ -33,8 +33,8 @@ int main(int argc, char* argv[])
     auto hclient1 = ln_new_client("client1", "topic_client1", "localhost:2255", "redis://localhost/");
     auto hclient2 = ln_new_client("client2", "topic_client2", "localhost:2256", "redis://localhost/");
  
-    ln_run(&hclient1, cb1);
-    ln_run(&hclient2, cb2);
+    ln_run(&hclient1, cb1, nullptr);
+    ln_run(&hclient2, cb2, nullptr);
  
     char data[MESS_SIZE];
     for (int i = 0; i < SEND_CYCLE_COUNT; ++i){

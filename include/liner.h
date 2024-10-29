@@ -36,8 +36,8 @@ extern "C" {
 
 typedef enum BOOL{ FALSE = 0, TRUE = 1}BOOL;
 
-typedef void(*ln_receive_cb)(char* to, char* from, char* data, size_t data_size);
 typedef void* ln_uData;
+typedef void(*ln_receive_cb)(char* to, char* from, char* data, size_t data_size, ln_uData);
 
 typedef void* ln_hClient;
 

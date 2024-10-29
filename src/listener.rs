@@ -169,15 +169,15 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
                  receive_cb: UCback,
                  udata: &UData){
 
-    let mut mess_for_receive: BTreeMap<RawFd, Vec<MessageForReceiver>> = BTreeMap::new();
+    let mut mess_for_receive: BTreeMap<RawFd, Vec<Message>> = BTreeMap::new();
     for mess in mess_buff{
         let fd = mess.0;
-        let mut mess_buff: Vec<MessageForReceiver> = Vec::with_capacity(mess.1.len());
+        let mut mess_buff: Vec<Message> = Vec::with_capacity(mess.1.len());
         let mempool_lock = mempools.lock().unwrap()[&fd].clone();
         let mut mempool = mempool_lock.lock().unwrap();
         for mut m in mess.1{
             m.change_mempool(&mut mempool, temp_buff);
-            mess_buff.push(MessageForReceiver::new(&m, temp_buff));
+            mess_buff.push(m);
         }
         mess_for_receive.insert(fd, mess_buff);
     }
@@ -185,6 +185,7 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
         let fd = mess.0;
         let mut last_mess_num = 0;
         for m in mess.1{
+            let m = MessageForReceiver::new(&m, temp_buff);
             receive_cb(m.topic_to, 
                 m.topic_from, 
                 m.data, m.data_len, 
