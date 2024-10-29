@@ -4,7 +4,7 @@ use crate::mempool::Mempool;
 use crate::redis;
 use crate::settings;
 use crate::common;
-use crate::UCback;
+use crate::{UCback, UData};
 use nohash_hasher::BuildNoHashHasher;
 use crate::print_error;
 
@@ -64,7 +64,7 @@ pub struct Listener{
 
 impl Listener {
     pub fn new(listener: TcpListener,
-               unique_name: &str, redis_path: &str, source_topic: &str, receive_cb: UCback)->Listener{
+               unique_name: &str, redis_path: &str, source_topic: &str, receive_cb: UCback, udata: UData)->Listener{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         let wakeup_fd = wakeupfd_create(epoll_fd);
         let mut messages: Arc<Mutex<MessMap>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
@@ -141,7 +141,7 @@ impl Listener {
                 }    
                 let mess_buff = mess_for_receive(&messages_);
                 if !mess_buff.is_empty(){
-                    do_receive_cb(mess_buff, &mut temp_buff, &mempools_, &senders_, receive_cb); 
+                    do_receive_cb(mess_buff, &mut temp_buff, &mempools_, &senders_, receive_cb, &udata); 
                     once_again = true;
                 } 
                 let ctime = common::current_time_ms();
@@ -166,17 +166,18 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
                  temp_buff: &mut Mempool,
                  mempools: &Arc<Mutex<MempoolMap>>,
                  senders: &Arc<Mutex<SenderMap>>,
-                 receive_cb: UCback){
+                 receive_cb: UCback,
+                 udata: &UData){
 
-    let mut mess_for_receive: BTreeMap<RawFd, Vec<MessageForReceiver>> = BTreeMap::new();
+    let mut mess_for_receive: BTreeMap<RawFd, Vec<Message>> = BTreeMap::new();
     for mess in mess_buff{
         let fd = mess.0;
-        let mut mess_buff: Vec<MessageForReceiver> = Vec::with_capacity(mess.1.len());
+        let mut mess_buff: Vec<Message> = Vec::with_capacity(mess.1.len());
         let mempool_lock = mempools.lock().unwrap()[&fd].clone();
         let mut mempool = mempool_lock.lock().unwrap();
         for mut m in mess.1{
             m.change_mempool(&mut mempool, temp_buff);
-            mess_buff.push(MessageForReceiver::new(&m, temp_buff));
+            mess_buff.push(m);
         }
         mess_for_receive.insert(fd, mess_buff);
     }
@@ -184,9 +185,11 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
         let fd = mess.0;
         let mut last_mess_num = 0;
         for m in mess.1{
+            let m = MessageForReceiver::new(&m, temp_buff);
             receive_cb(m.topic_to, 
                 m.topic_from, 
-                m.data, m.data_len);
+                m.data, m.data_len, 
+                udata.0);
             m.free(temp_buff);
             if m.number_mess > last_mess_num{
                 last_mess_num = m.number_mess;

@@ -15,23 +15,23 @@ int receive_count_1 = 0, receive_count_2 = 0, receive_count_3 = 0;
 clock_t send_begin = clock();
 clock_t send_end = clock();
 
-void cb_server(char* to, char* from,  char* data, size_t data_size){
+void cb_server(char* to, char* from,  char* data, size_t data_size, void* udata){
  //  std::cout << "cb1" << to << from << data << data_size << std::endl;
 }
 
-void cb_client1(char* to, char* from,  char* data, size_t data_size){
+void cb_client1(char* to, char* from,  char* data, size_t data_size, void* udata){
      
     ++receive_count_1;
     std::cout << "client1 " << to << " receive_count_1 "  << receive_count_1 << std::endl;
 }
 
-void cb_client2(char* to, char* from,  char* data, size_t data_size){
+void cb_client2(char* to, char* from,  char* data, size_t data_size, void* udata){
      
     ++receive_count_2;
     std::cout << "client2 " << to << " receive_count_2 "  << receive_count_2 << std::endl;
 }
 
-void cb_client3(char* to, char* from,  char* data, size_t data_size){
+void cb_client3(char* to, char* from,  char* data, size_t data_size, void* udata){
      
     ++receive_count_3;
     std::cout << "client3 " << to << " receive_count_3 "  << receive_count_3 << std::endl;
@@ -46,13 +46,13 @@ int main(int argc, char* argv[])
     auto hserver2 = ln_new_client("server2", "topic_server2", "localhost:2259", "redis://localhost/");
     auto hserver3 = ln_new_client("server3", "topic_server3", "localhost:2260", "redis://localhost/");
  
-    ln_run(&hclient1, cb_client1);
-    ln_run(&hclient2, cb_client2);
-    ln_run(&hclient3, cb_client3);
+    ln_run(&hclient1, cb_client1, nullptr);
+    ln_run(&hclient2, cb_client2, nullptr);
+    ln_run(&hclient3, cb_client3, nullptr);
 
-    ln_run(&hserver1, cb_server);
-    ln_run(&hserver2, cb_server);
-    ln_run(&hserver3, cb_server);
+    ln_run(&hserver1, cb_server, nullptr);
+    ln_run(&hserver2, cb_server, nullptr);
+    ln_run(&hserver3, cb_server, nullptr);
  
     char data[MESS_SIZE];
     for (int i = 0; i < SEND_CYCLE_COUNT; ++i){

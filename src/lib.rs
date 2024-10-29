@@ -6,57 +6,29 @@
 //! # Examples
 //!
 //! ```
-//! use std::ffi::CString;
-//! unsafe {
-//!     let redis_path = CString::new("redis://localhost/").unwrap();
-//!         
-//!     let client1 = CString::new("client1").unwrap();               // must be a unique name
-//!     let localhost1 = CString::new("localhost:2255").unwrap();
-//!     let topic_client1 = CString::new("topic_client1").unwrap();   // may coincide with other clients
-//!     
-//!     let hclient1 = liner_broker::ln_new_client(client1.as_ptr(),
-//!                                                    topic_client1.as_ptr(),
-//!                                                    localhost1.as_ptr(),
-//!                                                    redis_path.as_ptr());
-//!     let has_client = liner_broker::ln_has_client(&hclient1){
-//!         panic!("hclient1 error create, check redis path");
-//!     }
-//!     
-//!     let client2 = CString::new("client2").unwrap();               // must be a unique name
-//!     let localhost2 = CString::new("localhost:2256").unwrap();
-//!     let topic_client2 = CString::new("topic_client2").unwrap();   // may coincide with other clients
-//!     
-//!     let hclient2 = liner_broker::ln_new_client(client2.as_ptr(),
-//!                                                topic_client2.as_ptr(),
-//!                                                localhost2.as_ptr(),
-//!                                                redis_path.as_ptr());
-//!     if !liner_broker::ln_has_client(&hclient2){
-//!         panic!("hclient2 error create, check redis path");
-//!     }
+//! mod liner;
+//! use liner::Liner;
 //! 
-//!     if !liner_broker::ln_run(&mut hclient1, cb1){
-//!         panic!("hclient1 ln_run not run!");
-//!     }
-//!     if !liner_broker::ln_run(&mut hclient2, cb2){
-//!         panic!("hclient2 ln_run not run!");
-//!     }
-//!     let array = [0; MESS_SIZE];
-//!     if !liner_broker::ln_send_to(&mut hclient1, topic_client2.as_ptr(), array.as_ptr(), array.len(), true){
-//!         panic!("hclient1 ln_send_to error!");
-//!     }         
+//! fn cb1(_to: &str, _from: &str,  _data: &[u8]){
+//!     println!("receive_from {}", _from);
 //! }
 //! 
-//! unsafe fn cb1(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){
-//!     unsafe {
-//!         let from = CStr::from_ptr(_from);
-//!         println!("cb1 receive_from {}", from.to_str().unwrap());
-//!     }
+//! fn cb2(_to: &str, _from: &str,  _data: &[u8]){
+//!     println!("receive_from {}", _from);
 //! }
 //! 
-//! unsafe fn cb2(_to: *const i8, _from: *const i8,  _data: *const u8, _dsize: usize){
-//!     unsafe {
-//!         let from = CStr::from_ptr(_from);
-//!         println!("cb2 receive_from {}", from.to_str().unwrap());
+//! fn  main() {
+//! 
+//!     let mut client1 = Liner::new("client1", "topic_client1", "localhost:2255", "redis://localhost/", cb1);
+//!     let mut client2 = Liner::new("client2", "topic_client2", "localhost:2256", "redis://localhost/", cb2);
+//!    
+//!     client1.run();
+//!     client2.run();
+//! 
+//!     let array = [0; 100];
+//!     for _ in 0..10{
+//!         client1.send_to("topic_client2", array.as_slice());
+//!         println!("send_to client2");       
 //!     }
 //! }
 //! 
@@ -71,31 +43,12 @@ mod listener;
 mod sender;
 mod settings;
 mod common;
-use crate::client::Client;
+pub use crate::client::Client;
 
 use std::ffi::CStr;
 
 /// Create new client for transfer data.
 /// 
-/// # Examples
-///
-/// ```
-/// use std::ffi::CString;
-/// unsafe {
-///     let client1 = CString::new("client1").unwrap();               // must be a unique name
-///     let redis_path = CString::new("redis://localhost/").unwrap();
-///     let localhost1 = CString::new("localhost:2255").unwrap();
-///     let topic_client1 = CString::new("topic_client1").unwrap();   // may coincide with other clients
-///     
-///     let hclient1 = liner_broker::ln_new_client(client1.as_ptr(),
-///                                                    topic_client1.as_ptr(),
-///                                                    localhost1.as_ptr(),
-///                                                    redis_path.as_ptr());
-///     let has_client = liner_broker::ln_has_client(&hclient1);
-///         panic!("hclient1 error create, check redis path");
-///     }
-/// }
-/// ```
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn ln_new_client(unique_name: *const i8,
@@ -133,32 +86,16 @@ pub unsafe extern "C" fn ln_new_client(unique_name: *const i8,
 /// - no connection to redis
 /// - the address for the client is busy
 /// 
-/// # Examples
-///
-/// ```
-/// use std::ffi::CString;
-/// unsafe {
-///     let client1 = CString::new("client1").unwrap();               // must be a unique name
-///     let redis_path = CString::new("redis://localhost/").unwrap();
-///     let localhost1 = CString::new("localhost:2255").unwrap();
-///     let topic_client1 = CString::new("topic_client1").unwrap();   // may coincide with other clients
-///     
-///     let hclient1 = liner_broker::ln_new_client(client1.as_ptr(),
-///                                                    topic_client1.as_ptr(),
-///                                                    localhost1.as_ptr(),
-///                                                    redis_path.as_ptr());
-///     let has_client = liner_broker::ln_has_client(&hclient1);
-///         panic!("hclient1 error create, check redis path");
-///     }
-/// }
-/// ```
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn ln_has_client(client: &Box<Option<Client>>)->bool{
     has_client(client)
 }
 
-type UCback = extern "C" fn(to: *const i8, from: *const i8, data: *const u8, dsize: usize);
+pub struct UData(*const libc::c_void);
+type UCback = extern "C" fn(to: *const i8, from: *const i8, data: *const u8, dsize: usize, udata: *const libc::c_void);
+
+unsafe impl Send for UData {}
 
 /// Launching a client to send messages and listen for incoming messages. 
 /// 
@@ -166,37 +103,18 @@ type UCback = extern "C" fn(to: *const i8, from: *const i8, data: *const u8, dsi
 /// - no connection to redis
 /// - the address for the client is busy
 /// 
-/// # Examples
-///
-/// ```
-/// use std::ffi::CString;
-/// unsafe {
-///     let client1 = CString::new("client1").unwrap();               // must be a unique name
-///     let redis_path = CString::new("redis://localhost/").unwrap();
-///     let localhost1 = CString::new("localhost:2255").unwrap();
-///     let topic_client1 = CString::new("topic_client1").unwrap();   // may coincide with other clients
-///     
-///     let hclient1 = liner_broker::ln_new_client(client1.as_ptr(),
-///                                                    topic_client1.as_ptr(),
-///                                                    localhost1.as_ptr(),
-///                                                    redis_path.as_ptr());
-///     let has_client = liner_broker::ln_has_client(&hclient1);
-///         panic!("hclient1 error create, check redis path");
-///     }
-///     if !liner_broker::ln_run(&mut hclient1, cb1){
-///         panic!("hclient1 ln_run not run!");
-///     }
-/// }
-/// ```
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>, receive_cb: UCback)->bool{
+pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>, receive_cb: UCback, udata: *const libc::c_void)->bool{
     if !has_client(client){
         return false;
     }    
     let c = client.as_mut();
-    c.as_mut().unwrap().run(receive_cb)
+
+    let udata: UData = UData(udata);
+    c.as_mut().unwrap().run(receive_cb, udata)
 }
+
 /// Send message to other client.
 /// Call only when the client is already running. 
 /// 
@@ -204,35 +122,6 @@ pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>, receive_cb: UC
 /// - no connection to redis
 /// - no other client with this topic
 /// 
-/// # Examples
-///
-/// ```
-/// use std::ffi::CString;
-/// unsafe {
-///     let redis_path = CString::new("redis://localhost/").unwrap();
-///         
-///     let client1 = CString::new("client1").unwrap();               // must be a unique name
-///     let localhost1 = CString::new("localhost:2255").unwrap();
-///     let topic_client1 = CString::new("topic_client1").unwrap();   // may coincide with other clients
-///     
-///     let hclient1 = liner_broker::ln_new_client(client1.as_ptr(),
-///                                                topic_client1.as_ptr(),
-///                                                localhost1.as_ptr(),
-///                                                redis_path.as_ptr());
-///     let has_client = liner_broker::ln_has_client(&hclient1);
-///         panic!("hclient1 error create, check redis path");
-///     }
-///     if !liner_broker::ln_run(&mut hclient1, cb1){
-///         panic!("hclient1 ln_run not run!");
-///     }
-/// 
-///     let topic_client2 = CString::new("topic_client2").unwrap();   // may coincide with other clients
-///     let array = [0; MESS_SIZE];
-///     if !liner_broker::ln_send_to(&mut hclient1, topic_client2.as_ptr(), array.as_ptr(), array.len(), true){
-///         panic!("hclient1 ln_send_to error!");
-///     }  
-/// }
-/// ```
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn ln_send_to(client: &mut Box<Option<Client>>,
@@ -256,6 +145,7 @@ pub unsafe extern "C" fn ln_send_to(client: &mut Box<Option<Client>>,
     let c = client.as_mut();
     c.as_mut().unwrap().send_to(topic, data, at_least_once_delivery)
 }
+
 /// Send message to other clients. 
 /// Call only when the client is already running.
 /// 
@@ -263,35 +153,6 @@ pub unsafe extern "C" fn ln_send_to(client: &mut Box<Option<Client>>,
 /// - no connection to redis
 /// - no other client with this topic
 /// 
-/// # Examples
-///
-/// ```
-/// use std::ffi::CString;
-/// unsafe {
-///     let redis_path = CString::new("redis://localhost/").unwrap();
-///         
-///     let client1 = CString::new("client1").unwrap();               // must be a unique name
-///     let localhost1 = CString::new("localhost:2255").unwrap();
-///     let topic_client1 = CString::new("topic_client1").unwrap();   // may coincide with other clients
-///     
-///     let hclient1 = liner_broker::ln_new_client(client1.as_ptr(),
-///                                                topic_client1.as_ptr(),
-///                                                localhost1.as_ptr(),
-///                                                redis_path.as_ptr());
-///     let has_client = liner_broker::ln_has_client(&hclient1);
-///         panic!("hclient1 error create, check redis path");
-///     }
-///     if !liner_broker::ln_run(&mut hclient1, cb1){
-///         panic!("hclient1 ln_run not run!");
-///     }
-/// 
-///     let topic_other_clients = CString::new("topic_other_clients").unwrap();   // may coincide with other clients
-///     let array = [0; MESS_SIZE];
-///     if !liner_broker::ln_send_all(&mut hclient1, topic_other_clients.as_ptr(), array.as_ptr(), array.len(), true){
-///         panic!("hclient1 ln_send_all error!");
-///     }  
-/// }
-/// ```
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn ln_send_all(client: &mut Box<Option<Client>>,
@@ -315,6 +176,7 @@ pub unsafe extern "C" fn ln_send_all(client: &mut Box<Option<Client>>,
     let c = client.as_mut();
     c.as_mut().unwrap().send_all(topic, data, at_least_once_delivery)
 }
+
 /// Subscribe to the topic and receive messages from other clients.
 /// Call only when the client is not running yet.
 /// 
@@ -322,34 +184,6 @@ pub unsafe extern "C" fn ln_send_all(client: &mut Box<Option<Client>>,
 /// - no connection to redis
 /// - no other client with this topic
 /// 
-/// # Examples
-///
-/// ```
-/// use std::ffi::CString;
-/// unsafe {
-///     let redis_path = CString::new("redis://localhost/").unwrap();
-///         
-///     let client1 = CString::new("client1").unwrap();               // must be a unique name
-///     let localhost1 = CString::new("localhost:2255").unwrap();
-///     let topic_client1 = CString::new("topic_client1").unwrap();   // may coincide with other clients
-///     
-///     let hclient1 = liner_broker::ln_new_client(client1.as_ptr(),
-///                                                topic_client1.as_ptr(),
-///                                                localhost1.as_ptr(),
-///                                                redis_path.as_ptr());
-///     let has_client = liner_broker::ln_has_client(&hclient1);
-///         panic!("hclient1 error create, check redis path");
-///     }
-///     if !liner_broker::ln_run(&mut hclient1, cb1){
-///         panic!("hclient1 ln_run not run!");
-///     }
-/// 
-///     let topic_subscr = CString::new("topic_subscr").unwrap();
-///     if !liner_broker::ln_subscribe(&mut hclient1, topic_subscr.as_ptr()){
-///         panic!("hclient1 ln_subscribe error!");
-///     }  
-/// }
-/// ```
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn ln_subscribe(client: &mut Box<Option<Client>>,
@@ -366,6 +200,7 @@ pub unsafe extern "C" fn ln_subscribe(client: &mut Box<Option<Client>>,
     let c = client.as_mut();
     c.as_mut().unwrap().subscribe(topic)
 }
+
 /// Unsubscribe from the topic and do not receive messages from other clients.
 /// Call only when the client is not running yet.
 /// 
@@ -373,34 +208,6 @@ pub unsafe extern "C" fn ln_subscribe(client: &mut Box<Option<Client>>,
 /// - no connection to redis
 /// - no other client with this topic
 /// 
-/// # Examples
-///
-/// ```
-/// use std::ffi::CString;
-/// unsafe {
-///     let redis_path = CString::new("redis://localhost/").unwrap();
-///         
-///     let client1 = CString::new("client1").unwrap();               // must be a unique name
-///     let localhost1 = CString::new("localhost:2255").unwrap();
-///     let topic_client1 = CString::new("topic_client1").unwrap();   // may coincide with other clients
-///     
-///     let hclient1 = liner_broker::ln_new_client(client1.as_ptr(),
-///                                                topic_client1.as_ptr(),
-///                                                localhost1.as_ptr(),
-///                                                redis_path.as_ptr());
-///     let has_client = liner_broker::ln_has_client(&hclient1);
-///         panic!("hclient1 error create, check redis path");
-///     }
-///     if !liner_broker::ln_run(&mut hclient1, cb1){
-///         panic!("hclient1 ln_run not run!");
-///     }
-/// 
-///     let topic_subscr = CString::new("topic_subscr").unwrap();
-///     if !liner_broker::ln_unsubscribe(&mut hclient1, topic_subscr.as_ptr()){
-///         panic!("hclient1 ln_unsubscribe error!");
-///     }  
-/// }
-/// ```
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn ln_unsubscribe(client: &mut Box<Option<Client>>,
@@ -423,6 +230,7 @@ pub unsafe extern "C" fn ln_unsubscribe(client: &mut Box<Option<Client>>,
 /// 
 /// Possible errors:
 /// - no connection to redis
+/// 
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn ln_clear_stored_messages(client: &mut Box<Option<Client>>)->bool{
@@ -438,6 +246,7 @@ pub unsafe extern "C" fn ln_clear_stored_messages(client: &mut Box<Option<Client
 /// 
 /// Possible errors:
 /// - no connection to redis
+/// 
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn ln_clear_addresses_of_topic(client: &mut Box<Option<Client>>)->bool{
