@@ -1,29 +1,31 @@
 use std::ffi::CString;
 use std::ffi::CStr;
 
-type UCback = fn(to: &str, from: &str, data: &[u8]);
 
-extern "C" fn _cb(to: *const i8, from: *const i8,  data: *const u8, dsize: usize, udata: *const libc::c_void){
+type UCback = Box<dyn FnMut(&str, &str, &[u8])>;
+
+extern "C" fn _cb(to: *const i8, from: *const i8,  data: *const u8, dsize: usize, udata: *mut libc::c_void){
     unsafe {    
-        if let Some(liner) = udata.cast::<Liner>().as_ref(){
-            let to = CStr::from_ptr(to).to_str().unwrap();
-            let from = CStr::from_ptr(from).to_str().unwrap();           
-            (liner._ucback)(to, from, std::slice::from_raw_parts(data, dsize));
+        if let Some(liner) = udata.cast::<Liner>().as_mut(){
+            if let Some(ucback) = liner.ucback.as_mut(){
+                let to = CStr::from_ptr(to).to_str().unwrap();
+                let from = CStr::from_ptr(from).to_str().unwrap();           
+                (ucback)(to, from, std::slice::from_raw_parts(data, dsize));
+            }
         }
     }
 }
 
 pub struct Liner{
     hclient: Box<Option<liner_broker::Client>>,
-    _ucback: UCback,
+    ucback: Option<UCback>,
 }
 
 impl Liner {
     pub fn new(unique_name: &str,
         topic: &str,
         localhost: &str,
-        redis_path: &str,
-        _ucback: UCback)->Liner{
+        redis_path: &str)->Liner{
     unsafe{
         let unique = CString::new(unique_name).unwrap();
         let dbpath = CString::new(redis_path).unwrap();
@@ -34,15 +36,16 @@ impl Liner {
                                                         localhost.as_ptr(),
                                                         dbpath.as_ptr());
         if liner_broker::ln_has_client(&hclient){
-            Self{hclient, _ucback}
+            Self{hclient, ucback: None}
         }else{
             panic!("error create client");
         }
     }   
     }
-    pub fn run(&mut self)->bool{
+    pub fn run(&mut self, ucback: UCback)->bool{        
         unsafe{
-            let ud = self as *const Self as *const libc::c_void;
+            self.ucback = Some(ucback);
+            let ud = self as *const Self as *mut libc::c_void;
             liner_broker::ln_run(&mut self.hclient, _cb, ud)
         }
     }

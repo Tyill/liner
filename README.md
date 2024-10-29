@@ -8,21 +8,17 @@ Rust example:
 mod liner;
 use liner::Liner;
 
-fn cb1(_to: &str, _from: &str,  _data: &[u8]){
-    println!("receive_from {}", _from);
-}
-
-fn cb2(_to: &str, _from: &str,  _data: &[u8]){
-    println!("receive_from {}", _from);
-}
-
 fn  main() {
 
-    let mut client1 = Liner::new("client1", "topic_client1", "localhost:2255", "redis://localhost/", cb1);
-    let mut client2 = Liner::new("client2", "topic_client2", "localhost:2256", "redis://localhost/", cb2);
+    let mut client1 = Liner::new("client1", "topic_client1", "localhost:2255", "redis://localhost/");
+    let mut client2 = Liner::new("client2", "topic_client2", "localhost:2256", "redis://localhost/");
    
-    client1.run();
-    client2.run();
+    client1.run(Box::new(|_to: &str, _from: &str, _data: &[u8]|{
+        println!("receive_from {}", _from);
+    }));
+    client2.run(Box::new(|_to: &str, _from: &str, _data: &[u8]|{
+        println!("receive_from {}", _from);
+    }));
 
     let array = [0; 100];
     for _ in 0..10{
@@ -113,7 +109,7 @@ Producer-consumer: [Python](https://github.com/Tyill/liner/blob/main/python/prod
 
 ### [Tests](https://github.com/Tyill/liner/blob/main/test)
 
-### [Docs](https://docs.rs/liner_broker/1.0.7/liner_broker/)
+### [Docs](https://docs.rs/liner_broker/1.0.8/liner_broker/)
 
 ### License
 Licensed under an [MIT-2.0]-[license](LICENSE).

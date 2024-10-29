@@ -9,22 +9,18 @@
 //! mod liner;
 //! use liner::Liner;
 //! 
-//! fn cb1(_to: &str, _from: &str,  _data: &[u8]){
-//!     println!("receive_from {}", _from);
-//! }
-//! 
-//! fn cb2(_to: &str, _from: &str,  _data: &[u8]){
-//!     println!("receive_from {}", _from);
-//! }
-//! 
 //! fn  main() {
 //! 
-//!     let mut client1 = Liner::new("client1", "topic_client1", "localhost:2255", "redis://localhost/", cb1);
-//!     let mut client2 = Liner::new("client2", "topic_client2", "localhost:2256", "redis://localhost/", cb2);
+//!     let mut client1 = Liner::new("client1", "topic_client1", "localhost:2255", "redis://localhost/");
+//!     let mut client2 = Liner::new("client2", "topic_client2", "localhost:2256", "redis://localhost/");
 //!    
-//!     client1.run();
-//!     client2.run();
-//! 
+//!     client1.run(Box::new(|_to: &str, _from: &str, _data: &[u8]|{
+//!         println!("receive_from {}", _from);
+//!     }));
+//!     client2.run(Box::new(|_to: &str, _from: &str, _data: &[u8]|{
+//!         println!("receive_from {}", _from);
+//!     }));
+//!  
 //!     let array = [0; 100];
 //!     for _ in 0..10{
 //!         client1.send_to("topic_client2", array.as_slice());
@@ -92,8 +88,8 @@ pub unsafe extern "C" fn ln_has_client(client: &Box<Option<Client>>)->bool{
     has_client(client)
 }
 
-pub struct UData(*const libc::c_void);
-type UCback = extern "C" fn(to: *const i8, from: *const i8, data: *const u8, dsize: usize, udata: *const libc::c_void);
+pub struct UData(*mut libc::c_void);
+type UCback = extern "C" fn(to: *const i8, from: *const i8, data: *const u8, dsize: usize, udata: *mut libc::c_void);
 
 unsafe impl Send for UData {}
 
@@ -105,7 +101,7 @@ unsafe impl Send for UData {}
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>, receive_cb: UCback, udata: *const libc::c_void)->bool{
+pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>, receive_cb: UCback, udata: *mut libc::c_void)->bool{
     if !has_client(client){
         return false;
     }    
