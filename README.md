@@ -5,8 +5,7 @@ Data transfer via TCP.
 
 Rust example:  
 ``` Rust
-mod liner;
-use liner::Liner;
+use liner_broker::Liner;
 
 fn  main() {
 

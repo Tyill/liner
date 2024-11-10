@@ -6,8 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! mod liner;
-//! use liner::Liner;
+//! use liner_broker::Liner;
 //! 
 //! fn  main() {
 //! 
