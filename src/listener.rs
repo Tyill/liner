@@ -4,7 +4,7 @@ use crate::mempool::Mempool;
 use crate::redis;
 use crate::settings;
 use crate::common;
-use crate::{UCback, UData};
+use crate::{UCbackIntern, UData};
 use nohash_hasher::BuildNoHashHasher;
 use crate::print_error;
 
@@ -64,7 +64,7 @@ pub struct Listener{
 
 impl Listener {
     pub fn new(listener: TcpListener,
-               unique_name: &str, redis_path: &str, source_topic: &str, receive_cb: UCback, udata: UData)->Listener{
+               unique_name: &str, redis_path: &str, source_topic: &str, receive_cb: UCbackIntern, udata: UData)->Listener{
         let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
         let wakeup_fd = wakeupfd_create(epoll_fd);
         let mut messages: Arc<Mutex<MessMap>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
@@ -166,7 +166,7 @@ fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
                  temp_buff: &mut Mempool,
                  mempools: &Arc<Mutex<MempoolMap>>,
                  senders: &Arc<Mutex<SenderMap>>,
-                 receive_cb: UCback,
+                 receive_cb: UCbackIntern,
                  udata: &UData){
 
     let mut mess_for_receive: BTreeMap<RawFd, Vec<Message>> = BTreeMap::new();

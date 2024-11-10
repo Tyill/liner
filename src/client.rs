@@ -1,5 +1,5 @@
 use crate::redis;
-use crate::{UCback, UData};
+use crate::{UCbackIntern, UData};
 use crate::listener::Listener;
 use crate::sender::Sender;
 use crate::settings;
@@ -44,7 +44,7 @@ impl Client {
             }
         )
     }
-    pub fn run(&mut self, receive_cb: UCback, udata: UData) -> bool {
+    pub fn run(&mut self, receive_cb: UCbackIntern, udata: UData) -> bool {
         let _lock = self.mtx.lock();
         if self.is_run{
             print_error!("client already is running");
