@@ -31,7 +31,7 @@ impl Mempool{
                 },
                 Err(ix_)=>{
                     if ix_ == keys.len(){
-                        return (self.new_mem(req_size), req_size);
+                        return self.new_mem(req_size);
                     }
                     ix = ix_;
                 }
@@ -46,20 +46,70 @@ impl Mempool{
             }
         }
         if length > 0{
-            (self.free_mem.get_mut(&length).unwrap().pop().unwrap(), length)
+            let mut endlen = length;
+            let mut pos = self.free_mem.get_mut(&length).unwrap().pop().unwrap();
+            while req_size > self.median_size && (endlen - req_size) > self.median_size {
+                self.free_mem.get_mut(&self.median_size).unwrap().push(pos);
+                endlen -= self.median_size;
+                pos += self.median_size;
+            }
+            if endlen < length && !self.free_mem.contains_key(&endlen){
+                self.free_mem.insert(endlen, Vec::new());
+                self.recalc_median();
+            }
+            (pos, endlen)
         }else{
-            (self.new_mem(req_size), req_size)
+            self.new_mem(req_size)
         }
     }
-    fn new_mem(&mut self, req_size: usize)->usize{
+    fn new_mem(&mut self, req_size: usize)->(usize, usize){
+        let mut free_mem_pos: BTreeMap<usize, usize> = BTreeMap::new(); // pos, len
+        for m in &self.free_mem{
+            if !m.1.is_empty(){
+                for pos in m.1{
+                    free_mem_pos.insert(*pos, *m.0);
+                }
+            }
+        }
+        if !free_mem_pos.is_empty(){
+            let mut prev_free_pos: usize = 0;
+            let mut prev_free_len: usize = 0;
+            let mut new_free_len: usize = 0;
+            let mut count = 0;
+            let len = free_mem_pos.len();
+            for m in free_mem_pos{
+                if prev_free_pos + new_free_len == m.0 && new_free_len > 0{
+                    new_free_len += m.1;
+                    count += 1;
+                    if count < len{
+                        continue;
+                    }              
+                }
+                if new_free_len > prev_free_len{
+                    if let btree_map::Entry::Vacant(e) = self.free_mem.entry(new_free_len) {
+                        e.insert(Vec::new());
+                        self.recalc_median();
+                    }
+                    if new_free_len >= req_size{
+                        return (prev_free_pos, new_free_len);
+                    }
+                    self.free_mem.get_mut(&new_free_len).unwrap().push(prev_free_pos);
+                    new_free_len = 0;
+                }else{
+                    prev_free_pos = m.0;
+                    prev_free_len = m.1;
+                    new_free_len = prev_free_len;
+                }
+                count += 1;
+            }
+        }
         let csz = self.buff.len();
         self.buff.resize(csz + req_size, 0);
         if let btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {
             e.insert(Vec::new());
-            let keys: Vec<&usize> = self.free_mem.keys().collect();
-            self.median_size = *keys[self.free_mem.len()/2];
+            self.recalc_median();
         }
-        csz
+        (csz, req_size)
     }
     pub fn alloc_with_write(&mut self, value: &[u8])->(usize, usize){
         let (pos, sz) = self.alloc(value.len());
@@ -68,7 +118,7 @@ impl Mempool{
     }
     pub fn free(&mut self, mut pos: usize, length: usize){
         let mut endlen = length;
-        while endlen > (self.median_size as f32 * 1.5) as usize {
+        while endlen > self.median_size * 2 {
             self.free_mem.get_mut(&self.median_size).unwrap().push(pos);
             endlen -= self.median_size;
             pos += self.median_size;
@@ -76,9 +126,14 @@ impl Mempool{
         if endlen > 0{
             if endlen < length && !self.free_mem.contains_key(&endlen){
                 self.free_mem.insert(endlen, Vec::new());
+                self.recalc_median();
             }
             self.free_mem.get_mut(&endlen).unwrap().push(pos);
         }
+    }
+    fn recalc_median(&mut self){
+        let keys: Vec<&usize> = self.free_mem.keys().collect();
+        self.median_size = *keys[self.free_mem.len()/2];
     }
     pub fn write_str(&mut self, mut pos: usize, value: &str){
         self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
