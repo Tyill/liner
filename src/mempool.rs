@@ -47,6 +47,9 @@ impl Mempool{
             let pos = self.free_mem.get_mut(&length).unwrap().pop().unwrap();
             let endlen = length - req_size;
             if endlen > 0 {
+                if let btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {
+                    e.insert(Vec::new());
+                }
                 if let btree_map::Entry::Vacant(e) = self.free_mem.entry(endlen) {
                     e.insert(Vec::new());
                 }
