@@ -61,7 +61,7 @@ def receive_server(to: str, from_: str, data: bytes):
 
  - message size is not predetermined and is not limited
 
- - easy api: create client, run client and send data to 
+ - easy api: run client and send data to 
 
  - interface for Python and CPP
  
