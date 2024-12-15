@@ -79,9 +79,11 @@ impl Client {
             return false;
         }
         let has_addr = self.address_topic.contains_key(topic);
-        let ctime = self.sender.as_ref().unwrap().get_ctime();
-        if let Some(addr) = get_address_topic(topic, &mut self.db, !has_addr, ctime, &mut self.prev_time[0]){
-            self.address_topic.insert(topic.to_string(), addr);
+        if !has_addr || settings::IS_CHECK_NEW_ADDRESS_TOPIC_ENABLE{ 
+            let ctime = self.sender.as_ref().unwrap().get_ctime();
+            if let Some(addr) = get_address_topic(topic, &mut self.db, !has_addr, ctime, &mut self.prev_time[0]){
+                self.address_topic.insert(topic.to_string(), addr);
+            }
         }
         if let Some(address) = self.address_topic.get(topic){       
             let index = self.last_send_index.entry(topic.to_string()).or_insert(0);
@@ -110,9 +112,11 @@ impl Client {
             return false;
         }
         let has_addr = self.address_topic.contains_key(topic);
-        let ctime = self.sender.as_ref().unwrap().get_ctime();
-        if let Some(addr) = get_address_topic(topic, &mut self.db, !has_addr, ctime, &mut self.prev_time[0]){
-            self.address_topic.insert(topic.to_string(), addr);
+        if !has_addr || settings::IS_CHECK_NEW_ADDRESS_TOPIC_ENABLE{ 
+            let ctime = self.sender.as_ref().unwrap().get_ctime();
+            if let Some(addr) = get_address_topic(topic, &mut self.db, !has_addr, ctime, &mut self.prev_time[0]){
+                self.address_topic.insert(topic.to_string(), addr);
+            }
         }
         if let Some(address) = self.address_topic.get(topic){       
             let mut ok = true;
@@ -188,8 +192,7 @@ impl Client {
 }
 
 fn get_address_topic(topic: &str, db: &mut redis::Connect, force: bool, ctime: u64, prev_time: &mut u64)->Option<Vec<String>>{
-        
-    if force || (settings::IS_CHECK_NEW_ADDRESS_TOPIC_ENABLE && check_new_address_topic_by_time(ctime, prev_time)){
+    if force || check_new_address_topic_by_time(ctime, prev_time){
         match db.get_addresses_of_topic(true, topic){
             Ok(addresses)=>{
                 if !addresses.is_empty(){
