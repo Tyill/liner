@@ -7,7 +7,6 @@ use crate::settings;
 use crate::common;
 use nohash_hasher::BuildNoHashHasher;
 
-use std::net::TcpStream;
 use std::os::raw::c_void;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -18,6 +17,8 @@ use std::thread;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::io::{self, BufWriter, Write};
 
+use mio::net::{TcpListener, TcpStream};
+use mio::{Events, Interest, Poll, Token};
 
 #[allow(unused_macros)]
 macro_rules! syscall {
@@ -98,7 +99,13 @@ impl Sender {
         db.lock().unwrap().set_source_topic(source_topic);
         let db_ = db.clone();
         let stream_thread = thread::spawn(move|| {
-            let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
+            
+            let mut poll = Poll::new().unwrap();
+            let mut events = Events::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
+
+            
+            poll.registry()
+                .register(&mut server, SERVER, Interest::READABLE)?;
             loop{ // stream cycle
                 if !wait(epoll_fd, &mut events){
                     break;
@@ -446,6 +453,8 @@ fn append_streams(epoll_fd: RawFd,
         }
         match TcpStream::connect(&addr.address){
             Ok(stream)=>{
+                poll.registry().register(&mut client, CLIENT, Interest::WRITABLE)?;
+
                 stream.set_nonblocking(true).expect("couldn't stream set_nonblocking");
                 
                 let mempool = mempools.lock().unwrap()[addr.address_ix].clone();

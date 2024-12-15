@@ -55,6 +55,7 @@ rayon = "1.10"
 zstd = "0.13"
 libc = "0.2"
 nohash-hasher = "0.2.0"
+mio = { version = "1", features = ["os-poll", "net"] } 
 
 [features]
 liner_debug = []
