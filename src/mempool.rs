@@ -6,6 +6,7 @@ use std::collections::btree_map;
 pub struct Mempool{
     buff: Vec<u8>,
     free_mem: BTreeMap<usize, Vec<usize>>, // key: size, value: free pos
+    has_new_free_mem: bool,
 }
 
 impl Mempool{   
@@ -13,6 +14,7 @@ impl Mempool{
         Mempool{
             buff: Vec::new(),
             free_mem: BTreeMap::new(),
+            has_new_free_mem: false,
         }
     }
     pub fn _print_size(&self){
@@ -61,63 +63,10 @@ impl Mempool{
         }
     }
     fn new_mem(&mut self, req_size: usize)->(usize, usize){
-        let mut free_mem_pos: BTreeMap<usize, usize> = BTreeMap::new(); // pos, len
-        for m in &self.free_mem{
-            if !m.1.is_empty(){
-                for pos in m.1{
-                    free_mem_pos.insert(*pos, *m.0);
-                }
-            }
-        }
-        if !free_mem_pos.is_empty(){
-            let mut prev_free_len: usize = 0;
-            let mut start_free_pos: usize = 0;
-            let mut new_free_len: usize = 0;
-            let mut count = 0;
-            let len = free_mem_pos.len();
-            for m in &free_mem_pos{
-                let has_new_len = start_free_pos + new_free_len == *m.0 && new_free_len > 0;
-                if has_new_len{
-                    new_free_len += m.1;
-                    count += 1;
-                    if count < len{
-                        continue;
-                    }
-                }
-                if new_free_len > prev_free_len{
-                    for pm in &free_mem_pos{
-                        if *pm.0 == *m.0 && !has_new_len{
-                            break;
-                        }
-                        if *pm.0 >= start_free_pos{
-                            if let Some(index) = self.free_mem[&pm.1].iter().position(|v| *v == *pm.0) {
-                                self.free_mem.get_mut(&pm.1).unwrap().swap_remove(index);
-                            }
-                        }
-                    }
-                    if new_free_len >= req_size{
-                        if let btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {
-                            e.insert(Vec::new());
-                        }
-                        let endlen = new_free_len - req_size;
-                        if endlen > 0 {
-                            if let btree_map::Entry::Vacant(e) = self.free_mem.entry(endlen) {
-                                e.insert(Vec::new());
-                            }
-                            self.free_mem.get_mut(&endlen).unwrap().push(start_free_pos + req_size);
-                        }
-                        return (start_free_pos, req_size);
-                    }
-                    if let btree_map::Entry::Vacant(e) = self.free_mem.entry(new_free_len) {
-                        e.insert(Vec::new());
-                    }
-                    self.free_mem.get_mut(&new_free_len).unwrap().push(start_free_pos);
-                }
-                start_free_pos = *m.0;
-                prev_free_len = *m.1;
-                new_free_len = prev_free_len;
-                count += 1;
-            }
+        if self.has_new_free_mem{
+            if let Some(fm) = self.check_free_mem(req_size){
+                return fm;
+            } 
         }
         let csz = self.buff.len();
         self.buff.resize(csz + req_size, 0);
@@ -126,6 +75,90 @@ impl Mempool{
         }
         (csz, req_size)
     }
+    fn check_free_mem(&mut self, req_size: usize)->Option<(usize, usize)>{
+        let mut free_mem_pos: BTreeMap<usize, usize> = BTreeMap::new(); // pos, len
+        for m in &self.free_mem{
+            if !m.1.is_empty(){
+                for pos in m.1{
+                    free_mem_pos.insert(*pos, *m.0);
+                }
+            }
+        }
+        if free_mem_pos.is_empty(){
+            self.has_new_free_mem = false;
+            return None;
+        }
+        let mut max_free_len: usize = 0;
+        let mut free_mem: Vec<(usize, usize)> = Vec::new();
+        {
+            let mut prev_free_len: usize = 0;
+            let mut start_free_pos: usize = 0;
+            let mut new_free_len: usize = 0;
+            let mut count = 0;
+            let len = free_mem_pos.len();
+            for m in &free_mem_pos{
+                let (free_pos, free_len) = m;
+                let has_new_len = start_free_pos + new_free_len == *free_pos && new_free_len > 0;
+                if has_new_len{
+                    new_free_len += free_len;
+                    count += 1;
+                    if count < len{
+                        continue;
+                    }
+                }
+                if new_free_len > prev_free_len{
+                    if new_free_len > max_free_len{
+                        max_free_len = new_free_len;
+                    }
+                    free_mem.push((start_free_pos, new_free_len));
+                    for pm in &free_mem_pos{
+                        if *pm.0 == *free_pos && !has_new_len{
+                            break;
+                        }
+                        if *pm.0 >= start_free_pos{
+                            if let Some(index) = self.free_mem[&pm.1].iter().position(|v| *v == *pm.0) {
+                                self.free_mem.get_mut(&pm.1).unwrap().swap_remove(index);
+                            }
+                        }
+                    }                    
+                }
+                start_free_pos = *free_pos;
+                prev_free_len = *free_len;
+                new_free_len = prev_free_len;
+                count += 1;
+            }
+        }
+        let mut has_req_mem = false;
+        let mut req_pos: usize = 0;
+        for m in free_mem{
+            let (free_pos, free_len) = m;
+            if !has_req_mem && free_len == max_free_len && max_free_len >= req_size{
+                if let btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {
+                    e.insert(Vec::new());
+                }
+                let endlen = free_len - req_size;
+                if endlen > 0 {
+                    if let btree_map::Entry::Vacant(e) = self.free_mem.entry(endlen) {
+                        e.insert(Vec::new());
+                    }
+                    self.free_mem.get_mut(&endlen).unwrap().push(free_pos + req_size);
+                }
+                req_pos = free_pos;
+                has_req_mem = true;        
+            }else{
+                if let btree_map::Entry::Vacant(e) = self.free_mem.entry(free_len) {
+                    e.insert(Vec::new());
+                }
+                self.free_mem.get_mut(&free_len).unwrap().push(free_pos);
+            }                
+        }
+        self.has_new_free_mem = false;
+        if has_req_mem{    
+            Some((req_pos, req_size))
+        }else{
+            None
+        }     
+    }
     pub fn alloc_with_write(&mut self, value: &[u8])->(usize, usize){
         let (pos, sz) = self.alloc(value.len());
         self.write_data(pos, value);
@@ -133,6 +166,7 @@ impl Mempool{
     }
     pub fn free(&mut self, pos: usize, length: usize){
         self.free_mem.get_mut(&length).unwrap().push(pos);
+        self.has_new_free_mem = true;
     }    
     pub fn write_str(&mut self, mut pos: usize, value: &str){
         self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
