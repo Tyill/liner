@@ -96,10 +96,18 @@ impl Mempool{
             let mut new_free_len: usize = 0;
             let mut count = 0;
             let len = free_mem_pos.len();
-            for m in &free_mem_pos{
+            for m in free_mem_pos{
                 let (free_pos, free_len) = m;
-                let has_new_len = start_free_pos + new_free_len == *free_pos && new_free_len > 0;
+                let has_new_len = start_free_pos + new_free_len == free_pos && count > 0;
                 if has_new_len{
+                    if new_free_len == prev_free_len{
+                        if let Some(index) = self.free_mem[&prev_free_len].iter().position(|v| *v == start_free_pos) {
+                            self.free_mem.get_mut(&prev_free_len).unwrap().swap_remove(index);
+                        }
+                    }
+                    if let Some(index) = self.free_mem[&free_len].iter().position(|v| *v == free_pos) {
+                        self.free_mem.get_mut(&free_len).unwrap().swap_remove(index);
+                    }
                     new_free_len += free_len;
                     count += 1;
                     if count < len{
@@ -110,21 +118,11 @@ impl Mempool{
                     if new_free_len > max_free_len{
                         max_free_len = new_free_len;
                     }
-                    free_mem.push((start_free_pos, new_free_len));
-                    for pm in &free_mem_pos{
-                        if *pm.0 == *free_pos && !has_new_len{
-                            break;
-                        }
-                        if *pm.0 >= start_free_pos{
-                            if let Some(index) = self.free_mem[&pm.1].iter().position(|v| *v == *pm.0) {
-                                self.free_mem.get_mut(&pm.1).unwrap().swap_remove(index);
-                            }
-                        }
-                    }                    
+                    free_mem.push((start_free_pos, new_free_len));                                     
                 }
-                start_free_pos = *free_pos;
-                prev_free_len = *free_len;
-                new_free_len = prev_free_len;
+                start_free_pos = free_pos;
+                prev_free_len = free_len;
+                new_free_len = free_len;
                 count += 1;
             }
         }
