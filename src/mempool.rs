@@ -6,7 +6,7 @@ use std::collections::btree_map;
 pub struct Mempool{
     buff: Vec<u8>,
     free_mem: BTreeMap<usize, Vec<usize>>, // key: size, value: free pos
-    has_new_free_mem: bool,
+    new_free_mem: usize,
 }
 
 impl Mempool{   
@@ -14,7 +14,7 @@ impl Mempool{
         Mempool{
             buff: Vec::new(),
             free_mem: BTreeMap::new(),
-            has_new_free_mem: false,
+            new_free_mem: 0,
         }
     }
     pub fn _print_size(&self){
@@ -63,7 +63,7 @@ impl Mempool{
         }
     }
     fn new_mem(&mut self, req_size: usize)->(usize, usize){
-        if self.has_new_free_mem{
+        if self.new_free_mem >= req_size{
             if let Some(fm) = self.check_free_mem(req_size){
                 return fm;
             } 
@@ -85,7 +85,7 @@ impl Mempool{
             }
         }
         if free_mem_pos.is_empty(){
-            self.has_new_free_mem = false;
+            self.new_free_mem = 0;
             return None;
         }
         let mut max_free_len: usize = 0;
@@ -96,10 +96,18 @@ impl Mempool{
             let mut new_free_len: usize = 0;
             let mut count = 0;
             let len = free_mem_pos.len();
-            for m in &free_mem_pos{
+            for m in free_mem_pos{
                 let (free_pos, free_len) = m;
-                let has_new_len = start_free_pos + new_free_len == *free_pos && new_free_len > 0;
+                let has_new_len = start_free_pos + new_free_len == free_pos && count > 0;
                 if has_new_len{
+                    if new_free_len == prev_free_len{
+                        if let Some(index) = self.free_mem[&prev_free_len].iter().position(|v| *v == start_free_pos) {
+                            self.free_mem.get_mut(&prev_free_len).unwrap().swap_remove(index);
+                        }
+                    }
+                    if let Some(index) = self.free_mem[&free_len].iter().position(|v| *v == free_pos) {
+                        self.free_mem.get_mut(&free_len).unwrap().swap_remove(index);
+                    }
                     new_free_len += free_len;
                     count += 1;
                     if count < len{
@@ -110,21 +118,11 @@ impl Mempool{
                     if new_free_len > max_free_len{
                         max_free_len = new_free_len;
                     }
-                    free_mem.push((start_free_pos, new_free_len));
-                    for pm in &free_mem_pos{
-                        if *pm.0 == *free_pos && !has_new_len{
-                            break;
-                        }
-                        if *pm.0 >= start_free_pos{
-                            if let Some(index) = self.free_mem[&pm.1].iter().position(|v| *v == *pm.0) {
-                                self.free_mem.get_mut(&pm.1).unwrap().swap_remove(index);
-                            }
-                        }
-                    }                    
+                    free_mem.push((start_free_pos, new_free_len));                                     
                 }
-                start_free_pos = *free_pos;
-                prev_free_len = *free_len;
-                new_free_len = prev_free_len;
+                start_free_pos = free_pos;
+                prev_free_len = free_len;
+                new_free_len = free_len;
                 count += 1;
             }
         }
@@ -152,7 +150,7 @@ impl Mempool{
                 self.free_mem.get_mut(&free_len).unwrap().push(free_pos);
             }                
         }
-        self.has_new_free_mem = false;
+        self.new_free_mem = 0;
         if has_req_mem{    
             Some((req_pos, req_size))
         }else{
@@ -166,7 +164,7 @@ impl Mempool{
     }
     pub fn free(&mut self, pos: usize, length: usize){
         self.free_mem.get_mut(&length).unwrap().push(pos);
-        self.has_new_free_mem = true;
+        self.new_free_mem += length;
     }    
     pub fn write_str(&mut self, mut pos: usize, value: &str){
         self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
