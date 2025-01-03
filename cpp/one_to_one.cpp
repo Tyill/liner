@@ -33,14 +33,14 @@ int main(int argc, char* argv[])
     auto hclient1 = ln_new_client("client1", "topic_client1", "localhost:2255", "redis://localhost/");
     auto hclient2 = ln_new_client("client2", "topic_client2", "localhost:2256", "redis://localhost/");
  
-    ln_run(&hclient1, cb1, nullptr);
-    ln_run(&hclient2, cb2, nullptr);
+    ln_run(hclient1, cb1, nullptr);
+    ln_run(hclient2, cb2, nullptr);
  
     char data[MESS_SIZE];
     for (int i = 0; i < SEND_CYCLE_COUNT; ++i){
         send_begin = clock();
         for (int j = 0; j < MESS_SEND_COUNT; ++j){
-            ln_send_to(&hclient1, "topic_client2", data, sizeof(data), TRUE);
+            ln_send_to(hclient1, "topic_client2", data, sizeof(data), TRUE);
         }
         send_end = clock();
         std::cout << "send_to " << 1000.0 * (send_end - send_begin) / CLOCKS_PER_SEC << " ms" << std::endl;

@@ -58,7 +58,7 @@ extern "C" fn cb_(to: *const i8, from: *const i8,  data: *const u8, dsize: usize
 }
 
 pub struct Liner{
-    hclient: Box<Option<Client>>,
+    hclient: *mut Client,
     ucback: Option<UCback>,
 }
 
@@ -76,7 +76,7 @@ impl Liner {
                                                         topic_client.as_ptr(),
                                                         localhost.as_ptr(),
                                                         dbpath.as_ptr());
-        if ln_has_client(&hclient){
+        if hclient != std::ptr::null_mut(){
             Self{hclient, ucback: None}
         }else{
             panic!("error create client");
@@ -87,48 +87,48 @@ impl Liner {
         unsafe{
             self.ucback = Some(ucback);
             let ud = self as *const Self as *mut libc::c_void;
-            ln_run(&mut self.hclient, cb_, ud)
+            ln_run(self.hclient, cb_, ud)
         }
     }
     pub fn send_to(&mut self, topic: &str, data: &[u8])->bool{
         unsafe{
             let topic = CString::new(topic).unwrap();
-            ln_send_to(&mut self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
+            ln_send_to(self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
         }
     }
     pub fn send_all(&mut self, topic: &str, data: &[u8])->bool{
         unsafe{
             let topic = CString::new(topic).unwrap();
-            ln_send_all(&mut self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
+            ln_send_all(self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
         }
     }
     pub fn subscribe(&mut self, topic: &str)->bool{
         unsafe{
             let topic = CString::new(topic).unwrap();
-            ln_subscribe(&mut self.hclient, topic.as_ptr())
+            ln_subscribe(self.hclient, topic.as_ptr())
         }
     }
     pub fn unsubscribe(&mut self, topic: &str)->bool{
         unsafe{
             let topic = CString::new(topic).unwrap();
-            ln_unsubscribe(&mut self.hclient, topic.as_ptr())
+            ln_unsubscribe(self.hclient, topic.as_ptr())
         }
     }
     pub fn clear_stored_messages(&mut self)->bool{
         unsafe{
-            ln_clear_stored_messages(&mut self.hclient)
+            ln_clear_stored_messages(self.hclient)
         }
     }
     pub fn clear_addresses_of_topic(&mut self)->bool{
         unsafe{
-            ln_clear_addresses_of_topic(&mut self.hclient)
+            ln_clear_addresses_of_topic(self.hclient)
         }
     }
 }
 
 impl Drop for Liner {
     fn drop(&mut self) {
-        ln_delete_client(Box::new(self.hclient.take()));
+        ln_delete_client(self.hclient);
     }
 }
 
@@ -140,7 +140,7 @@ pub unsafe extern "C" fn ln_new_client(unique_name: *const i8,
                        topic: *const i8,
                        localhost: *const i8,
                        redis_path: *const i8,
-                       )->Box<Option<Client>>{
+                       )->*mut Client{
     let unique_name = CStr::from_ptr(unique_name).to_str().unwrap();
     let topic = CStr::from_ptr(topic).to_str().unwrap();
     let localhost = CStr::from_ptr(localhost).to_str().unwrap();
@@ -148,33 +148,27 @@ pub unsafe extern "C" fn ln_new_client(unique_name: *const i8,
     
     if unique_name.is_empty(){
         print_error!("unique_name empty");
-        return Box::new(None);
+        return std::ptr::null_mut();
     }
     if topic.is_empty(){
         print_error!("topic empty");
-        return Box::new(None);
+        return std::ptr::null_mut();
     }
     if localhost.is_empty(){
         print_error!("localhost empty");
-        return Box::new(None);
+        return std::ptr::null_mut();
     }
     if redis_path.is_empty(){
         print_error!("redis_path empty");
-        return Box::new(None);
+        return std::ptr::null_mut();
     }
-    Box::new(Client::new(unique_name, topic, localhost, redis_path))
-}
-
-/// Сhecks that the client was created successfully. 
-/// 
-/// Possible errors when creating a client:
-/// - no connection to redis
-/// - the address for the client is busy
-/// 
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn ln_has_client(client: &Box<Option<Client>>)->bool{
-    has_client(client)
+    if let Some(c) = Client::new(unique_name, topic, localhost, redis_path){
+        let bx = Box::new(c);
+        Box::into_raw(bx)
+    }else{
+        std::ptr::null_mut()
+    }
+    
 }
 
 pub struct UData(*mut libc::c_void);
@@ -190,14 +184,12 @@ unsafe impl Send for UData {}
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>, receive_cb: UCbackIntern, udata: *mut libc::c_void)->bool{
+pub unsafe extern "C" fn ln_run(client: *mut Client, receive_cb: UCbackIntern, udata: *mut libc::c_void)->bool{
     if !has_client(client){
         return false;
-    }    
-    let c = client.as_mut();
-
+    }
     let udata: UData = UData(udata);
-    c.as_mut().unwrap().run(receive_cb, udata)
+    (*client).run(receive_cb, udata)
 }
 
 /// Send message to other client.
@@ -209,7 +201,7 @@ pub unsafe extern "C" fn ln_run(client: &mut Box<Option<Client>>, receive_cb: UC
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_send_to(client: &mut Box<Option<Client>>,
+pub unsafe extern "C" fn ln_send_to(client: *mut Client,
                           topic: *const i8,
                           data: *const u8, data_size: usize,
                           at_least_once_delivery: bool)->bool{
@@ -227,8 +219,7 @@ pub unsafe extern "C" fn ln_send_to(client: &mut Box<Option<Client>>,
         print_error!("data_size empty");
         return false;
     }
-    let c = client.as_mut();
-    c.as_mut().unwrap().send_to(topic, data, at_least_once_delivery)
+    (*client).send_to(topic, data, at_least_once_delivery)
 }
 
 /// Send message to other clients. 
@@ -240,7 +231,7 @@ pub unsafe extern "C" fn ln_send_to(client: &mut Box<Option<Client>>,
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_send_all(client: &mut Box<Option<Client>>,
+pub unsafe extern "C" fn ln_send_all(client: *mut Client,
                           topic: *const i8,
                           data: *const u8, data_size: usize,
                           at_least_once_delivery: bool)->bool{
@@ -258,8 +249,7 @@ pub unsafe extern "C" fn ln_send_all(client: &mut Box<Option<Client>>,
         print_error!("data_size == 0");
         return false;
     }
-    let c = client.as_mut();
-    c.as_mut().unwrap().send_all(topic, data, at_least_once_delivery)
+    (*client).send_all(topic, data, at_least_once_delivery)
 }
 
 /// Subscribe to the topic and receive messages from other clients.
@@ -271,7 +261,7 @@ pub unsafe extern "C" fn ln_send_all(client: &mut Box<Option<Client>>,
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_subscribe(client: &mut Box<Option<Client>>,
+pub unsafe extern "C" fn ln_subscribe(client: *mut Client,
                           topic: *const i8)->bool{
     let topic = CStr::from_ptr(topic).to_str().unwrap();
     
@@ -282,8 +272,7 @@ pub unsafe extern "C" fn ln_subscribe(client: &mut Box<Option<Client>>,
         print_error!("topic.is_empty()");
         return false;
     }
-    let c = client.as_mut();
-    c.as_mut().unwrap().subscribe(topic)
+    (*client).subscribe(topic)
 }
 
 /// Unsubscribe from the topic and do not receive messages from other clients.
@@ -295,7 +284,7 @@ pub unsafe extern "C" fn ln_subscribe(client: &mut Box<Option<Client>>,
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_unsubscribe(client: &mut Box<Option<Client>>,
+pub unsafe extern "C" fn ln_unsubscribe(client: *mut Client,
                           topic: *const i8)->bool{
     let topic = CStr::from_ptr(topic).to_str().unwrap();
     
@@ -306,8 +295,7 @@ pub unsafe extern "C" fn ln_unsubscribe(client: &mut Box<Option<Client>>,
         print_error!("topic.is_empty()");
         return false;
     }
-    let c = client.as_mut();
-    c.as_mut().unwrap().unsubscribe(topic)
+    (*client).unsubscribe(topic)
 }
 
 /// Clearing messages that were not previously sent for some reason.
@@ -318,12 +306,11 @@ pub unsafe extern "C" fn ln_unsubscribe(client: &mut Box<Option<Client>>,
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_clear_stored_messages(client: &mut Box<Option<Client>>)->bool{
+pub unsafe extern "C" fn ln_clear_stored_messages(client: *mut Client)->bool{
     if !has_client(client){
         return false;
     }
-    let c = client.as_mut();
-    c.as_mut().unwrap().clear_stored_messages()
+    (*client).clear_stored_messages()
 }
 
 /// Cleaning client addresses.
@@ -334,26 +321,27 @@ pub unsafe extern "C" fn ln_clear_stored_messages(client: &mut Box<Option<Client
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_clear_addresses_of_topic(client: &mut Box<Option<Client>>)->bool{
+pub unsafe extern "C" fn ln_clear_addresses_of_topic(client: *mut Client)->bool{
     if !has_client(client){
         return false;
     }
-    let c = client.as_mut();
-    c.as_mut().unwrap().clear_addresses_of_topic()
+    (*client).clear_addresses_of_topic()
 }
 
 /// Deleting a client.
 #[no_mangle]
-pub extern "C" fn ln_delete_client(client: Box<Option<Client>>)->bool{
-    if !has_client(&client){
+pub extern "C" fn ln_delete_client(client: *mut Client)->bool{
+    if !has_client(client){
         return false;
     }
-    drop(client.unwrap());
+    unsafe{
+        drop(Box::from_raw(client));
+    }
     true
 }
 
-fn has_client(client: &Option<Client>)->bool{
-    if client.is_some(){
+fn has_client(client: *mut Client)->bool{
+    if client != std::ptr::null_mut(){
         true
     }else{
         print_error!("client was not created");
