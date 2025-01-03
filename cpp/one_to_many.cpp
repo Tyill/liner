@@ -44,11 +44,11 @@ int main(int argc, char* argv[])
     auto hclient3 = ln_new_client("client3", "topic_client", "localhost:2257", "redis://localhost/");
     auto hserver1 = ln_new_client("server1", "topic_server", "localhost:2258", "redis://localhost/");
  
-    ln_run(&hclient1, cb_client1, nullptr);
-    ln_run(&hclient2, cb_client2, nullptr);
-    ln_run(&hclient3, cb_client3, nullptr);
+    ln_run(hclient1, cb_client1, nullptr);
+    ln_run(hclient2, cb_client2, nullptr);
+    ln_run(hclient3, cb_client3, nullptr);
 
-    ln_run(&hserver1, cb_server, nullptr);
+    ln_run(hserver1, cb_server, nullptr);
  
     char data[MESS_SIZE];
     for (int i = 0; i < SEND_CYCLE_COUNT; ++i){

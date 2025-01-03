@@ -46,25 +46,25 @@ int main(int argc, char* argv[])
     auto hserver2 = ln_new_client("server2", "topic_server2", "localhost:2259", "redis://localhost/");
     auto hserver3 = ln_new_client("server3", "topic_server3", "localhost:2260", "redis://localhost/");
  
-    ln_run(&hclient1, cb_client1, nullptr);
-    ln_run(&hclient2, cb_client2, nullptr);
-    ln_run(&hclient3, cb_client3, nullptr);
+    ln_run(hclient1, cb_client1, nullptr);
+    ln_run(hclient2, cb_client2, nullptr);
+    ln_run(hclient3, cb_client3, nullptr);
 
-    ln_run(&hserver1, cb_server, nullptr);
-    ln_run(&hserver2, cb_server, nullptr);
-    ln_run(&hserver3, cb_server, nullptr);
+    ln_run(hserver1, cb_server, nullptr);
+    ln_run(hserver2, cb_server, nullptr);
+    ln_run(hserver3, cb_server, nullptr);
  
     char data[MESS_SIZE];
     for (int i = 0; i < SEND_CYCLE_COUNT; ++i){
         send_begin = clock();
         for (int j = 0; j < MESS_SEND_COUNT; ++j){
-            ln_send_all(&hserver1, "topic_client", data, sizeof(data), TRUE);
+            ln_send_all(hserver1, "topic_client", data, sizeof(data), TRUE);
         }
         for (int j = 0; j < MESS_SEND_COUNT; ++j){
-            ln_send_all(&hserver2, "topic_client", data, sizeof(data), TRUE);
+            ln_send_all(hserver2, "topic_client", data, sizeof(data), TRUE);
         }
         for (int j = 0; j < MESS_SEND_COUNT; ++j){
-            ln_send_all(&hserver3, "topic_client", data, sizeof(data), TRUE);
+            ln_send_all(hserver3, "topic_client", data, sizeof(data), TRUE);
         }
         send_end = clock();
         std::cout << "send_to " << 1000.0 * (send_end - send_begin) / CLOCKS_PER_SEC << " ms" << std::endl;

@@ -28,9 +28,7 @@ class Client:
         pfun.restype = ctypes.c_void_p
         self.hClient_ = ctypes.c_void_p(pfun(c_uniqName, c_topic, c_localhost, c_redisPath))
     
-        pfun = lib_.ln_has_client
-        pfun.argtypes = (ctypes.c_void_p,)
-        if not pfun(ctypes.byref(self.hClient_)):
+        if not self.hClient_:
             raise Exception('error init client, check redisPath') 
                  
     def __enter__(self):
@@ -57,7 +55,7 @@ class Client:
         pfun = lib_.ln_run
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p, recvCBackType, ctypes.c_void_p)
-        return pfun(ctypes.byref(self.hClient_), self.recvCBack_, ctypes.c_void_p())
+        return pfun(self.hClient_, self.recvCBack_, ctypes.c_void_p())
     
     def send_to(self, to_topic: str, data: bytearray, at_least_once_delivery: bool = True)->bool:
         c_to_topic = to_topic.encode("utf-8")
@@ -68,7 +66,7 @@ class Client:
         pfun = lib_.ln_send_to
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_bool)
-        return pfun(ctypes.byref(self.hClient_), c_to_topic, c_data.from_buffer_copy(data), c_dlen, c_at_least_once_delivery)
+        return pfun(self.hClient_, c_to_topic, c_data.from_buffer_copy(data), c_dlen, c_at_least_once_delivery)
     
     def send_all(self, to_topic: str, data: bytearray, at_least_once_delivery: bool = True)->bool:
         c_to_topic = to_topic.encode("utf-8")
@@ -79,7 +77,7 @@ class Client:
         pfun = lib_.ln_send_all
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_bool)
-        return pfun(ctypes.byref(self.hClient_), c_to_topic, c_data.from_buffer_copy(data), c_dlen, c_at_least_once_delivery)
+        return pfun(self.hClient_, c_to_topic, c_data.from_buffer_copy(data), c_dlen, c_at_least_once_delivery)
     
     def subscribe(self, to_topic: str)->bool:
         c_to_topic = to_topic.encode("utf-8")
@@ -87,7 +85,7 @@ class Client:
         pfun = lib_.ln_subscribe
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p)
-        return pfun(ctypes.byref(self.hClient_), c_to_topic)
+        return pfun(self.hClient_, c_to_topic)
     
     def unsubscribe(self, to_topic: str)->bool:
         c_to_topic = to_topic.encode("utf-8")
@@ -95,16 +93,16 @@ class Client:
         pfun = lib_.ln_unsubscribe
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p)
-        return pfun(ctypes.byref(self.hClient_), c_to_topic)
+        return pfun(self.hClient_, c_to_topic)
     
     def clear_stored_messages(self)->bool:
         pfun = lib_.ln_clear_stored_messages
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p,)
-        return pfun(ctypes.byref(self.hClient_))
+        return pfun(self.hClient_)
     
     def clear_addresses_of_topic(self)->bool:
         pfun = lib_.ln_clear_addresses_of_topic
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p,)
-        return pfun(ctypes.byref(self.hClient_))
+        return pfun(self.hClient_)

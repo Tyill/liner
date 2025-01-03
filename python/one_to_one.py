@@ -4,7 +4,7 @@ import time
 import liner 
 
 module_path = os.path.dirname(os.path.abspath(__file__))
-liner.loadLib(module_path + "/../target/release/libliner.so")
+liner.loadLib(module_path + "/../target/release/libliner_broker.so")
 
 MESS_SEND_COUNT = 1000
 MESS_SIZE = 100
