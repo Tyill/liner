@@ -72,7 +72,7 @@ impl Liner {
         let dbpath = CString::new(redis_path).unwrap();
         let localhost = CString::new(localhost).unwrap();
         let topic_client = CString::new(topic).unwrap();
-        let hclient = ln_new_client(unique.as_ptr(),
+        let hclient = lnr_new_client(unique.as_ptr(),
                                                         topic_client.as_ptr(),
                                                         localhost.as_ptr(),
                                                         dbpath.as_ptr());
@@ -87,48 +87,48 @@ impl Liner {
         unsafe{
             self.ucback = Some(ucback);
             let ud = self as *const Self as *mut libc::c_void;
-            ln_run(self.hclient, cb_, ud)
+            lnr_run(self.hclient, cb_, ud)
         }
     }
     pub fn send_to(&mut self, topic: &str, data: &[u8])->bool{
         unsafe{
             let topic = CString::new(topic).unwrap();
-            ln_send_to(self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
+            lnr_send_to(self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
         }
     }
     pub fn send_all(&mut self, topic: &str, data: &[u8])->bool{
         unsafe{
             let topic = CString::new(topic).unwrap();
-            ln_send_all(self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
+            lnr_send_all(self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
         }
     }
     pub fn subscribe(&mut self, topic: &str)->bool{
         unsafe{
             let topic = CString::new(topic).unwrap();
-            ln_subscribe(self.hclient, topic.as_ptr())
+            lnr_subscribe(self.hclient, topic.as_ptr())
         }
     }
     pub fn unsubscribe(&mut self, topic: &str)->bool{
         unsafe{
             let topic = CString::new(topic).unwrap();
-            ln_unsubscribe(self.hclient, topic.as_ptr())
+            lnr_unsubscribe(self.hclient, topic.as_ptr())
         }
     }
     pub fn clear_stored_messages(&mut self)->bool{
         unsafe{
-            ln_clear_stored_messages(self.hclient)
+            lnr_clear_stored_messages(self.hclient)
         }
     }
     pub fn clear_addresses_of_topic(&mut self)->bool{
         unsafe{
-            ln_clear_addresses_of_topic(self.hclient)
+            lnr_clear_addresses_of_topic(self.hclient)
         }
     }
 }
 
 impl Drop for Liner {
     fn drop(&mut self) {
-        ln_delete_client(self.hclient);
+        lnr_delete_client(self.hclient);
     }
 }
 
@@ -136,7 +136,7 @@ impl Drop for Liner {
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_new_client(unique_name: *const i8,
+pub unsafe extern "C" fn lnr_new_client(unique_name: *const i8,
                        topic: *const i8,
                        localhost: *const i8,
                        redis_path: *const i8,
@@ -184,7 +184,7 @@ unsafe impl Send for UData {}
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_run(client: *mut Client, receive_cb: UCbackIntern, udata: *mut libc::c_void)->bool{
+pub unsafe extern "C" fn lnr_run(client: *mut Client, receive_cb: UCbackIntern, udata: *mut libc::c_void)->bool{
     if !has_client(client){
         return false;
     }
@@ -201,7 +201,7 @@ pub unsafe extern "C" fn ln_run(client: *mut Client, receive_cb: UCbackIntern, u
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_send_to(client: *mut Client,
+pub unsafe extern "C" fn lnr_send_to(client: *mut Client,
                           topic: *const i8,
                           data: *const u8, data_size: usize,
                           at_least_once_delivery: bool)->bool{
@@ -231,7 +231,7 @@ pub unsafe extern "C" fn ln_send_to(client: *mut Client,
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_send_all(client: *mut Client,
+pub unsafe extern "C" fn lnr_send_all(client: *mut Client,
                           topic: *const i8,
                           data: *const u8, data_size: usize,
                           at_least_once_delivery: bool)->bool{
@@ -261,7 +261,7 @@ pub unsafe extern "C" fn ln_send_all(client: *mut Client,
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_subscribe(client: *mut Client,
+pub unsafe extern "C" fn lnr_subscribe(client: *mut Client,
                           topic: *const i8)->bool{
     let topic = CStr::from_ptr(topic).to_str().unwrap();
     
@@ -284,7 +284,7 @@ pub unsafe extern "C" fn ln_subscribe(client: *mut Client,
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_unsubscribe(client: *mut Client,
+pub unsafe extern "C" fn lnr_unsubscribe(client: *mut Client,
                           topic: *const i8)->bool{
     let topic = CStr::from_ptr(topic).to_str().unwrap();
     
@@ -306,7 +306,7 @@ pub unsafe extern "C" fn ln_unsubscribe(client: *mut Client,
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_clear_stored_messages(client: *mut Client)->bool{
+pub unsafe extern "C" fn lnr_clear_stored_messages(client: *mut Client)->bool{
     if !has_client(client){
         return false;
     }
@@ -321,7 +321,7 @@ pub unsafe extern "C" fn ln_clear_stored_messages(client: *mut Client)->bool{
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn ln_clear_addresses_of_topic(client: *mut Client)->bool{
+pub unsafe extern "C" fn lnr_clear_addresses_of_topic(client: *mut Client)->bool{
     if !has_client(client){
         return false;
     }
@@ -330,7 +330,7 @@ pub unsafe extern "C" fn ln_clear_addresses_of_topic(client: *mut Client)->bool{
 
 /// Deleting a client.
 #[no_mangle]
-pub extern "C" fn ln_delete_client(client: *mut Client)->bool{
+pub extern "C" fn lnr_delete_client(client: *mut Client)->bool{
     if !has_client(client){
         return false;
     }

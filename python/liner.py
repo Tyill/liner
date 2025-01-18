@@ -23,7 +23,7 @@ class Client:
         c_topic = topic.encode("utf-8")
         c_localhost = localhost.encode("utf-8")
         
-        pfun = lib_.ln_new_client
+        pfun = lib_.lnr_new_client
         pfun.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p)
         pfun.restype = ctypes.c_void_p
         self.hClient_ = ctypes.c_void_p(pfun(c_uniqName, c_topic, c_localhost, c_redisPath))
@@ -36,7 +36,7 @@ class Client:
     
     def __exit__(self, exc_type, exc_value, traceback):
         if (self.hClient_):
-            pfun = lib_.ln_delete_client
+            pfun = lib_.lnr_delete_client
             pfun.argtypes = (ctypes.c_void_p,)
             pfun(self.hClient_)
   
@@ -52,7 +52,7 @@ class Client:
         recvCBackType = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p)    
         self.recvCBack_ = recvCBackType(c_rcb)
 
-        pfun = lib_.ln_run
+        pfun = lib_.lnr_run
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p, recvCBackType, ctypes.c_void_p)
         return pfun(self.hClient_, self.recvCBack_, ctypes.c_void_p())
@@ -63,7 +63,7 @@ class Client:
         c_dlen = ctypes.c_size_t(len(data))
         c_data = ctypes.c_char * len(data)
    
-        pfun = lib_.ln_send_to
+        pfun = lib_.lnr_send_to
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_bool)
         return pfun(self.hClient_, c_to_topic, c_data.from_buffer_copy(data), c_dlen, c_at_least_once_delivery)
@@ -74,7 +74,7 @@ class Client:
         c_dlen = ctypes.c_size_t(len(data))
         c_data = ctypes.c_char * len(data)
    
-        pfun = lib_.ln_send_all
+        pfun = lib_.lnr_send_all
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_bool)
         return pfun(self.hClient_, c_to_topic, c_data.from_buffer_copy(data), c_dlen, c_at_least_once_delivery)
@@ -82,7 +82,7 @@ class Client:
     def subscribe(self, to_topic: str)->bool:
         c_to_topic = to_topic.encode("utf-8")
         
-        pfun = lib_.ln_subscribe
+        pfun = lib_.lnr_subscribe
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p)
         return pfun(self.hClient_, c_to_topic)
@@ -90,19 +90,19 @@ class Client:
     def unsubscribe(self, to_topic: str)->bool:
         c_to_topic = to_topic.encode("utf-8")
         
-        pfun = lib_.ln_unsubscribe
+        pfun = lib_.lnr_unsubscribe
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p)
         return pfun(self.hClient_, c_to_topic)
     
     def clear_stored_messages(self)->bool:
-        pfun = lib_.ln_clear_stored_messages
+        pfun = lib_.lnr_clear_stored_messages
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p,)
         return pfun(self.hClient_)
     
     def clear_addresses_of_topic(self)->bool:
-        pfun = lib_.ln_clear_addresses_of_topic
+        pfun = lib_.lnr_clear_addresses_of_topic
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p,)
         return pfun(self.hClient_)
