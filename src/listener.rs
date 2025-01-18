@@ -5,33 +5,22 @@ use crate::redis;
 use crate::settings;
 use crate::common;
 use crate::{UCbackIntern, UData};
-use nohash_hasher::BuildNoHashHasher;
 use crate::print_error;
 
-use std::collections::{HashMap, BTreeMap};
+use std::collections::{BTreeMap};
 use std::io::Read;
 use std::os::raw::c_void;
 use std::thread::JoinHandle;
 use std::thread;
 use std::time::Duration;
-use std::net::{TcpStream, TcpListener};
-use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{ Arc, Mutex, Condvar};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::io::{self,BufReader};
 
+use std::net::SocketAddr;
+use mio::net::{TcpListener, TcpStream};
+use mio::{Events, Interest, Poll, Token};
 
-#[allow(unused_macros)]
-macro_rules! syscall {
-    ($fn: ident ( $($arg: expr),* $(,)* ) ) => {{
-        let res = unsafe { libc::$fn($($arg, )*) };
-        if res == -1 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(res)
-        }
-    }};
-}
 
 struct ReadStream{
     stream: TcpStream,
@@ -48,14 +37,12 @@ struct Sender{
     is_deleted: bool,
 }
 
-type MessMap = HashMap<RawFd, Option<Vec<Message>>, BuildNoHashHasher<RawFd>>; 
-type MempoolMap = HashMap<RawFd, Arc<Mutex<Mempool>>, BuildNoHashHasher<RawFd>>; 
-type SenderMap = HashMap<RawFd, Sender, BuildNoHashHasher<RawFd>>;
-type ReadStreamMap = HashMap<RawFd, Arc<Mutex<ReadStream>>, BuildNoHashHasher<RawFd>>; 
+type MessList = Vec<Option<Vec<Message>>>; 
+type MempoolList = Vec<Arc<Mutex<Mempool>>>; 
+type SenderList = Vec<Sender>;
+type ReadStreamList = Vec<Arc<Mutex<ReadStream>>>; 
 
 pub struct Listener{
-    epoll_fd: RawFd,
-    wakeup_fd: RawFd,
     stream_thread: Option<JoinHandle<()>>,
     receive_thread: Option<JoinHandle<()>>,
     receive_thread_cvar: Arc<(Mutex<bool>, Condvar)>,
@@ -65,13 +52,13 @@ pub struct Listener{
 impl Listener {
     pub fn new(listener: TcpListener,
                unique_name: &str, redis_path: &str, source_topic: &str, receive_cb: UCbackIntern, udata: UData)->Listener{
-        let epoll_fd = syscall!(epoll_create1(libc::EPOLL_CLOEXEC)).expect("couldn't create epoll queue");
-        let wakeup_fd = wakeupfd_create(epoll_fd);
-        let mut messages: Arc<Mutex<MessMap>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
+        let poll = Poll::new().expect("couldn't create poll queue");
+        //let wakeup_fd = wakeupfd_create(epoll_fd);
+        let mut messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let messages_ = messages.clone();
-        let mut mempools: Arc<Mutex<MempoolMap>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
+        let mut mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(Vec::new()));
         let mempools_= mempools.clone();
-        let mut senders: Arc<Mutex<SenderMap>> = Arc::new(Mutex::new(HashMap::with_hasher(BuildNoHashHasher::default())));
+        let mut senders: Arc<Mutex<SenderList>> = Arc::new(Mutex::new(Vec::new()));
         let senders_ = senders.clone();
         let db_conn = redis::Connect::new(unique_name, redis_path).expect("couldn't redis::Connect");
         let db = Arc::new(Mutex::new(db_conn));
@@ -80,37 +67,38 @@ impl Listener {
         let receive_thread_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
         let receive_thread_cvar_ = receive_thread_cvar.clone();
         
-        let stream_thread = thread::spawn(move|| {
-            listener.set_nonblocking(true).expect("couldn't listener set_nonblocking");
-            let listener_fd = listener.as_raw_fd();
-            regist_event(epoll_fd, listener_fd, libc::EPOLL_CTL_ADD).expect("couldn't event regist");
+        const SERVER: Token = Token(0);
+        poll.registry().register(&mut listener, SERVER, Interest::READABLE);
 
-            let mut streams: ReadStreamMap = HashMap::with_hasher(BuildNoHashHasher::default());
-            let mut events: Vec<libc::epoll_event> = Vec::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
-            loop{    
-                if !wait(epoll_fd, &mut events){
+        let stream_thread = thread::spawn(move|| {
+            let mut streams: ReadStreamList = Vec::new();
+            let mut events = Events::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
+            loop{ 
+                if let Err(_) = poll.poll(&mut events, None){
                     break;
                 }
                 for ev in &events {
-                    let stream_fd = ev.u64 as RawFd;
-                    if stream_fd == listener_fd{
-                        listener_accept(epoll_fd, &mut streams, &mut senders, &listener, 
-                                        &mut mempools, &mut messages);
-                    }else if ev.events as i32 & libc::EPOLLIN > 0{
-                        if stream_fd == wakeup_fd{
-                            wakeupfd_reset(wakeup_fd);
-                        }else if let Some(stream) = streams.get(&stream_fd){
-                            if !stream.lock().unwrap().is_close{
-                                read_stream(epoll_fd, stream_fd, stream, &senders,
-                                            db.clone(), &mempools, &messages, &receive_thread_cvar_);
-                            }else{
-                                remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders);
+                    match ev.token() {                    
+                        SERVER => {
+                            listener_accept(&poll, &mut streams, &mut senders, &listener, 
+                                &mut mempools, &mut messages);
+                        }
+                        CLIENT_IX =>{
+                            // if stream_fd == wakeup_fd{
+                            //     wakeupfd_reset(wakeup_fd);
+                            // }else 
+                            if let Some(stream) = streams.get(CLIENT_IX.0){
+                                if !stream.lock().unwrap().is_close{
+                                    read_stream(&poll, stream_fd, stream, &senders,
+                                                db.clone(), &mempools, &messages, &receive_thread_cvar_);
+                                }else{
+                                    remove_stream(&poll, stream_fd, &mut streams, &mut senders);
+                                }
                             }
                         }
-                    }else if ev.events as i32 & (libc::EPOLLHUP | libc::EPOLLERR) > 0{
-                        remove_stream(epoll_fd, stream_fd, &mut streams, &mut senders);
-                    }else{
-                        print_error!(format!("unknown event {}", stream_fd));
+                        _ => {
+                            print_error!(format!("unknown event {}", stream_fd));
+                        }
                     }
                 }
             }
@@ -128,7 +116,7 @@ impl Listener {
                 if !once_again{
                     let (lock, cvar) = &*receive_thread_cvar_;
                     if let Ok(mut _started) = lock.lock(){                    
-                        if !messages_.lock().unwrap().iter().any(|m: (&i32, &Option<Vec<Message>>)| m.1.is_some()){
+                        if !messages_.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some()){
                             *_started = false;
                             _started = cvar.wait(_started).unwrap();
                         }
@@ -139,8 +127,17 @@ impl Listener {
                 if settings::READ_MESS_DELAY_MS > 0{
                     std::thread::sleep(Duration::from_millis(settings::READ_MESS_DELAY_MS));
                 }    
-                let mess_buff = mess_for_receive(&messages_);
-                if !mess_buff.is_empty(){
+                let mut mess_buff: Vec<Option<Vec<Message>>> = Vec::new();
+                let has_mess;
+                for mess in messages.lock().unwrap().iter_mut(){
+                    if let Some(m) = mess.take(){
+                        mess_buff.push(Some(m));
+                        has_mess = true;
+                    }else{
+                        mess_buff.push(None);
+                    }
+                }
+                if has_mess{
                     do_receive_cb(mess_buff, &mut temp_buff, &mempools_, &senders_, receive_cb, &udata); 
                     once_again = true;
                 } 
@@ -151,9 +148,7 @@ impl Listener {
                 }
             }
         });  
-        Self{
-            epoll_fd,
-            wakeup_fd,
+        Self{            
             stream_thread: Some(stream_thread),
             receive_thread: Some(receive_thread),
             receive_thread_cvar,
@@ -162,43 +157,37 @@ impl Listener {
     }
 }
 
-fn do_receive_cb(mess_buff: BTreeMap<RawFd, Vec<Message>>,
+fn do_receive_cb(mess_buff: Vec<Option<Vec<Message>>>,
                  temp_buff: &mut Mempool,
-                 mempools: &Arc<Mutex<MempoolMap>>,
-                 senders: &Arc<Mutex<SenderMap>>,
+                 mempools: &Arc<Mutex<MempoolList>>,
+                 senders: &Arc<Mutex<SenderList>>,
                  receive_cb: UCbackIntern,
                  udata: &UData){
 
-    let mut mess_for_receive: BTreeMap<RawFd, Vec<Message>> = BTreeMap::new();
+    let mut ix: usize = 0;
     for mess in mess_buff{
-        let fd = mess.0;
-        let mut mess_buff: Vec<Message> = Vec::with_capacity(mess.1.len());
-        let mempool_lock = mempools.lock().unwrap()[&fd].clone();
-        let mut mempool = mempool_lock.lock().unwrap();
-        for mut m in mess.1{
-            m.change_mempool(&mut mempool, temp_buff);
-            mess_buff.push(m);
-        }
-        mess_for_receive.insert(fd, mess_buff);
-    }
-    for mess in mess_for_receive{
-        let fd = mess.0;
-        let mut last_mess_num = 0;
-        for m in mess.1{
-            let m = MessageForReceiver::new(&m, temp_buff);
-            receive_cb(m.topic_to, 
-                m.topic_from, 
-                m.data, m.data_len, 
-                udata.0);
-            m.free(temp_buff);
-            if m.number_mess > last_mess_num{
-                last_mess_num = m.number_mess;
+        if let Some(mess) = mess{
+            let mempool_lock = mempools.lock().unwrap()[ix].clone();
+            let mut mempool = mempool_lock.lock().unwrap();
+            let mut last_mess_num = 0;
+            for mut m in mess{
+                m.change_mempool(&mut mempool, temp_buff);
+                let m = MessageForReceiver::new(&m, temp_buff);
+                receive_cb(m.topic_to, 
+                    m.topic_from, 
+                    m.data, m.data_len, 
+                    udata.0);
+                m.free(temp_buff);
+                if m.number_mess > last_mess_num{
+                    last_mess_num = m.number_mess;
+                }
+            }
+            let mut senders = senders.lock().unwrap();
+            if senders[ix].last_mess_num < last_mess_num{
+                senders.get_mut(ix).unwrap().last_mess_num = last_mess_num;
             }
         }
-        let mut senders = senders.lock().unwrap();
-        if senders[&fd].last_mess_num < last_mess_num{
-            senders.get_mut(&fd).unwrap().last_mess_num = last_mess_num;
-        }
+        ix += 1;
     }
 }
 
@@ -208,45 +197,27 @@ fn receive_thread_notify(receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
     cvar.notify_one();
 }
 
-fn mess_for_receive(messages: &Arc<Mutex<MessMap>>)->BTreeMap<RawFd, Vec<Message>>{
-    let mut mess_buff: BTreeMap<RawFd, Vec<Message>> = BTreeMap::new();
-    for mess in messages.lock().unwrap().iter_mut(){
-        let fd = *mess.0;
-        if let Some(m) = mess.1.take(){
-            mess_buff.insert(fd, m);
-        }
-    }
-    mess_buff
-}
-
-fn wait(epoll_fd: RawFd, events: &mut Vec<libc::epoll_event>)->bool{
-    match syscall!(epoll_wait(
-        epoll_fd,
-        events.as_mut_ptr(),
-        settings::EPOLL_LISTEN_EVENTS_COUNT as i32,
-        -1,
-    )){
-        Ok(ready_count)=>{
-            unsafe { 
-                events.set_len(ready_count as usize)
-            };
-            true
-        },
-        Err(err)=>{
-            unsafe {
-                events.set_len(0); 
-            };            
-            err.kind() == std::io::ErrorKind::Interrupted 
-        }
-    }    
-}
-
-fn listener_accept(epoll_fd: RawFd, 
-                   streams: &mut ReadStreamMap,
-                   senders: &mut Arc<Mutex<SenderMap>>,
+fn listener_accept(poll: &Poll, 
+                   streams: &mut ReadStreamList,
+                   senders: &mut Arc<Mutex<SenderList>>,
                    listener: &TcpListener,
-                   mempools: &mut Arc<Mutex<MempoolMap>>,
-                   messages: &mut Arc<Mutex<MessMap>>){
+                   mempools: &mut Arc<Mutex<MempoolList>>,
+                   messages: &mut Arc<Mutex<MessList>>){
+
+    let token = Token(addr.address_ix);        
+    let address: SocketAddr;
+    if let Ok(addr) = addr.address.parse::<SocketAddr>(){
+        address = addr;
+    }else{
+        print_error!(format!("couldn't addr.address.parse {}", addr.address));
+        //continue;
+    }        
+    // match TcpStream::connect(address){
+    //     Ok(mut stream)=>{
+    //         if let Err(err) = poll.registry().register(&mut stream, token, Interest::WRITABLE){
+    //             print_error!(format!("couldn't poll.registry() stream, {}", err));
+    //     //        continue;
+    //         }            
     match listener.accept() {
         Ok((stream, _addr)) => {
             stream.set_nonblocking(true).expect("couldn't listener set_nonblocking");
@@ -263,13 +234,13 @@ fn listener_accept(epoll_fd: RawFd,
     };
 }
 
-fn read_stream(epoll_fd: RawFd,
-               stream_fd: RawFd,
+fn read_stream(poll: &Poll,
+               stream_token: Token,
                stream: &Arc<Mutex<ReadStream>>,
-               senders: &Arc<Mutex<SenderMap>>,
+               senders: &Arc<Mutex<SenderList>>,
                db: Arc<Mutex<redis::Connect>>,
-               mempools: &Arc<Mutex<MempoolMap>>,
-               messages: &Arc<Mutex<MessMap>>,
+               mempools: &Arc<Mutex<MempoolList>>,
+               messages: &Arc<Mutex<MessList>>,
                receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
     if let Ok(mut stream) = stream.try_lock(){
         if !stream.is_active && !stream.is_close{
@@ -278,7 +249,7 @@ fn read_stream(epoll_fd: RawFd,
             return;
         }
     }else{
-        continue_read_stream(epoll_fd, stream_fd);
+        continue_read_stream(poll, stream_fd);
         return;
     }
     let stream = stream.clone();
@@ -339,7 +310,7 @@ fn read_stream(epoll_fd: RawFd,
             stream.is_close = true;
         }            
         stream.is_active = false;
-        continue_read_stream(epoll_fd, stream_fd);
+        continue_read_stream(poll, stream_fd);
     });
 }
 
@@ -353,7 +324,7 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
 }
 
 
-fn update_last_mess_number(senders: &Arc<Mutex<SenderMap>>,
+fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
                            db: &Arc<Mutex<redis::Connect>>){
     for sender in senders.lock().unwrap().iter(){
         let sender = sender.1;
@@ -369,18 +340,18 @@ fn set_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, send
     }
 }
 
-fn remove_stream(epoll_fd: i32, stream_fd: RawFd,
-                streams: &mut ReadStreamMap,
-                senders: &mut Arc<Mutex<SenderMap>>,){
-    remove_read_stream(epoll_fd, stream_fd);
+fn remove_stream(poll: &Poll, stream_fd: RawFd,
+                streams: &mut ReadStreamList,
+                senders: &mut Arc<Mutex<SenderList>>,){
+    remove_read_stream(poll, stream_fd);
     senders.lock().unwrap().get_mut(&stream_fd).unwrap().is_deleted = true;
     streams.remove(&stream_fd);
 }
 
 fn check_has_remove_senders(db: &Arc<Mutex<redis::Connect>>,
-                            senders: &Arc<Mutex<SenderMap>>,
-                            mempools: &Arc<Mutex<MempoolMap>>,
-                            messages: &Arc<Mutex<MessMap>>){
+                            senders: &Arc<Mutex<SenderList>>,
+                            mempools: &Arc<Mutex<MempoolList>>,
+                            messages: &Arc<Mutex<MessList>>){
     let mut rem_fds: Vec<RawFd> = Vec::new();
     for sender in senders.lock().unwrap().iter(){
         if sender.1.is_deleted{
@@ -409,50 +380,50 @@ fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, send
     }
 }
 
-fn add_read_stream(epoll_fd: i32, fd: RawFd){
-    if let Err(err) = regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD){
-        print_error!(format!("couldn't add_read_stream, {}", err));
-    }
+fn add_read_stream(poll: Poll, fd: RawFd){
+    // if let Err(err) = regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD){
+    //     print_error!(format!("couldn't add_read_stream, {}", err));
+    // }
 }    
-fn continue_read_stream(epoll_fd: i32, fd: RawFd){
-    if let Err(err) = regist_event(epoll_fd, fd, libc::EPOLL_CTL_MOD){
-        print_error!(format!("couldn't continue_read_stream, {}", err));
-    }
+fn continue_read_stream(poll: Poll, fd: RawFd){
+    // if let Err(err) = regist_event(epoll_fd, fd, libc::EPOLL_CTL_MOD){
+    //     print_error!(format!("couldn't continue_read_stream, {}", err));
+    // }
 }
-fn regist_event(epoll_fd: i32, fd: RawFd, ctl: i32)-> io::Result<i32> {
-    let mut event = libc::epoll_event {
-        events: (libc::EPOLLONESHOT | libc::EPOLLRDHUP | libc::EPOLLIN | libc::EPOLLET) as u32,
-        u64: fd as u64,
-    };
-    syscall!(epoll_ctl(epoll_fd, ctl, fd, &mut event))
+fn regist_event(poll: Poll, fd: RawFd, ctl: i32)-> io::Result<i32> {
+    // let mut event = libc::epoll_event {
+    //     events: (libc::EPOLLONESHOT | libc::EPOLLRDHUP | libc::EPOLLIN | libc::EPOLLET) as u32,
+    //     u64: fd as u64,
+    // };
+    // syscall!(epoll_ctl(epoll_fd, ctl, fd, &mut event))
 }
-fn remove_read_stream(epoll_fd: i32, fd: RawFd){
-    if let Err(err) = syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())){
-        print_error!(format!("couldn't remove_read_stream, {}", err));
-    }
+fn remove_read_stream(poll: Poll, fd: RawFd){
+    // if let Err(err) = syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())){
+    //     print_error!(format!("couldn't remove_read_stream, {}", err));
+    // }
 }
 
-fn wakeupfd_create(epoll_fd: RawFd)->RawFd{
-    let event_fd = syscall!(eventfd(0, 0)).expect("couldn't eventfd");
-    let mut event = libc::epoll_event {
-        events: (libc::EPOLLIN) as u32,
-        u64: event_fd as u64,
-    };
-    syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, event_fd, &mut event)).expect("couldn't eventfd_create");
-    event_fd
-}
-fn wakeupfd_notify(event_fd: RawFd){
-    let b: u64 = 1;
-    if let Err(err) = syscall!(write(event_fd, &b as *const u64 as *const c_void, std::mem::size_of::<u64>())){
-        print_error!(format!("couldn't wakeupfd_notify, {}", err));
-    }
-}
-fn wakeupfd_reset(event_fd: i32){
-    let b: u64 = 0;
-    if let Err(err) = syscall!(read(event_fd, &b as *const u64 as *mut c_void, std::mem::size_of::<u64>())){
-        print_error!(format!("couldn't wakeupfd_reset, {}", err));
-    }
-}
+// fn wakeupfd_create(epoll_fd: RawFd)->RawFd{
+//     let event_fd = syscall!(eventfd(0, 0)).expect("couldn't eventfd");
+//     let mut event = libc::epoll_event {
+//         events: (libc::EPOLLIN) as u32,
+//         u64: event_fd as u64,
+//     };
+//     syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, event_fd, &mut event)).expect("couldn't eventfd_create");
+//     event_fd
+// }
+// fn wakeupfd_notify(event_fd: RawFd){
+//     let b: u64 = 1;
+//     if let Err(err) = syscall!(write(event_fd, &b as *const u64 as *const c_void, std::mem::size_of::<u64>())){
+//         print_error!(format!("couldn't wakeupfd_notify, {}", err));
+//     }
+// }
+// fn wakeupfd_reset(event_fd: i32){
+//     let b: u64 = 0;
+//     if let Err(err) = syscall!(read(event_fd, &b as *const u64 as *mut c_void, std::mem::size_of::<u64>())){
+//         print_error!(format!("couldn't wakeupfd_reset, {}", err));
+//     }
+// }
 
 impl Drop for Listener {
     fn drop(&mut self) {        

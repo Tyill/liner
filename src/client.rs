@@ -54,13 +54,12 @@ impl Client {
             print_error!(&format!("{}", err));
             return false;
         }
-        let listener = TcpListener::bind(&self.localhost);
-        if let Err(err) = listener {
+        let tcpListener = TcpListener::bind(&self.localhost);
+        if let Err(err) = tcpListener {
             print_error!(&format!("{}", err));
             return false;        
         }
-        let listener = listener.unwrap();
-        self.listener = Some(Listener::new(listener, &self.unique_name, &self.db.redis_path(), &self.topic, receive_cb, udata));
+        self.listener = Some(Listener::new(tcpListener.unwrap(), &self.unique_name, &self.db.redis_path(), &self.topic, receive_cb, udata));
         self.sender = Some(Sender::new(&self.unique_name, &self.db.redis_path(), &self.topic));
         self.sender.as_mut().unwrap().load_prev_connects(&mut self.db);
         self.is_run = true;
