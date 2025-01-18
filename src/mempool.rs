@@ -25,9 +25,11 @@ impl Mempool{
         {           
             let keys: Vec<&usize> = self.free_mem.keys().collect();
             let mut ix;
+            let has_req_sz;
             match keys.binary_search(&&req_size){   
                 Ok(ix_) =>{
                     ix = ix_;
+                    has_req_sz = true;
                 },
                 Err(ix_)=>{
                     if ix_ == keys.len(){
@@ -49,7 +51,7 @@ impl Mempool{
             let pos = self.free_mem.get_mut(&length).unwrap().pop().unwrap();
             let endlen = length - req_size;
             if endlen > 0 {
-                if let btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {
+                if !has_req_sz{
                     e.insert(Vec::new());
                 }
                 if let btree_map::Entry::Vacant(e) = self.free_mem.entry(endlen) {
