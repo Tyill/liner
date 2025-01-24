@@ -22,10 +22,10 @@ impl Mempool{
     }
     pub fn alloc(&mut self, req_size: usize)->(usize, usize){    
         let mut length = 0;
+        let mut has_req_sz = false;
         {           
             let keys: Vec<&usize> = self.free_mem.keys().collect();
             let mut ix;
-            let has_req_sz;
             match keys.binary_search(&&req_size){   
                 Ok(ix_) =>{
                     ix = ix_;
@@ -52,7 +52,7 @@ impl Mempool{
             let endlen = length - req_size;
             if endlen > 0 {
                 if !has_req_sz{
-                    e.insert(Vec::new());
+                    self.free_mem.insert(req_size, Vec::new());
                 }
                 if let btree_map::Entry::Vacant(e) = self.free_mem.entry(endlen) {
                     e.insert(Vec::new());

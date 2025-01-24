@@ -7,9 +7,8 @@ use crate::common;
 use crate::{UCbackIntern, UData};
 use crate::print_error;
 
-use std::collections::{BTreeMap};
+use std::collections::{HashMap};
 use std::io::Read;
-use std::os::raw::c_void;
 use std::thread::JoinHandle;
 use std::thread;
 use std::time::Duration;
@@ -20,7 +19,6 @@ use std::io::{self,BufReader};
 use std::net::SocketAddr;
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token};
-
 
 struct ReadStream{
     stream: TcpStream,
@@ -50,9 +48,9 @@ pub struct Listener{
 }
 
 impl Listener {
-    pub fn new(listener: TcpListener,
+    pub fn new(mut listener: TcpListener,
                unique_name: &str, redis_path: &str, source_topic: &str, receive_cb: UCbackIntern, udata: UData)->Listener{
-        let poll = Poll::new().expect("couldn't create poll queue");
+        let mut poll = Poll::new().expect("couldn't create poll queue");
         //let wakeup_fd = wakeupfd_create(epoll_fd);
         let mut messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let messages_ = messages.clone();
@@ -66,12 +64,13 @@ impl Listener {
         let db_ = db.clone();
         let receive_thread_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
         let receive_thread_cvar_ = receive_thread_cvar.clone();
-        
-        const SERVER: Token = Token(0);
-        poll.registry().register(&mut listener, SERVER, Interest::READABLE);
-
-        let stream_thread = thread::spawn(move|| {
+      
+        const SERVER: Token = Token(usize::MAX);
+        poll.registry().register(&mut listener, SERVER, Interest::READABLE).expect("couldn't register listener");
+   
+        let stream_thread = thread::spawn(move|| {            
             let mut streams: ReadStreamList = Vec::new();
+            let mut address: HashMap<SocketAddr, usize> = HashMap::new();
             let mut events = Events::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
             loop{ 
                 if let Err(_) = poll.poll(&mut events, None){
@@ -80,24 +79,24 @@ impl Listener {
                 for ev in &events {
                     match ev.token() {                    
                         SERVER => {
-                            listener_accept(&poll, &mut streams, &mut senders, &listener, 
+                            listener_accept(&poll, &mut address, &mut streams, &mut senders, &listener, 
                                 &mut mempools, &mut messages);
                         }
-                        CLIENT_IX =>{
+                        CLIENT =>{
                             // if stream_fd == wakeup_fd{
                             //     wakeupfd_reset(wakeup_fd);
                             // }else 
-                            if let Some(stream) = streams.get(CLIENT_IX.0){
+                            if let Some(stream) = streams.get(CLIENT.0){
                                 if !stream.lock().unwrap().is_close{
-                                    read_stream(&poll, stream_fd, stream, &senders,
+                                    read_stream(&poll, CLIENT, stream, &senders,
                                                 db.clone(), &mempools, &messages, &receive_thread_cvar_);
                                 }else{
-                                    remove_stream(&poll, stream_fd, &mut streams, &mut senders);
+                                    remove_stream(&poll, CLIENT, &mut streams, &mut senders);
                                 }
                             }
                         }
                         _ => {
-                            print_error!(format!("unknown event {}", stream_fd));
+                            print_error!(format!("unknown event"));
                         }
                     }
                 }
@@ -111,7 +110,7 @@ impl Listener {
         let receive_thread = thread::spawn(move|| {
             let mut once_again = true;
             let mut prev_time: [u64; 1] = [common::current_time_ms(); 1];
-            let mut temp_buff: Mempool = Mempool::new();
+            let mut temp_mempool: Mempool = Mempool::new();
             while !is_close_.load(Ordering::Relaxed){
                 if !once_again{
                     let (lock, cvar) = &*receive_thread_cvar_;
@@ -128,7 +127,7 @@ impl Listener {
                     std::thread::sleep(Duration::from_millis(settings::READ_MESS_DELAY_MS));
                 }    
                 let mut mess_buff: Vec<Option<Vec<Message>>> = Vec::new();
-                let has_mess;
+                let mut has_mess = false;
                 for mess in messages.lock().unwrap().iter_mut(){
                     if let Some(m) = mess.take(){
                         mess_buff.push(Some(m));
@@ -138,13 +137,13 @@ impl Listener {
                     }
                 }
                 if has_mess{
-                    do_receive_cb(mess_buff, &mut temp_buff, &mempools_, &senders_, receive_cb, &udata); 
+                    do_receive_cb(mess_buff, &mut temp_mempool, &mempools_, &senders_, receive_cb, &udata); 
                     once_again = true;
                 } 
                 let ctime = common::current_time_ms();
                 if timeout_update_last_mess_number(ctime, &mut prev_time[0]){                    
                     update_last_mess_number(&senders_, &db_);
-                    check_has_remove_senders(&db_, &senders_, &mempools_, &messages_);
+                    check_has_remove_senders(&db_, &senders_);
                 }
             }
         });  
@@ -158,7 +157,7 @@ impl Listener {
 }
 
 fn do_receive_cb(mess_buff: Vec<Option<Vec<Message>>>,
-                 temp_buff: &mut Mempool,
+                 temp_mempool: &mut Mempool,
                  mempools: &Arc<Mutex<MempoolList>>,
                  senders: &Arc<Mutex<SenderList>>,
                  receive_cb: UCbackIntern,
@@ -168,16 +167,21 @@ fn do_receive_cb(mess_buff: Vec<Option<Vec<Message>>>,
     for mess in mess_buff{
         if let Some(mess) = mess{
             let mempool_lock = mempools.lock().unwrap()[ix].clone();
-            let mut mempool = mempool_lock.lock().unwrap();
+            let mut mess_for_receive: Vec<MessageForReceiver> = Vec::new();    
+            if let Ok(mut mempool) = mempool_lock.lock(){
+                for mut m in mess{
+                    m.change_mempool(&mut mempool, temp_mempool);
+                    let m = MessageForReceiver::new(&m, temp_mempool);
+                    mess_for_receive.push(m);
+                }
+            }
             let mut last_mess_num = 0;
-            for mut m in mess{
-                m.change_mempool(&mut mempool, temp_buff);
-                let m = MessageForReceiver::new(&m, temp_buff);
+            for m in mess_for_receive{
                 receive_cb(m.topic_to, 
                     m.topic_from, 
                     m.data, m.data_len, 
                     udata.0);
-                m.free(temp_buff);
+                m.free(temp_mempool);
                 if m.number_mess > last_mess_num{
                     last_mess_num = m.number_mess;
                 }
@@ -198,44 +202,51 @@ fn receive_thread_notify(receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
 }
 
 fn listener_accept(poll: &Poll, 
+                   address: &mut HashMap<SocketAddr, usize>,
                    streams: &mut ReadStreamList,
                    senders: &mut Arc<Mutex<SenderList>>,
                    listener: &TcpListener,
                    mempools: &mut Arc<Mutex<MempoolList>>,
                    messages: &mut Arc<Mutex<MessList>>){
-
-    let token = Token(addr.address_ix);        
-    let address: SocketAddr;
-    if let Ok(addr) = addr.address.parse::<SocketAddr>(){
-        address = addr;
-    }else{
-        print_error!(format!("couldn't addr.address.parse {}", addr.address));
-        //continue;
-    }        
-    // match TcpStream::connect(address){
-    //     Ok(mut stream)=>{
-    //         if let Err(err) = poll.registry().register(&mut stream, token, Interest::WRITABLE){
-    //             print_error!(format!("couldn't poll.registry() stream, {}", err));
-    //     //        continue;
-    //         }            
-    match listener.accept() {
-        Ok((stream, _addr)) => {
-            stream.set_nonblocking(true).expect("couldn't listener set_nonblocking");
-            let stream_fd = stream.as_raw_fd();
-            streams.insert(stream_fd, Arc::new(Mutex::new(ReadStream{stream, is_active: false, is_close: false})));    
-            senders.lock().unwrap().insert(stream_fd, Sender{sender_topic: "".to_string(), sender_name: "".to_string(), listener_topic: "".to_string(),
-                                                                  last_mess_num: 0, last_mess_num_preview: 0, is_deleted: false});
-            mempools.lock().unwrap().insert(stream_fd, Arc::new(Mutex::new(Mempool::new())));
-            messages.lock().unwrap().insert(stream_fd, None);
-            add_read_stream(epoll_fd, stream_fd);
-            continue_read_stream(epoll_fd, listener.as_raw_fd());
+    
+    loop {
+        match listener.accept() {
+            Ok((mut stream, addr)) => {
+                let mut token = Token(address.len());
+                let mut ix = usize::MAX;
+                if address.contains_key(&addr){
+                    ix = *address.get(&addr).unwrap();
+                    token = Token(ix);
+                }          
+                if let Ok(()) = poll.registry().register(&mut stream, token, Interest::READABLE){
+                    if ix == usize::MAX{
+                        streams.push(Arc::new(Mutex::new(ReadStream{stream, is_active: false, is_close: false})));    
+                        senders.lock().unwrap().push(Sender{sender_topic: "".to_string(), sender_name: "".to_string(), listener_topic: "".to_string(),
+                                                            last_mess_num: 0, last_mess_num_preview: 0, is_deleted: false});
+                        mempools.lock().unwrap().push(Arc::new(Mutex::new(Mempool::new())));
+                        messages.lock().unwrap().push(None);
+                    }else{
+                        streams[ix] = Arc::new(Mutex::new(ReadStream{stream, is_active: false, is_close: false}));    
+                        senders.lock().unwrap()[ix] = Sender{sender_topic: "".to_string(), sender_name: "".to_string(), listener_topic: "".to_string(),
+                                                             last_mess_num: 0, last_mess_num_preview: 0, is_deleted: false};
+                        messages.lock().unwrap()[ix] = None;
+                    }
+                }else{
+                    print_error!(format!("couldn't poll.registry() stream"));
+                }                
+            }
+            Err(err) => {
+                if err.kind() != io::ErrorKind::WouldBlock {
+                    print_error!(&format!("couldn't listener accept: {}", err));
+                }
+                break;
+            } 
         }
-        Err(err) => print_error!(&format!("couldn't listener accept: {}", err)),
-    };
+    }
 }
 
 fn read_stream(poll: &Poll,
-               stream_token: Token,
+               token: Token,
                stream: &Arc<Mutex<ReadStream>>,
                senders: &Arc<Mutex<SenderList>>,
                db: Arc<Mutex<redis::Connect>>,
@@ -249,12 +260,12 @@ fn read_stream(poll: &Poll,
             return;
         }
     }else{
-        continue_read_stream(poll, stream_fd);
+       // continue_read_stream(poll, stream_token.0);
         return;
     }
     let stream = stream.clone();
     let senders = senders.clone();
-    let mempool = mempools.lock().unwrap()[&stream_fd].clone();
+    let mempool = mempools.lock().unwrap()[token.0].clone();
     let messages = messages.clone();
     let receive_thread_cvar = receive_thread_cvar.clone();
 
@@ -262,7 +273,7 @@ fn read_stream(poll: &Poll,
         let mut mess_buff: Vec<Message> = Vec::new();      
         let mut last_mess_num = 0;
         if let Ok(senders) = senders.lock(){
-            last_mess_num = senders[&stream_fd].last_mess_num_preview;
+            last_mess_num = senders[token.0].last_mess_num_preview;
         }
         let mut stream = stream.lock().unwrap();
         let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, stream.stream.by_ref());
@@ -270,7 +281,7 @@ fn read_stream(poll: &Poll,
         while let Some(mess) = Message::from_stream(&mempool, reader.by_ref(), &mut is_shutdown){
             if last_mess_num == 0{
                 let senders = &mut senders.lock().unwrap();
-                let sender = senders.get_mut(&stream_fd).unwrap();
+                let sender = senders.get_mut(token.0).unwrap();
                 if sender.sender_name.is_empty(){
                     mess.sender_topic(&mempool.lock().unwrap(), &mut sender.sender_topic);
                     mess.sender_name(&mempool.lock().unwrap(), &mut sender.sender_name);
@@ -290,10 +301,10 @@ fn read_stream(poll: &Poll,
             let (lock, cvar) = &*receive_thread_cvar;
             if let Ok(mut _started) = lock.lock(){
                 if let Ok(mut mess_lock) = messages.lock(){
-                    if let Some(mess_for_receive) = mess_lock.get_mut(&stream_fd).unwrap().as_mut(){
+                    if let Some(mess_for_receive) = mess_lock[token.0].as_mut(){
                         mess_for_receive.append(&mut mess_buff);
                     }else{
-                        *mess_lock.get_mut(&stream_fd).unwrap() = Some(mess_buff);
+                        mess_lock[token.0] = Some(mess_buff);
                     }
                 }
                 if !*_started{
@@ -303,14 +314,14 @@ fn read_stream(poll: &Poll,
             }
         }
         if let Ok(mut senders) = senders.lock(){
-            senders.get_mut(&stream_fd).unwrap().last_mess_num_preview = last_mess_num;
+            senders.get_mut(token.0).unwrap().last_mess_num_preview = last_mess_num;
         }            
         if is_shutdown{
             let _ = stream.stream.shutdown(std::net::Shutdown::Read);
             stream.is_close = true;
         }            
         stream.is_active = false;
-        continue_read_stream(poll, stream_fd);
+        //continue_read_stream(poll, stream_fd);
     });
 }
 
@@ -327,7 +338,6 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
 fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
                            db: &Arc<Mutex<redis::Connect>>){
     for sender in senders.lock().unwrap().iter(){
-        let sender = sender.1;
         if !sender.sender_name.is_empty() && sender.last_mess_num > 0{
             set_last_mess_number(db, &sender.sender_name, &sender.sender_topic, &sender.listener_topic, sender.last_mess_num);
         }
@@ -340,32 +350,22 @@ fn set_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, send
     }
 }
 
-fn remove_stream(poll: &Poll, stream_fd: RawFd,
-                streams: &mut ReadStreamList,
-                senders: &mut Arc<Mutex<SenderList>>,){
-    remove_read_stream(poll, stream_fd);
-    senders.lock().unwrap().get_mut(&stream_fd).unwrap().is_deleted = true;
-    streams.remove(&stream_fd);
+fn remove_stream(poll: &Poll, 
+                 token: Token,
+                 streams: &mut ReadStreamList,
+                 senders: &mut Arc<Mutex<SenderList>>,){
+    senders.lock().unwrap().get_mut(token.0).unwrap().is_deleted = true;
 }
 
 fn check_has_remove_senders(db: &Arc<Mutex<redis::Connect>>,
-                            senders: &Arc<Mutex<SenderList>>,
-                            mempools: &Arc<Mutex<MempoolList>>,
-                            messages: &Arc<Mutex<MessList>>){
-    let mut rem_fds: Vec<RawFd> = Vec::new();
+                            senders: &Arc<Mutex<SenderList>>){
     for sender in senders.lock().unwrap().iter(){
-        if sender.1.is_deleted{
-            if !sender.1.sender_name.is_empty() && sender.1.last_mess_num > 0{
-                set_last_mess_number(db, &sender.1.sender_name, &sender.1.sender_topic, &sender.1.listener_topic, sender.1.last_mess_num);
+        if sender.is_deleted{
+            if !sender.sender_name.is_empty() && sender.last_mess_num > 0{
+                set_last_mess_number(db, &sender.sender_name, &sender.sender_topic, &sender.listener_topic, sender.last_mess_num);
             }
-            rem_fds.push(*sender.0);
         }
-    }
-    for fd in rem_fds{
-        senders.lock().unwrap().remove(&fd);
-        mempools.lock().unwrap().remove(&fd);
-        messages.lock().unwrap().remove(&fd);
-    }
+    }    
 }
 
 fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, sender_topic: &str, listener_topic: &str, default_mess_number: u64)->u64{
@@ -378,29 +378,6 @@ fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, sender_name: &str, send
             default_mess_number
         }
     }
-}
-
-fn add_read_stream(poll: Poll, fd: RawFd){
-    // if let Err(err) = regist_event(epoll_fd, fd, libc::EPOLL_CTL_ADD){
-    //     print_error!(format!("couldn't add_read_stream, {}", err));
-    // }
-}    
-fn continue_read_stream(poll: Poll, fd: RawFd){
-    // if let Err(err) = regist_event(epoll_fd, fd, libc::EPOLL_CTL_MOD){
-    //     print_error!(format!("couldn't continue_read_stream, {}", err));
-    // }
-}
-fn regist_event(poll: Poll, fd: RawFd, ctl: i32)-> io::Result<i32> {
-    // let mut event = libc::epoll_event {
-    //     events: (libc::EPOLLONESHOT | libc::EPOLLRDHUP | libc::EPOLLIN | libc::EPOLLET) as u32,
-    //     u64: fd as u64,
-    // };
-    // syscall!(epoll_ctl(epoll_fd, ctl, fd, &mut event))
-}
-fn remove_read_stream(poll: Poll, fd: RawFd){
-    // if let Err(err) = syscall!(epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())){
-    //     print_error!(format!("couldn't remove_read_stream, {}", err));
-    // }
 }
 
 // fn wakeupfd_create(epoll_fd: RawFd)->RawFd{
@@ -433,8 +410,7 @@ impl Drop for Listener {
             print_error!(&format!("wdelay_thread.join, {:?}", err));
         }
       
-        syscall!(close(self.epoll_fd)).expect("couldn't close epoll");
-        wakeupfd_notify(self.wakeup_fd);
+       // wakeupfd_notify(self.wakeup_fd);
         if let Err(err) = self.stream_thread.take().unwrap().join(){
             print_error!(&format!("stream_thread.join, {:?}", err));
         }
