@@ -20,7 +20,7 @@ struct WriteStream{
     address: String,
     listener_topic: String,
     listener_name: String,
-    stream: Option<TcpStream>,
+    stream: Arc<Option<TcpStream>>,
     last_send_mess_number: u64,
     last_mess_number: u64,
     is_active: bool,
@@ -34,7 +34,7 @@ impl WriteStream {
             address: "".to_string(),
             listener_topic: "".to_string(),
             listener_name: "".to_string(),
-            stream: None,
+            stream: Arc::new(None),
             last_send_mess_number: 0,
             last_mess_number: 0,
             is_active: false,
@@ -390,7 +390,7 @@ fn append_streams(addrs: &mut Arc<Mutex<Vec<Address>>>,
                                                        address: addr.address.clone(),
                                                        listener_topic: addr.listener_topic.clone(), 
                                                        listener_name: listener_name.clone(),
-                                                       stream: Some(stream), last_send_mess_number, last_mess_number: 0,
+                                                       stream: Arc::new(Some(stream)), last_send_mess_number, last_mess_number: 0,
                                                        is_active: false, has_close_request: false, is_closed: false};
                 while addr.address_ix >= streams.len() {
                     streams.push(Arc::new(Mutex::new(WriteStream::new())));
@@ -428,15 +428,21 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
     
     rayon::spawn(move || {
         let mut is_shutdown = false;
-        let mut stream = stream.lock().unwrap();
-        let address_ix = stream.address_ix;
-        let mut last_send_mess_number = stream.last_send_mess_number;
-        let last_mess_number = stream.last_mess_number;
-        {
+        let mut address_ix = 0;
+        let mut last_send_mess_number = 0;
+        let mut last_mess_number = 0;
+        let mut arc_stream = Arc::new(None);
+        if let Ok(stream) = stream.lock(){
+            address_ix = stream.address_ix;
+            last_send_mess_number = stream.last_send_mess_number;
+            last_mess_number = stream.last_mess_number;
+            arc_stream = stream.stream.clone();
+        }
+        let messages = messages.lock().unwrap()[address_ix].clone();
+        if let Some(stream) = arc_stream.as_ref(){
             let mut buff: Vec<Message> = Vec::new();
-            let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream.stream.as_ref().unwrap()); 
+            let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream); 
             let mempool = mempools.lock().unwrap()[address_ix].clone();
-            let messages = messages.lock().unwrap()[address_ix].clone();
             loop{
                 let mut mess_for_send = None;
                 if let Ok(mut mess_lock) = messages.lock(){
@@ -446,32 +452,19 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                         if !mess_for_send_is_none{
                             buff.append(&mut mess_for_send.unwrap());
                         }
-                        if !buff.is_empty(){
-                            *mess_lock = Some(buff);
-                        }
                         break;
                     }
                 }   
-                let mess_for_send = mess_for_send.unwrap();
-                for mess in &mess_for_send{
+                for mess in mess_for_send.unwrap(){                    
                     let num_mess = mess.number_mess;
-                    if last_send_mess_number < num_mess{
+                    if !is_shutdown && last_send_mess_number < num_mess{
                         last_send_mess_number = num_mess;
                         if !mess.to_stream(&mempool, &mut writer){
                             is_shutdown = true;
-                            break;
                         }
                     }
-                }
-                for mess in mess_for_send{
-                    let num_mess = mess.number_mess;
-                    let at_least_once_delivery = mess.at_least_once_delivery();
-                    if at_least_once_delivery && last_mess_number < num_mess{
-                        buff.push(mess);
-                    }else{
-                        mess.free(&mut mempool.lock().unwrap());
-                    }
-                }
+                    buff.push(mess);
+                }                
             }
             while let Err(err) = writer.flush() {
                 print_error!(&format!("writer.flush, {}, {}", err, err.kind()));
@@ -479,13 +472,32 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                     is_shutdown = true;
                     break;
                 }
-            } 
-            //mempool.lock().unwrap()._print_size();
+            }
+            let mut no_send_mess: Vec<Message> = Vec::new();
+            for mess in buff{
+                let num_mess = mess.number_mess;
+                let at_least_once_delivery = mess.at_least_once_delivery();
+                if is_shutdown || (at_least_once_delivery && last_mess_number < num_mess){
+                    no_send_mess.push(mess);
+                }else{
+                    mess.free(&mut mempool.lock().unwrap());
+                }
+            }
+            if let Ok(mut mess_lock) = messages.lock(){
+                if let Some(mut mess_for_send) = mess_lock.take(){
+                    no_send_mess.append(&mut mess_for_send);
+                }
+                if !no_send_mess.is_empty(){
+                    *mess_lock = Some(no_send_mess);
+                }
+            }
         }
-        stream.last_send_mess_number = last_send_mess_number;
-        stream.is_active = false;
-        if is_shutdown{ 
-            stream.has_close_request = true;
+        if let Ok(mut stream) = stream.lock(){
+            stream.last_send_mess_number = last_send_mess_number;
+            stream.is_active = false;
+            if is_shutdown{ 
+                stream.has_close_request = true;
+            }
         }
     });
 }
@@ -498,7 +510,9 @@ fn check_streams_close(streams: &mut WriteStreamList,
     for stream in streams.iter(){
         if let Ok(mut stream) = stream.try_lock(){
             if stream.has_close_request && !stream.is_closed && !stream.is_active {
-                let _ = stream.stream.as_mut().unwrap().shutdown(std::net::Shutdown::Write);
+                if let Some(stream) = stream.stream.as_ref(){
+                    let _ = stream.shutdown(std::net::Shutdown::Write);
+                }
                 let address_ix = stream.address_ix;
                 let address = stream.address.clone();
                 let listener_topic = stream.listener_topic.clone();
