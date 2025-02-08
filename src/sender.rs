@@ -413,7 +413,7 @@ fn append_streams(addrs: &mut Arc<Mutex<Vec<Address>>>,
 fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 messages: &Arc<Mutex<MessList>>,
                 mempools: &Arc<Mutex<MempoolList>>){
-    if let Ok(mut stream) = stream.try_lock(){
+    if let Ok(mut stream) = stream.lock(){
         if !stream.is_active && !stream.has_close_request{
             stream.is_active = true;
         }else{
@@ -508,7 +508,7 @@ fn check_streams_close(streams: &mut WriteStreamList,
                        db: &Arc<Mutex<redis::Connect>>,
                        mempools: &Arc<Mutex<MempoolList>>){
     for stream in streams.iter(){
-        if let Ok(mut stream) = stream.try_lock(){
+        if let Ok(mut stream) = stream.lock(){
             if stream.has_close_request && !stream.is_closed && !stream.is_active {
                 if let Some(stream) = stream.stream.as_ref(){
                     let _ = stream.shutdown(std::net::Shutdown::Write);
