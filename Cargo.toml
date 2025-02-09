@@ -1,6 +1,6 @@
 [package]
 name = "liner_broker"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 keywords = ["broker", "serverless", "redis", "network"]
 categories = ["concurrency", "asynchronous"]
@@ -54,7 +54,6 @@ redis = "0.26.1"
 rayon = "1.10"
 zstd = "0.13"
 libc = "0.2"
-nohash-hasher = "0.2.0"
 mio = { version = "1", features = ["os-poll", "net"] } 
 
 [features]
