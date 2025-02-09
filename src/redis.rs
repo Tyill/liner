@@ -142,7 +142,7 @@ impl Connect {
     pub fn get_sender_listener_topic_by_connection_key(&mut self, connection_key: i32)->RedisResult<(String, String)>{
         let dbconn = self.get_dbconn()?;
         let res: Vec<(String, String)> = dbconn.hgetall(&format!("connection:{}:listener", connection_key))?;
-        if let Some(v) = res.get(0){
+        if let Some(v) = res.first(){
             return Ok(v.clone());
         }
         Err((ErrorKind::TypeError, "connection:listener not found").into())

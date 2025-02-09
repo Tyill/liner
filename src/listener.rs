@@ -177,8 +177,8 @@ fn do_receive_cb(mess_buff: Vec<Option<Vec<Message>>>,
             let mut topic_to = String::new();
             let mut topic_from = String::new();
             if let Ok(senders) = senders.lock(){
-                topic_to = senders[ix].listener_topic.clone();
-                topic_from = senders[ix].sender_topic.clone();
+                topic_to.clone_from(&senders[ix].listener_topic);
+                topic_from.clone_from(&senders[ix].sender_topic);
             }
             let mut last_mess_num = 0;
             for m in mess_for_receive{
