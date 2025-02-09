@@ -42,21 +42,21 @@ impl Connect {
         let localhost = self.source_localhost.to_string();
         let unique: String = self.unique_name.to_string();
         let dbconn = self.get_dbconn()?;
-        dbconn.hset(&format!("topic:{}:addr", topic), localhost, unique)?;
+        let () = dbconn.hset(&format!("topic:{}:addr", topic), localhost, unique)?;
         self.init_addresses_of_topic(topic)?;
         Ok(())
     }
     pub fn unregist_topic(&mut self, topic: &str)->RedisResult<()>{
         let localhost = self.source_localhost.to_string();
         let dbconn = self.get_dbconn()?;
-        dbconn.hdel(&format!("topic:{}:addr", topic), localhost)?;
+        let () = dbconn.hdel(&format!("topic:{}:addr", topic), localhost)?;
         self.init_addresses_of_topic(topic)?;
         Ok(())
     }
     pub fn clear_addresses_of_topic(&mut self)->RedisResult<()>{
         let source_topic = self.source_topic.to_string();
         let dbconn = self.get_dbconn()?; 
-        dbconn.del(&format!("topic:{}:addr", source_topic))?;
+        let () = dbconn.del(&format!("topic:{}:addr", source_topic))?;
         Ok(())
     }
     pub fn clear_stored_messages(&mut self)->RedisResult<()>{
@@ -71,19 +71,19 @@ impl Connect {
                 let listener_topic = t.1;
                 let key = format!("{}:{}:{}", key, listener_name, listener_topic);
                 let dbconn = self.get_dbconn()?;
-                dbconn.del(&format!("connection:{}:messages", key))?;
-                dbconn.del(&format!("connection:{}:mess_number", key))?;
+                let () = dbconn.del(&format!("connection:{}:messages", key))?;
+                let () = dbconn.del(&format!("connection:{}:mess_number", key))?;
             }
         }
         let dbconn = self.get_dbconn()?;
-        dbconn.del(&format!("sender:{}:listener", key))?;       
+        let () = dbconn.del(&format!("sender:{}:listener", key))?;       
         Ok(())
     }
            
     pub fn save_listener_for_sender(&mut self, listener_addr: &str, listener_topic: &str)->RedisResult<()>{
         let key = format!("{}:{}", self.unique_name, self.source_topic);
         let dbconn = self.get_dbconn()?;
-        dbconn.hset(&format!("sender:{}:listener", key), listener_addr, listener_topic)?;
+        let () = dbconn.hset(&format!("sender:{}:listener", key), listener_addr, listener_topic)?;
         Ok(())
     }
     pub fn get_listeners_of_sender(&mut self)->RedisResult<Vec<(String, String)>>{
@@ -122,7 +122,7 @@ impl Connect {
     pub fn set_last_mess_number_from_listener(&mut self, sender_name: &str, sender_topic: &str, listener_topic: &str, val: u64)->RedisResult<()>{
         let key = format!("{}:{}:{}:{}", sender_name, sender_topic, self.unique_name, listener_topic);
         let dbconn = self.get_dbconn()?;
-        dbconn.set(&format!("connection:{}:mess_number", key), val)?;
+        let () = dbconn.set(&format!("connection:{}:mess_number", key), val)?;
         self.last_mess_number.insert(key, val);
         Ok(())
     }  
@@ -139,7 +139,7 @@ impl Connect {
     pub fn init_last_mess_number_from_sender(&mut self, listener_name: &str, listener_topic: &str)->RedisResult<()>{
         let key = format!("{}:{}:{}:{}", self.unique_name, self.source_topic, listener_name, listener_topic);
         let dbconn = self.get_dbconn()?; 
-        dbconn.set_nx(&format!("connection:{}:mess_number", key), 0)?;
+        let () = dbconn.set_nx(&format!("connection:{}:mess_number", key), 0)?;
         Ok(())
     }
     pub fn get_last_mess_number_for_sender(&mut self, listener_name: &str, listener_topic: &str)->RedisResult<u64>{
@@ -155,7 +155,7 @@ impl Connect {
         for m in mess{
             let mut buf: Vec<u8> = Vec::new(); 
             m.to_stream(mempool, &mut buf);                
-            dbconn.rpush(&format!("connection:{}:messages", key), buf)?;
+            let () = dbconn.rpush(&format!("connection:{}:messages", key), buf)?;
         }
         Ok(())
     }

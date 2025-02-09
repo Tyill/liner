@@ -5,7 +5,8 @@ use crate::sender::Sender;
 use crate::settings;
 use crate::print_error;
 
-use std::net::TcpListener;
+use std::net::{SocketAddr, ToSocketAddrs};
+use mio::net::TcpListener;
 use std::sync::Mutex;
 use std::collections::HashMap;
 
@@ -54,13 +55,16 @@ impl Client {
             print_error!(&format!("{}", err));
             return false;
         }
-        let listener = TcpListener::bind(&self.localhost);
-        if let Err(err) = listener {
+        let sa = str_to_socket_addr(&self.localhost);
+        if sa.is_none(){
+            return false;
+        }
+        let tcp_listener = TcpListener::bind(sa.unwrap());
+        if let Err(err) = tcp_listener {
             print_error!(&format!("{}", err));
             return false;        
         }
-        let listener = listener.unwrap();
-        self.listener = Some(Listener::new(listener, &self.unique_name, &self.db.redis_path(), &self.topic, receive_cb, udata));
+        self.listener = Some(Listener::new(tcp_listener.unwrap(), &self.unique_name, &self.db.redis_path(), &self.topic, receive_cb, udata));
         self.sender = Some(Sender::new(&self.unique_name, &self.db.redis_path(), &self.topic));
         self.sender.as_mut().unwrap().load_prev_connects(&mut self.db);
         self.is_run = true;
@@ -214,6 +218,19 @@ fn check_new_address_topic_by_time(ctime: u64, prev_time: &mut u64)->bool{
     }else{
         false
     }
+}
+
+fn str_to_socket_addr(localhost: &str)->Option<SocketAddr>{
+    let mut sa: Option<SocketAddr> = None;
+    match localhost.to_socket_addrs() {
+        Ok(sa_)=>{
+            sa = Some(sa_.last().unwrap());
+        }
+        Err(err)=>{
+            print_error!(&format!("{}", err));
+        }            
+    }
+    sa
 }
 
 impl Drop for Client {

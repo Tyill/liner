@@ -30,22 +30,22 @@ void cb2(char* to, char* from,  char* data, size_t data_size, void* udata){
 
 int main(int argc, char* argv[])
 {  
-    auto hclient1 = ln_new_client("client1", "topic_client1", "localhost:2255", "redis://localhost/");
-    auto hclient2 = ln_new_client("client2", "topic_client2", "localhost:2256", "redis://localhost/");
+    auto hclient1 = lnr_new_client("client1", "topic_client1", "localhost:2255", "redis://localhost/");
+    auto hclient2 = lnr_new_client("client2", "topic_client2", "localhost:2256", "redis://localhost/");
  
-    ln_run(hclient1, cb1, nullptr);
-    ln_run(hclient2, cb2, nullptr);
+    lnr_run(hclient1, cb1, nullptr);
+    lnr_run(hclient2, cb2, nullptr);
  
     char data[MESS_SIZE];
     for (int i = 0; i < SEND_CYCLE_COUNT; ++i){
         send_begin = clock();
         for (int j = 0; j < MESS_SEND_COUNT; ++j){
-            ln_send_to(hclient1, "topic_client2", data, sizeof(data), TRUE);
+            lnr_send_to(hclient1, "topic_client2", data, sizeof(data), TRUE);
         }
         send_end = clock();
         std::cout << "send_to " << 1000.0 * (send_end - send_begin) / CLOCKS_PER_SEC << " ms" << std::endl;
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     }
-    ln_delete_client(hclient1);
-    ln_delete_client(hclient2);
+    lnr_delete_client(hclient1);
+    lnr_delete_client(hclient2);
 }
