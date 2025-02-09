@@ -166,7 +166,7 @@ impl Mempool{
         self.free_mem.get_mut(&length).unwrap().push(pos);
         self.new_free_mem += length;
     }    
-    pub fn write_str(&mut self, mut pos: usize, value: &str){
+    pub fn _write_str(&mut self, mut pos: usize, value: &str){
         self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
         pos += std::mem::size_of::<u32>();
         self.buff[pos.. pos + value.len()].copy_from_slice(value.as_bytes());
@@ -183,7 +183,7 @@ impl Mempool{
     pub fn write_data(&mut self, pos: usize, value: &[u8]){
         self.buff[pos.. pos + value.len()].copy_from_slice(value);
     }
-    pub fn read_string(&self, mut pos: usize)->String{
+    pub fn _read_string(&self, mut pos: usize)->String{
         let sz: usize = i32::from_be_bytes(u8_4(&self.buff[pos.. pos + std::mem::size_of::<u32>()])) as usize;
         pos += std::mem::size_of::<u32>();
         String::from_utf8_lossy(&self.buff[pos.. pos + sz]).to_string()

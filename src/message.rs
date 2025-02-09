@@ -9,7 +9,6 @@ const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
 
 pub struct Message{
     pub number_mess: u64,
-    pub sender_listener_key: i32,
     flags: u8,
     mess_size: usize, 
     mem_alloc_pos: usize,
@@ -17,7 +16,7 @@ pub struct Message{
 }
 
 impl Message{
-    pub fn new(mempool: &mut Mempool, sender_listener_key: i32,
+    pub fn new(mempool: &mut Mempool, connection_key: i32,
                number_mess: u64, data: &[u8], at_least_once_delivery: bool) -> Message {
         let mut flags = 0;
         if at_least_once_delivery{
@@ -25,7 +24,7 @@ impl Message{
         }
         let all_len = std::mem::size_of::<u32>();
         let number_mess_len = std::mem::size_of::<u64>();
-        let sender_listener_key_len = std::mem::size_of::<i32>();
+        let connection_key_len = std::mem::size_of::<i32>();
         let flags_len = std::mem::size_of::<u8>();
         let mut cdata: Option<Vec<u8>> = None;
         if data.len() > settings::MIN_SIZE_DATA_FOR_COMPRESS_BYTE{
@@ -38,19 +37,19 @@ impl Message{
         }
         let mess_size = std::mem::size_of::<i32>() +                
             number_mess_len +   
-            sender_listener_key_len +               
+            connection_key_len +               
             flags_len +
             data_len;
       
         let (mem_alloc_pos, mem_alloc_length) = mempool.alloc(mess_size);
         let number_mess_pos = mem_alloc_pos + all_len; 
-        let sender_listener_key_pos = number_mess_pos + number_mess_len;
-        let flags_pos = sender_listener_key_pos + sender_listener_key_len;
+        let connection_key_pos = number_mess_pos + number_mess_len;
+        let flags_pos = connection_key_pos + connection_key_len;
         let data_pos = flags_pos + flags_len;
                      
         mempool.write_num(mem_alloc_pos, (mess_size - all_len) as i32);
         mempool.write_num(number_mess_pos, number_mess);
-        mempool.write_num(sender_listener_key_pos, sender_listener_key);
+        mempool.write_num(connection_key_pos, connection_key);
         mempool.write_num(flags_pos, flags);
         match cdata{
             Some(cdata)=>{
@@ -60,7 +59,7 @@ impl Message{
                 mempool.write_array(data_pos, data);
             }
         }
-        Message{number_mess, sender_listener_key, flags, mess_size, mem_alloc_pos, mem_alloc_length}
+        Message{number_mess, flags, mess_size, mem_alloc_pos, mem_alloc_length}
     }   
 
     pub fn free(&self, mempool: &mut Mempool){
@@ -93,14 +92,13 @@ impl Message{
             let number_mess_len = std::mem::size_of::<u64>();
             let number_mess = mempool.read_u64(number_mess_pos);
             
-            let sender_listener_key_pos = number_mess_pos + number_mess_len;
-            let sender_listener_key_len = std::mem::size_of::<i32>();
-            let sender_listener_key = mempool.read_u32(sender_listener_key_pos) as i32;
+            let connection_key_pos = number_mess_pos + number_mess_len;
+            let connection_key_len = std::mem::size_of::<i32>();
         
-            let flags_pos = sender_listener_key_pos + sender_listener_key_len;        
+            let flags_pos = connection_key_pos + connection_key_len;        
             let flags = mempool.read_u8(flags_pos);
 
-            return Some(Message{number_mess, sender_listener_key, flags, mess_size, mem_alloc_pos, mem_alloc_length});
+            return Some(Message{number_mess, flags, mess_size, mem_alloc_pos, mem_alloc_length});
         }
         None        
     }
@@ -115,11 +113,11 @@ impl Message{
     fn is_compressed(&self)->bool{
         self.flags & COMPRESS > 0
     }
-    pub fn sender_listener_key(&self, mempool: &Mempool, io_key: &mut i32){
+    pub fn connection_key(&self, mempool: &Arc<Mutex<Mempool>>)->i32{
         let all_len = std::mem::size_of::<u32>();
         let number_mess_len = std::mem::size_of::<u64>(); 
         let key_pos = self.mem_alloc_pos + all_len + number_mess_len;
-        *io_key = mempool.read_u32(key_pos) as i32;
+        mempool.lock().unwrap().read_u32(key_pos) as i32
     }   
 }
 
@@ -153,7 +151,6 @@ pub struct MessageForReceiver{
     pub data: *const u8, 
     pub data_len: usize,
     pub number_mess: u64,
-    pub sender_listener_key: i32,
     _decomp_data: Option<Vec<u8>>,
     mem_alloc_pos: usize,
     mem_alloc_length: usize,
@@ -166,9 +163,9 @@ impl MessageForReceiver{
         let all_len = std::mem::size_of::<u32>();
         let number_mess_pos = all_len; 
         let number_mess_len = std::mem::size_of::<u64>();        
-        let sender_listener_key_pos = number_mess_pos + number_mess_len;
-        let sender_listener_key_len = std::mem::size_of::<u32>();
-        let flags_pos = sender_listener_key_pos + sender_listener_key_len; 
+        let connection_key_pos = number_mess_pos + number_mess_len;
+        let connection_key_len = std::mem::size_of::<u32>();
+        let flags_pos = connection_key_pos + connection_key_len; 
         let flags_len = std::mem::size_of::<u8>(); 
         let data_pos = flags_pos + flags_len;
 
@@ -189,7 +186,6 @@ impl MessageForReceiver{
                 data,
                 data_len,
                 number_mess: mess.number_mess,
-                sender_listener_key: mess.sender_listener_key,
                 _decomp_data,
                 mem_alloc_pos: mess.mem_alloc_pos,
                 mem_alloc_length: mess.mem_alloc_length,
