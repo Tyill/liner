@@ -53,11 +53,8 @@ impl Mempool{
             if endlen > 0 {
                 if !has_req_sz{
                     self.free_mem.insert(req_size, Vec::new());
-                }
-                if let btree_map::Entry::Vacant(e) = self.free_mem.entry(endlen) {
-                    e.insert(Vec::new());
-                }
-                self.free_mem.get_mut(&endlen).unwrap().push(pos + req_size);
+                }                
+                self.free_mem_insert_pos(endlen, pos + req_size);
             }
             (pos, req_size)
         }else{
@@ -137,19 +134,13 @@ impl Mempool{
                     e.insert(Vec::new());
                 }
                 let endlen = free_len - req_size;
-                if endlen > 0 {
-                    if let btree_map::Entry::Vacant(e) = self.free_mem.entry(endlen) {
-                        e.insert(Vec::new());
-                    }
-                    self.free_mem.get_mut(&endlen).unwrap().push(free_pos + req_size);
+                if endlen > 0 {                    
+                    self.free_mem_insert_pos(endlen, free_pos + req_size);
                 }
                 req_pos = free_pos;
                 has_req_mem = true;        
             }else{
-                if let btree_map::Entry::Vacant(e) = self.free_mem.entry(free_len) {
-                    e.insert(Vec::new());
-                }
-                self.free_mem.get_mut(&free_len).unwrap().push(free_pos);
+                self.free_mem_insert_pos(free_len, free_pos);
             }                
         }
         self.new_free_mem = 0;
@@ -158,6 +149,13 @@ impl Mempool{
         }else{
             None
         }     
+    }
+    fn free_mem_insert_pos(&mut self, free_len: usize, free_pos: usize){
+        if let btree_map::Entry::Vacant(e) = self.free_mem.entry(free_len) {
+            e.insert(vec![free_pos]);
+        }else{
+            self.free_mem.get_mut(&free_len).unwrap().push(free_pos);
+        }
     }
     pub fn alloc_with_write(&mut self, value: &[u8])->(usize, usize){
         let (pos, sz) = self.alloc(value.len());
