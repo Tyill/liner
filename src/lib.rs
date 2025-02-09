@@ -76,7 +76,7 @@ impl Liner {
                                                         topic_client.as_ptr(),
                                                         localhost.as_ptr(),
                                                         dbpath.as_ptr());
-        if hclient != std::ptr::null_mut(){
+        if !hclient.is_null(){
             Self{hclient, ucback: None}
         }else{
             panic!("error create client");
@@ -341,7 +341,7 @@ pub extern "C" fn lnr_delete_client(client: *mut Client)->bool{
 }
 
 fn has_client(client: *mut Client)->bool{
-    if client != std::ptr::null_mut(){
+    if !client.is_null(){
         true
     }else{
         print_error!("client was not created");

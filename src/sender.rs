@@ -104,17 +104,21 @@ impl Sender {
             let mut prev_time: [u64; 2] = [common::current_time_ms(); 2];
             while !is_close_.load(Ordering::Relaxed){ // write delay cycle
                 let (lock, cvar) = &*delay_write_cvar_;
+                let mut has_new_mess = false;
                 if let Ok(mut _started) = lock.lock(){
-                    if !message_buffer_.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some()){
+                    has_new_mess = message_buffer_.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some());
+                    if !has_new_mess && !*_started{
+                        _started = cvar.wait_timeout(_started, Duration::from_millis(settings::SENDER_THREAD_WAIT_TIMEOUT_MS)).unwrap().0;
                         *_started = false;
-                        _started = cvar.wait(_started).unwrap();
                     }
                 }                
-                if settings::WRITE_MESS_DELAY_MS > 0{
-                    std::thread::sleep(Duration::from_millis(settings::WRITE_MESS_DELAY_MS));
+                if settings::SENDER_THREAD_WRITE_MESS_DELAY_MS > 0{
+                    std::thread::sleep(Duration::from_millis(settings::SENDER_THREAD_WRITE_MESS_DELAY_MS));
                 }
-                send_mess_to_listener(&streams, &messages_, &message_buffer_, &mempools_, &mempool_buffer_);
-                   
+                let has_old_mess = messages_.lock().unwrap().iter().any(|m: &Arc<Mutex<Option<Vec<Message>>>>| m.lock().unwrap().is_some());
+                if has_new_mess || has_old_mess{
+                    send_mess_to_listener(&streams, &messages_, &message_buffer_, &mempools_, &mempool_buffer_);
+                }
                 let ctime = common::current_time_ms();
                 ctime_.store(ctime, Ordering::Relaxed);
                 if check_available_stream(&is_new_addr_, ctime, &mut prev_time[0]) {
@@ -191,12 +195,7 @@ impl Sender {
             }
         }
     }
-    fn wdelay_thread_notify(&self){
-        let (lock, cvar) = &*self.delay_write_cvar;
-        *lock.lock().unwrap() = true;
-        cvar.notify_one();
-    }
-   
+     
     fn append_new_state(&mut self, db: &mut redis::Connect, addr_to: &str, listener_topic: &str)->bool{
         let listener_name;
         if let Ok(name) = db.get_listener_unique_name(listener_topic, addr_to){
@@ -263,6 +262,11 @@ impl Sender {
     pub fn get_ctime(&self)->u64{
         self.ctime.load(Ordering::Relaxed)
     }
+    fn wdelay_thread_notify(&self){
+        let (lock, cvar) = &*self.delay_write_cvar;
+        *lock.lock().unwrap() = true;
+        cvar.notify_one();
+    }
 }
 
 fn send_mess_to_listener(streams: &WriteStreamList, 
@@ -274,13 +278,12 @@ fn send_mess_to_listener(streams: &WriteStreamList,
     for m in message_buffer.lock().unwrap().iter_mut(){
         mess_from_buff.push(m.take());
     }
-    let mut address_ix = 0;
-    for buff in mess_from_buff{
+    for (ix, buff) in mess_from_buff.into_iter().enumerate(){
         if let Some(mut buff) = buff{
             {
-                let mempool_dst_lock = mempools.lock().unwrap().get_mut(address_ix).unwrap().clone();
+                let mempool_dst_lock = mempools.lock().unwrap().get_mut(ix).unwrap().clone();
                 let mut mempool_buffer_lock = mempool_buffer.lock().unwrap();
-                let mempool_buffer = mempool_buffer_lock.get_mut(address_ix).unwrap();
+                let mempool_buffer = mempool_buffer_lock.get_mut(ix).unwrap();
                 let mempool_dst = &mut mempool_dst_lock.lock().unwrap();
                 for m in &mut buff{
                     m.change_mempool(mempool_buffer,
@@ -288,7 +291,7 @@ fn send_mess_to_listener(streams: &WriteStreamList,
                 }
             }
             {   
-                let mess_lock = messages.lock().unwrap()[address_ix].clone();
+                let mess_lock = messages.lock().unwrap()[ix].clone();
                 let mut mess_for_send = mess_lock.lock().unwrap();
                 if let Some(mess) = mess_for_send.as_mut(){
                     mess.append(&mut buff);
@@ -297,12 +300,11 @@ fn send_mess_to_listener(streams: &WriteStreamList,
                 }
             }
         }
-        if let Some(stream) = streams.get(address_ix){
-            if messages.lock().unwrap()[address_ix].lock().unwrap().is_some(){
-                write_stream(stream, &messages, &mempools);
+        if let Some(stream) = streams.get(ix){
+            if messages.lock().unwrap()[ix].lock().unwrap().is_some(){
+                write_stream(stream, messages, mempools);
             }
         }
-        address_ix += 1;
     }
 }
 
