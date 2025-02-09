@@ -64,8 +64,10 @@ def receive_server(to: str, from_: str, data: bytes):
  - easy api: run client and send data to 
 
  - interface for Python and CPP
+
+ - crossplatform (linux, windows)
  
-### Build (only linux)
+### Build
  - install [Rust and Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
  - install [Redis](https://redis.io/docs/latest/operate/oss_and_stack/install/install-redis/)
  - download this repo
