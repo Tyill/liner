@@ -112,7 +112,7 @@ where
             },
             Err(err) => {
                 let e = err.kind();
-                if e == std::io::ErrorKind::WouldBlock{
+                if e == std::io::ErrorKind::WouldBlock || e == std::io::ErrorKind::Interrupted{
                     is_continue = true;
                     continue;
                 }else{

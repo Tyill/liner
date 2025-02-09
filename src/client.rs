@@ -96,7 +96,7 @@ impl Client {
             }
             let addr = &address[*index];
             let ok = self.sender.as_mut().unwrap().send_to(&mut self.db, addr, 
-                                    topic, &self.topic, data, at_least_once_delivery);
+                                    topic, data, at_least_once_delivery);
             *index += 1;
             ok
         }else{
@@ -126,7 +126,7 @@ impl Client {
             let mut ok = true;
             for addr in address{
                 ok &= self.sender.as_mut().unwrap().send_to(&mut self.db, addr, 
-                                        topic, &self.topic, data, at_least_once_delivery);
+                                        topic, data, at_least_once_delivery);
             }
             ok
         }else{
