@@ -236,7 +236,9 @@ fn listener_accept(poll: &Poll,
                 if err.kind() != io::ErrorKind::WouldBlock && err.kind() != std::io::ErrorKind::Interrupted {
                     print_error!(&format!("couldn't listener accept: {}", err));
                 }
-                break;
+                if err.kind() != std::io::ErrorKind::Interrupted{
+                    break;
+                }
             } 
         }
     }
