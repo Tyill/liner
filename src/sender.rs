@@ -472,7 +472,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
             }
             while let Err(err) = writer.flush() {
                 print_error!(&format!("writer.flush, {}, {}", err, err.kind()));
-                if err.kind() != std::io::ErrorKind::WouldBlock{
+                if err.kind() != std::io::ErrorKind::WouldBlock && err.kind() != std::io::ErrorKind::Interrupted{
                     is_shutdown = true;
                     break;
                 }
