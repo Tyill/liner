@@ -1,4 +1,4 @@
-use crate::print_error;
+use crate::{print_error, settings};
 use crate::mempool::Mempool;
 
 use std::io::{Read, Write};
@@ -9,7 +9,7 @@ pub fn read_stream<T>(stream: &mut T, mempool: &Arc<Mutex<Mempool>>)->(usize, us
 where 
     T: Read
 {
-    let mut buff = [0; 4096];
+    let mut buff = [0; settings::BYTESTREAM_READ_BUFFER_SIZE];
     let mut msz: usize = 0;
     let mut offs: usize = 0;
     let mut mem_pos = 0;
@@ -93,7 +93,7 @@ pub fn write_stream<T>(stream: &mut T, mem_alloc_pos: usize, mess_size: usize, m
 where
     T: Write,
 {
-    const BUFF_LEN: usize = 4096;
+    const BUFF_LEN: usize = settings::BYTESTREAM_WRITE_BUFFER_SIZE;
     let mut buff = [0; BUFF_LEN];
     let mut wsz: usize = 0;
     let mut is_continue = false;
