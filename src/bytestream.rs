@@ -29,11 +29,11 @@ where
                     offs += n;                   
                     if offs == 4{
                         msz = i32::from_be_bytes(u8_4(&buff[0..4])) as usize; 
-                        assert!(msz > 0);
+                        if msz != 117{
+                            assert!(msz == 117);
+                        }
                         if let Ok(mut mempool) = mempool.lock(){
-                            let mess_len = std::mem::size_of::<u32>();
-                            (mem_pos, mem_alloc_length) = mempool.alloc(msz + mess_len);
-                            mempool.write_num(mem_pos, msz as i32);
+                            (mem_pos, mem_alloc_length) = mempool.alloc(msz);
                         }
                         offs = 0;
                     }
@@ -41,8 +41,7 @@ where
                 }
                 if n > 0 {
                     if let Ok(mut mempool) = mempool.lock(){
-                        let mess_len = std::mem::size_of::<u32>();
-                        mempool.write_data(mem_pos + mess_len + mem_fill_length, &buff[..n]);
+                        mempool.write_data(mem_pos + mem_fill_length, &buff[..n]);
                     }
                     mem_fill_length += n;
                     if mem_fill_length == msz {                        
@@ -89,10 +88,34 @@ fn u8_4(b: &[u8]) -> [u8; 4] {
 }
 
 
-pub fn write_stream<T>(stream: &mut T, mem_alloc_pos: usize, mess_size: usize, mempool: &Arc<Mutex<Mempool>>)->bool
+pub fn write_stream<T>(stream: &mut T, mem_alloc_pos: usize, mem_alloc_length: usize, mempool: &Arc<Mutex<Mempool>>)->bool
 where
     T: Write,
 {
+    let mess_size = mem_alloc_length;
+    if mess_size != 117{
+        print!("mess_size {}", mess_size);
+        assert!(mess_size == 117);
+    }
+    
+    loop{        
+        let mut buff = [0; 4];
+        buff[..4].copy_from_slice((mess_size as u32).to_be_bytes().as_ref());
+        match stream.write_all(&buff[..4]){
+            Ok(_) => {
+                break;
+            },
+            Err(err) => {
+                let e = err.kind();
+                if e == std::io::ErrorKind::WouldBlock || e == std::io::ErrorKind::Interrupted{
+                    continue;
+                }else{
+                    print_error!(&format!("{}", e));
+                    return false;                  
+                }
+            },
+        }
+    }
     const BUFF_LEN: usize = settings::BYTESTREAM_WRITE_BUFFER_SIZE;
     let mut buff = [0; BUFF_LEN];
     let mut wsz: usize = 0;
