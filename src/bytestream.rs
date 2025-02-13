@@ -24,19 +24,14 @@ where
             rsz = buff.len();
         } 
         match stream.read(&mut buff[offs..rsz]) {
-            Ok(n) => {                
+            Ok(n) => {         
                 if msz == 0 && n > 0{
                     offs += n;                   
                     if offs == 4{
                         msz = i32::from_be_bytes(u8_4(&buff[0..4])) as usize;
-                        print!("msz {}", msz); 
-                        if msz != 100 + 17{
-                            msz = 100 + 17;
-                            //assert!(msz == 117);
-                        }
+                        assert!(msz > 0);
                         if let Ok(mut mempool) = mempool.lock(){
                             (mem_pos, mem_alloc_length) = mempool.alloc(msz);
-                            assert!(mem_alloc_length == 100 + 17);
                         }
                         offs = 0;
                     }
@@ -97,44 +92,27 @@ pub fn write_stream<T>(stream: &mut T, mem_alloc_pos: usize, mem_alloc_length: u
 where
     T: Write,
 {
-    let mess_size = mem_alloc_length;
-    if mess_size != 100 + 17{
-        print!("mess_size {}", mess_size);
-        assert!(mess_size == 100 + 17);
-    }
-    
-    loop{        
-        match stream.write_all((mess_size as u32).to_be_bytes().as_ref()){
-            Ok(_) => {
-                break;
-            },
-            Err(err) => {
-                let e = err.kind();
-                if e == std::io::ErrorKind::WouldBlock || e == std::io::ErrorKind::Interrupted{
-                    continue;
-                }else{
-                    print_error!(&format!("{}", e));
-                    return false;                  
-                }
-            },
-        }
-    }
+    let mess_size = mem_alloc_length;        
     const BUFF_LEN: usize = settings::BYTESTREAM_WRITE_BUFFER_SIZE;
     let mut buff = [0; BUFF_LEN];
     let mut wsz: usize = 0;
+    let mut offs: usize = 4;
     let mut is_continue = false;
+
+    buff[..4].copy_from_slice((mess_size as u32).to_be_bytes().as_ref());
     while wsz < mess_size{
-        let endlen = std::cmp::min(mess_size - wsz, BUFF_LEN);
+        let endlen = std::cmp::min(mess_size - wsz, BUFF_LEN - offs);
         if !is_continue{
             if let Ok(mempool) = mempool.lock(){
                 let wdata = mempool.read_data(mem_alloc_pos + wsz, endlen);
-                buff[..endlen].copy_from_slice(wdata);
+                buff[offs..offs + endlen].copy_from_slice(wdata);                
             }           
         }
-        match stream.write_all(&buff[..endlen]){
+        match stream.write_all(&buff[..offs + endlen]){
             Ok(_) => {
                 wsz += endlen;
                 is_continue = false;
+                offs = 0;
             },
             Err(err) => {
                 let e = err.kind();

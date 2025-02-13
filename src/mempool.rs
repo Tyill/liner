@@ -62,11 +62,11 @@ impl Mempool{
         }
     }
     fn new_mem(&mut self, req_size: usize)->(usize, usize){
-        // if self.new_free_mem >= req_size{
-        //     if let Some(fm) = self.check_free_mem(req_size){
-        //         return fm;
-        //     } 
-        // }
+        if self.new_free_mem >= req_size{
+            if let Some(fm) = self.check_free_mem(req_size){
+                return fm;
+            } 
+        }
         let csz = self.buff.len();
         self.buff.resize(csz + req_size, 0);
         if let btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {

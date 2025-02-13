@@ -55,7 +55,6 @@ impl Message{
                 mempool.write_array(data_pos, data);
             }
         }
-        assert!(mem_alloc_length == 100 + 17);
         Message{number_mess, flags, mem_alloc_pos, mem_alloc_length}
     }   
 
@@ -69,7 +68,6 @@ impl Message{
         mempool_src.free(self.mem_alloc_pos, self.mem_alloc_length);
         self.mem_alloc_pos = mem_alloc_pos;
         self.mem_alloc_length = mem_alloc_length;
-        assert!(mem_alloc_length == 100 + 17);
     }
 
     pub fn raw_data<'a>(&self, mempool: &'a Mempool)->&'a[u8]{
@@ -94,7 +92,6 @@ impl Message{
         
             let flags_pos = connection_key_pos + connection_key_len;        
             let flags = mempool.read_u8(flags_pos);
-            assert!(mem_alloc_length == 100 + 17);
             return Some(Message{number_mess, flags, mem_alloc_pos, mem_alloc_length});
         }
         None        
