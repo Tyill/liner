@@ -70,8 +70,6 @@ where
                     }
                     is_shutdown = true;
                     break;                  
-                }else{
-                    print_error!(&format!("{}", e));
                 }
             }
         }
