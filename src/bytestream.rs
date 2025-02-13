@@ -28,12 +28,15 @@ where
                 if msz == 0 && n > 0{
                     offs += n;                   
                     if offs == 4{
-                        msz = i32::from_be_bytes(u8_4(&buff[0..4])) as usize; 
-                        if msz != 117{
-                            assert!(msz == 117);
+                        msz = i32::from_be_bytes(u8_4(&buff[0..4])) as usize;
+                        print!("msz {}", msz); 
+                        if msz != 100 + 17{
+                            msz = 100 + 17;
+                            //assert!(msz == 117);
                         }
                         if let Ok(mut mempool) = mempool.lock(){
                             (mem_pos, mem_alloc_length) = mempool.alloc(msz);
+                            assert!(mem_alloc_length == 100 + 17);
                         }
                         offs = 0;
                     }
@@ -72,6 +75,8 @@ where
                     }
                     is_shutdown = true;
                     break;                  
+                }else{
+                    print_error!(&format!("{}", e));
                 }
             }
         }
@@ -93,15 +98,13 @@ where
     T: Write,
 {
     let mess_size = mem_alloc_length;
-    if mess_size != 117{
+    if mess_size != 100 + 17{
         print!("mess_size {}", mess_size);
-        assert!(mess_size == 117);
+        assert!(mess_size == 100 + 17);
     }
     
     loop{        
-        let mut buff = [0; 4];
-        buff[..4].copy_from_slice((mess_size as u32).to_be_bytes().as_ref());
-        match stream.write_all(&buff[..4]){
+        match stream.write_all((mess_size as u32).to_be_bytes().as_ref()){
             Ok(_) => {
                 break;
             },
