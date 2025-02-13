@@ -58,7 +58,7 @@ where
             Err(e) => {                
                 let e = e.kind();
                 if e == std::io::ErrorKind::WouldBlock{
-                    if mem_fill_length == 0{
+                    if mem_fill_length == 0 && msz == 0{
                         break;
                     }
                 }else if e != std::io::ErrorKind::Interrupted{
@@ -90,27 +90,39 @@ pub fn write_stream<T>(stream: &mut T, mem_alloc_pos: usize, mem_alloc_length: u
 where
     T: Write,
 {
-    let mess_size = mem_alloc_length;        
+    let mess_size = mem_alloc_length;
+    loop{ 
+        match stream.write_all((mess_size as u32).to_be_bytes().as_ref()){
+            Ok(_) => { 
+                break;         
+            },
+            Err(err) => {
+                let e = err.kind();
+                if e == std::io::ErrorKind::WouldBlock || e == std::io::ErrorKind::Interrupted{
+                    continue;
+                }else{
+                    print_error!(&format!("{}", err));
+                    return false;
+                }
+            },            
+        }
+    }
     const BUFF_LEN: usize = settings::BYTESTREAM_WRITE_BUFFER_SIZE;
     let mut buff = [0; BUFF_LEN];
     let mut wsz: usize = 0;
-    let mut offs: usize = 4;
     let mut is_continue = false;
-
-    buff[..4].copy_from_slice((mess_size as u32).to_be_bytes().as_ref());
     while wsz < mess_size{
-        let endlen = std::cmp::min(mess_size - wsz, BUFF_LEN - offs);
+        let endlen = std::cmp::min(mess_size - wsz, BUFF_LEN);
         if !is_continue{
             if let Ok(mempool) = mempool.lock(){
                 let wdata = mempool.read_data(mem_alloc_pos + wsz, endlen);
-                buff[offs..offs + endlen].copy_from_slice(wdata);                
+                buff[..endlen].copy_from_slice(wdata);                
             }           
         }
-        match stream.write_all(&buff[..offs + endlen]){
+        match stream.write_all(&buff[..endlen]){
             Ok(_) => {
                 wsz += endlen;
                 is_continue = false;
-                offs = 0;
             },
             Err(err) => {
                 let e = err.kind();
