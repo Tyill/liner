@@ -75,8 +75,10 @@ impl Listener {
             let mut events = Events::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
             loop{ 
                 if let Err(err) = poll.poll(&mut events, None){
-                    print_error!(&format!("couldn't poll.poll: {}", err));
-                    break;
+                    if err.kind() != std::io::ErrorKind::Interrupted{
+                        print_error!(&format!("couldn't poll.poll: {}", err));
+                        break;
+                    }
                 }
                 let mut has_wake = false;
                 for ev in &events {

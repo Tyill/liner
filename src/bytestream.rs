@@ -24,16 +24,14 @@ where
             rsz = buff.len();
         } 
         match stream.read(&mut buff[offs..rsz]) {
-            Ok(n) => {                
+            Ok(n) => {         
                 if msz == 0 && n > 0{
                     offs += n;                   
                     if offs == 4{
-                        msz = i32::from_be_bytes(u8_4(&buff[0..4])) as usize; 
+                        msz = i32::from_be_bytes(u8_4(&buff[0..4])) as usize;
                         assert!(msz > 0);
                         if let Ok(mut mempool) = mempool.lock(){
-                            let mess_len = std::mem::size_of::<u32>();
-                            (mem_pos, mem_alloc_length) = mempool.alloc(msz + mess_len);
-                            mempool.write_num(mem_pos, msz as i32);
+                            (mem_pos, mem_alloc_length) = mempool.alloc(msz);
                         }
                         offs = 0;
                     }
@@ -41,8 +39,7 @@ where
                 }
                 if n > 0 {
                     if let Ok(mut mempool) = mempool.lock(){
-                        let mess_len = std::mem::size_of::<u32>();
-                        mempool.write_data(mem_pos + mess_len + mem_fill_length, &buff[..n]);
+                        mempool.write_data(mem_pos + mem_fill_length, &buff[..n]);
                     }
                     mem_fill_length += n;
                     if mem_fill_length == msz {                        
@@ -89,26 +86,31 @@ fn u8_4(b: &[u8]) -> [u8; 4] {
 }
 
 
-pub fn write_stream<T>(stream: &mut T, mem_alloc_pos: usize, mess_size: usize, mempool: &Arc<Mutex<Mempool>>)->bool
+pub fn write_stream<T>(stream: &mut T, mem_alloc_pos: usize, mem_alloc_length: usize, mempool: &Arc<Mutex<Mempool>>)->bool
 where
     T: Write,
 {
+    let mess_size = mem_alloc_length;        
     const BUFF_LEN: usize = settings::BYTESTREAM_WRITE_BUFFER_SIZE;
     let mut buff = [0; BUFF_LEN];
     let mut wsz: usize = 0;
+    let mut offs: usize = 4;
     let mut is_continue = false;
+
+    buff[..4].copy_from_slice((mess_size as u32).to_be_bytes().as_ref());
     while wsz < mess_size{
-        let endlen = std::cmp::min(mess_size - wsz, BUFF_LEN);
+        let endlen = std::cmp::min(mess_size - wsz, BUFF_LEN - offs);
         if !is_continue{
             if let Ok(mempool) = mempool.lock(){
                 let wdata = mempool.read_data(mem_alloc_pos + wsz, endlen);
-                buff[..endlen].copy_from_slice(wdata);
+                buff[offs..offs + endlen].copy_from_slice(wdata);                
             }           
         }
-        match stream.write_all(&buff[..endlen]){
+        match stream.write_all(&buff[..offs + endlen]){
             Ok(_) => {
                 wsz += endlen;
                 is_continue = false;
+                offs = 0;
             },
             Err(err) => {
                 let e = err.kind();

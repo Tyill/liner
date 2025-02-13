@@ -10,7 +10,6 @@ const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
 pub struct Message{
     pub number_mess: u64,
     flags: u8,
-    mess_size: usize, 
     mem_alloc_pos: usize,
     mem_alloc_length: usize,
 }
@@ -22,7 +21,6 @@ impl Message{
         if at_least_once_delivery{
             flags |= AT_LEAST_ONCE_DELIVERY;
         }
-        let all_len = std::mem::size_of::<u32>();
         let number_mess_len = std::mem::size_of::<u64>();
         let connection_key_len = std::mem::size_of::<i32>();
         let flags_len = std::mem::size_of::<u8>();
@@ -35,19 +33,17 @@ impl Message{
             data_len = cdata.len() + std::mem::size_of::<u32>();
             flags |= COMPRESS;
         }
-        let mess_size = std::mem::size_of::<i32>() +                
-            number_mess_len +   
-            connection_key_len +               
-            flags_len +
-            data_len;
+        let mess_size = number_mess_len +   
+                               connection_key_len +               
+                               flags_len +
+                               data_len;
       
         let (mem_alloc_pos, mem_alloc_length) = mempool.alloc(mess_size);
-        let number_mess_pos = mem_alloc_pos + all_len; 
+        let number_mess_pos = mem_alloc_pos; 
         let connection_key_pos = number_mess_pos + number_mess_len;
         let flags_pos = connection_key_pos + connection_key_len;
         let data_pos = flags_pos + flags_len;
                      
-        mempool.write_num(mem_alloc_pos, (mess_size - all_len) as i32);
         mempool.write_num(number_mess_pos, number_mess);
         mempool.write_num(connection_key_pos, connection_key);
         mempool.write_num(flags_pos, flags);
@@ -59,7 +55,7 @@ impl Message{
                 mempool.write_array(data_pos, data);
             }
         }
-        Message{number_mess, flags, mess_size, mem_alloc_pos, mem_alloc_length}
+        Message{number_mess, flags, mem_alloc_pos, mem_alloc_length}
     }   
 
     pub fn free(&self, mempool: &mut Mempool){
@@ -87,8 +83,7 @@ impl Message{
             return None;
         }
         if let Ok(mempool) = mempool.lock(){
-            let all_len = std::mem::size_of::<u32>();
-            let number_mess_pos = mem_alloc_pos + all_len; 
+            let number_mess_pos = mem_alloc_pos; 
             let number_mess_len = std::mem::size_of::<u64>();
             let number_mess = mempool.read_u64(number_mess_pos);
             
@@ -97,14 +92,13 @@ impl Message{
         
             let flags_pos = connection_key_pos + connection_key_len;        
             let flags = mempool.read_u8(flags_pos);
-
-            return Some(Message{number_mess, flags, mess_size, mem_alloc_pos, mem_alloc_length});
+            return Some(Message{number_mess, flags, mem_alloc_pos, mem_alloc_length});
         }
         None        
     }
     pub fn to_stream<T>(&self, mempool: &Arc<Mutex<Mempool>>, stream: &mut T)->bool 
         where T: Write{        
-        bytestream::write_stream(stream, self.mem_alloc_pos, self.mess_size, mempool)       
+        bytestream::write_stream(stream, self.mem_alloc_pos, self.mem_alloc_length, mempool)       
     }
     
     pub fn at_least_once_delivery(&self)->bool{
@@ -114,9 +108,8 @@ impl Message{
         self.flags & COMPRESS > 0
     }
     pub fn connection_key(&self, mempool: &Arc<Mutex<Mempool>>)->i32{
-        let all_len = std::mem::size_of::<u32>();
         let number_mess_len = std::mem::size_of::<u64>(); 
-        let key_pos = self.mem_alloc_pos + all_len + number_mess_len;
+        let key_pos = self.mem_alloc_pos + number_mess_len;
         mempool.lock().unwrap().read_u32(key_pos) as i32
     }   
 }
@@ -160,8 +153,7 @@ impl MessageForReceiver{
     pub fn new(mess: &Message, mempool: &Mempool)->MessageForReceiver{
         let raw_data =  mess.raw_data(mempool);
         
-        let all_len = std::mem::size_of::<u32>();
-        let number_mess_pos = all_len; 
+        let number_mess_pos = 0; 
         let number_mess_len = std::mem::size_of::<u64>();        
         let connection_key_pos = number_mess_pos + number_mess_len;
         let connection_key_len = std::mem::size_of::<u32>();
