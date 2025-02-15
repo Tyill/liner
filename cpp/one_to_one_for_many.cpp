@@ -35,7 +35,7 @@ int main(int argc, char* argv[])
         ++receive_count_3;
         std::cout << "client3 " << to << " receive_count_3 "  << receive_count_3 << std::endl;
     });
-    server1.run([&receive_count_3](const std::string& to, const std::string& from, const std::string& data){});
+    server1.run([](const std::string& to, const std::string& from, const std::string& data){});
  
  
     char data[MESS_SIZE];

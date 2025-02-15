@@ -37,9 +37,9 @@ int main(int argc, char* argv[])
         std::cout << "client3 " << to << " receive_count_3 "  << receive_count_3 << std::endl;
     });
 
-    server1.run([&receive_count_3](const std::string& to, const std::string& from, const std::string& data){});
-    server2.run([&receive_count_3](const std::string& to, const std::string& from, const std::string& data){});
-    server3.run([&receive_count_3](const std::string& to, const std::string& from, const std::string& data){});
+    server1.run([](const std::string& to, const std::string& from, const std::string& data){});
+    server2.run([](const std::string& to, const std::string& from, const std::string& data){});
+    server3.run([](const std::string& to, const std::string& from, const std::string& data){});
  
     char data[MESS_SIZE];
     for (int i = 0; i < SEND_CYCLE_COUNT; ++i){
