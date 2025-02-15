@@ -35,10 +35,7 @@ class Client:
         return self
     
     def __exit__(self, exc_type, exc_value, traceback):
-        if (self.hClient_):
-            pfun = lib_.lnr_delete_client
-            pfun.argtypes = (ctypes.c_void_p,)
-            pfun(self.hClient_)
+        self.close()    
   
     def run(self, receive_cback)->bool:
         """
@@ -47,7 +44,7 @@ class Client:
             
         def c_rcb(to: ctypes.c_char_p, from_: ctypes.c_char_p, data: ctypes.c_void_p, dlen: ctypes.c_size_t, udata: ctypes.c_void_p):
             data = ctypes.string_at(data, dlen)
-            receive_cback(str(to), str(from_), data)
+            receive_cback(to.decode("utf-8"), from_.decode("utf-8"), data)
       
         recvCBackType = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p)    
         self.recvCBack_ = recvCBackType(c_rcb)
@@ -106,3 +103,9 @@ class Client:
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p,)
         return pfun(self.hClient_)
+    
+    def close(self):
+        if (self.hClient_):
+            pfun = lib_.lnr_delete_client
+            pfun.argtypes = (ctypes.c_void_p,)
+            pfun(self.hClient_)
