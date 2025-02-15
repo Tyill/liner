@@ -37,7 +37,7 @@ extern "C" {
 typedef enum BOOL{ FALSE = 0, TRUE = 1}BOOL;
 
 typedef void* lnr_uData;
-typedef void(*lnr_receive_cb)(char* to, char* from, char* data, size_t data_size, lnr_uData);
+typedef void(*lnr_receive_cb)(const char* to, const char* from, const char* data, size_t data_size, lnr_uData);
 
 typedef void* lnr_hClient;
 
@@ -47,7 +47,7 @@ typedef void* lnr_hClient;
 /// @param localhost - local ip
 /// @param redis_path
 /// @return lnr_hClient
-LINER_API lnr_hClient lnr_new_client(char* unique_name, char* topic, char* localhost, char* redis_path);
+LINER_API lnr_hClient lnr_new_client(const char* unique_name, const char* topic, const char* localhost, const char* redis_path);
 
 /// Run transfer data
 /// @param lnr_hClient
@@ -63,8 +63,8 @@ LINER_API BOOL lnr_run(lnr_hClient client, lnr_receive_cb receive_cb, lnr_uData)
 /// @param at_least_once_delivery
 /// @return true - ok
 LINER_API BOOL lnr_send_to(lnr_hClient client,
-                          char* topic,
-                          char* data, size_t data_size,
+                          const char* topic,
+                          const char* data, size_t data_size,
                           BOOL at_least_once_delivery);
 
 /// Send data to other topics - broadcast
@@ -75,21 +75,21 @@ LINER_API BOOL lnr_send_to(lnr_hClient client,
 /// @param at_least_once_delivery
 /// @return true - ok
 LINER_API BOOL lnr_send_all(lnr_hClient client,
-                          char* topic,
-                          char* data, size_t data_size,
+                          const char* topic,
+                          const char* data, size_t data_size,
                           BOOL at_least_once_delivery);
 
 /// Subscribe on topic for broadcast
 /// @param lnr_hClient
 /// @param topic
 /// @return true - ok
-LINER_API BOOL lnr_subscribe(lnr_hClient client, char* topic);
+LINER_API BOOL lnr_subscribe(lnr_hClient client, const char* topic);
 
 /// Unsubscribe on topic for broadcast
 /// @param lnr_hClient
 /// @param topic
 /// @return true - ok
-LINER_API BOOL lnr_unsubscribe(lnr_hClient client, char* topic);
+LINER_API BOOL lnr_unsubscribe(lnr_hClient client, const char* topic);
 
 /// Clear stored messages
 /// @param lnr_hClient

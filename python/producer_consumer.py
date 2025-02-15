@@ -16,12 +16,14 @@ send_begin = time.time()
 send_end = time.time()
 
 def receive_cback1(to: str, from_: str, data):
-    global receive_count_client2     
-    receive_count_client2 += 1
+    if to == 'topic_for_subscrpy':
+        global receive_count_client1    
+        receive_count_client1 += 1
 
 def receive_cback2(to: str, from_: str, data: bytes):
-    global receive_count_client1     
-    receive_count_client1 += 1
+    if to == 'topic_for_subscrpy':
+        global receive_count_client2   
+        receive_count_client2 += 1
 
 def receive_cback_server(to: str, from_: str, data: bytes):
     pass  
