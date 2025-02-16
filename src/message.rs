@@ -152,7 +152,6 @@ fn decompress(cdata: &[u8])->Vec<u8>{
 pub struct MessageForReceiver{
     pub data: *const u8, 
     pub data_len: usize,
-    pub number_mess: u64,
     _decomp_data: Option<Vec<u8>>,
 }
 
@@ -186,7 +185,6 @@ impl MessageForReceiver{
             Self{
                 data,
                 data_len,
-                number_mess: mess.number_mess,
                 _decomp_data,
             }
             

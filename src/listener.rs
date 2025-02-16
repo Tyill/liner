@@ -199,16 +199,19 @@ fn do_receive_cb(mess_buff: Vec<Option<Vec<Message>>>,
             let topic_from = CString::new(senders.lock().unwrap()[ix].sender_topic.as_bytes()).unwrap();
             let mut last_mess_num = 0;
             for m in mess_for_receive{
+                let mut topic_to = None;
                 if let Some(topic) = listener_topic.lock().unwrap().get(&m.listener_topic_key){
-                    let topic_to = CString::new(topic.as_bytes()).unwrap();
-                    let m = MessageForReceiver::new(&m, temp_mempool);
-                    receive_cb(topic_to.as_c_str().as_ptr() as *const i8, 
-                               topic_from.as_c_str().as_ptr() as *const i8, 
-                               m.data, m.data_len, 
-                               udata.0);
+                    topic_to = Some(CString::new(topic.as_bytes()).unwrap());
                 }else{
                     print_debug!(&format!("unsubscribe on topic_key {}", m.listener_topic_key));
-                }                
+                }
+                if let Some(topic_to) = topic_to{
+                    let m = MessageForReceiver::new(&m, temp_mempool);
+                    receive_cb(topic_to.as_c_str().as_ptr(), 
+                               topic_from.as_c_str().as_ptr(), 
+                               m.data, m.data_len, 
+                               udata.0);      
+                }
                 m.free(temp_mempool);
                 if m.number_mess > last_mess_num{
                     last_mess_num = m.number_mess;
