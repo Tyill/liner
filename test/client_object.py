@@ -20,6 +20,8 @@ if __name__ == "__main__":
     parser.add_argument('--client-name', help='name of client')
     parser.add_argument('--client-topic', help='topic of client')
     parser.add_argument('--client-addr', help='addr of client')
+    parser.add_argument('--subscr-topic', help='topic for subscr', default='')
+    parser.add_argument('--unsubscr-topic', help='topic for unsubscr', default='')
 
     args = parser.parse_args()
 
@@ -28,6 +30,12 @@ if __name__ == "__main__":
     def receive_cback1(to: str, from_: str, data_):
         print(f"{args.client_name} receive_from {from_}, data: {data_}")
         hClient1.send_to(from_, data_)
+
+    if len(args.subscr_topic):
+        hClient1.subscribe(args.subscr_topic)
+    
+    if len(args.unsubscr_topic):
+        hClient1.unsubscribe(args.unsubscr_topic)
 
     hClient1.run(receive_cback1)
     
