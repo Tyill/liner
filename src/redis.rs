@@ -174,7 +174,7 @@ impl Connect {
     }
     pub fn get_sender_topic_by_connection_key(&mut self, connection_key: i32)->RedisResult<String>{
         let dbconn = self.get_dbconn()?;
-        dbconn.get(&format!("connection:{}:listener", connection_key))
+        dbconn.get(&format!("connection:{}:sender", connection_key))
     }
     
     pub fn set_last_mess_number_from_listener(&mut self, connection_key: i32, val: u64)->RedisResult<()>{

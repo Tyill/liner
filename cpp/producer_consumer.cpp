@@ -12,10 +12,11 @@ const int SEND_CYCLE_COUNT = 10;
 
 int main(int argc, char* argv[])
 {  
-    auto client1 = LinerBroker("client1", "topic_client", "localhost:2255", "redis://localhost/");
-    auto client2 = LinerBroker("client2", "topic_client", "localhost:2256", "redis://localhost/");
-    auto client3 = LinerBroker("client3", "topic_client", "localhost:2257", "redis://localhost/");
+    auto client1 = LinerBroker("client1", "topic_client1", "localhost:2255", "redis://localhost/");
+    auto client2 = LinerBroker("client2", "topic_client2", "localhost:2256", "redis://localhost/");
+    auto client3 = LinerBroker("client3", "topic_client3", "localhost:2257", "redis://localhost/");
     auto server1 = LinerBroker("server1", "topic_server1", "localhost:2258", "redis://localhost/");
+    auto server2 = LinerBroker("server3", "topic_server2", "localhost:2259", "redis://localhost/");
 
     int receive_count_1 = 0, receive_count_2 = 0, receive_count_3 = 0;
     int receive_count_subscr_1 = 0, receive_count_subscr_2 = 0, receive_count_subscr_3 = 0;
@@ -23,11 +24,13 @@ int main(int argc, char* argv[])
     clock_t send_end = clock();
 
     server1.clear_stored_messages();
+    server2.clear_stored_messages();
     client1.clear_stored_messages();
     client2.clear_stored_messages();
     client3.clear_stored_messages();
 
     server1.clear_addresses_of_topic();
+    server2.clear_addresses_of_topic();
     client1.clear_addresses_of_topic();
     client2.clear_addresses_of_topic();
     client3.clear_addresses_of_topic();
@@ -67,6 +70,7 @@ int main(int argc, char* argv[])
         }
     });
     server1.run([](const std::string& to, const std::string& from, const std::string& data){});
+    server2.run([](const std::string& to, const std::string& from, const std::string& data){});
   
     char data[MESS_SIZE];
     for (int i = 0; i < SEND_CYCLE_COUNT; ++i){
@@ -75,7 +79,8 @@ int main(int argc, char* argv[])
             server1.sendTo("topic_client1", data);
             server1.sendTo("topic_client2", data);
             server1.sendTo("topic_client3", data);
-           // server1.sendTo("topic_for_subscr", data);
+            server1.sendAll("topic_for_subscr", data);
+            server2.sendAll("topic_for_subscr", data);
         }
         send_end = clock();
         std::cout << "send_to " << 1000.0 * (send_end - send_begin) / CLOCKS_PER_SEC << " ms" << std::endl;

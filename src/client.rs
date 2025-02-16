@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 pub struct Client{
     unique_name: String,
-    topic: String,
+    source_topic: String,
     localhost: String,
     db: redis::Connect,
     listener: Option<Listener>,
@@ -21,6 +21,7 @@ pub struct Client{
     is_run: bool,
     mtx: Mutex<()>,
     address_topic: HashMap<String, Vec<String>>,
+    subscriptions: HashMap<i32, String>,
     prev_time: [u64; 2],
 }
 
@@ -32,7 +33,7 @@ impl Client {
         Some(
             Self{
                 unique_name: unique_name.to_string(),
-                topic: topic.to_string(),
+                source_topic: topic.to_string(),
                 localhost: localhost.to_string(),
                 db,
                 listener: None,
@@ -41,6 +42,7 @@ impl Client {
                 is_run: false,
                 mtx: Mutex::new(()),
                 address_topic: HashMap::new(),
+                subscriptions: HashMap::new(),    
                 prev_time: [0; 2]
             }
         )
@@ -51,7 +53,7 @@ impl Client {
             print_error!("client already is running");
             return true;
         }
-        if let Err(err) = self.db.regist_topic(&self.topic){
+        if let Err(err) = self.db.regist_topic(&self.source_topic){
             print_error!(&format!("{}", err));
             return false;
         }
@@ -64,8 +66,8 @@ impl Client {
             print_error!(&format!("{}", err));
             return false;        
         }
-        self.listener = Some(Listener::new(tcp_listener.unwrap(), &self.unique_name, &self.db.redis_path(), &self.topic, receive_cb, udata));
-        self.sender = Some(Sender::new(&self.unique_name, &self.db.redis_path(), &self.topic));
+        self.listener = Some(Listener::new(tcp_listener.unwrap(), &self.unique_name, &self.db.redis_path(), &self.source_topic, &self.subscriptions, receive_cb, udata));
+        self.sender = Some(Sender::new(&self.unique_name, &self.db.redis_path(), &self.source_topic, ));
         self.sender.as_mut().unwrap().load_prev_connects(&mut self.db);
         self.is_run = true;
 
@@ -78,7 +80,7 @@ impl Client {
             print_error!("you can't send_to because client not is running");
             return false;
         }
-        if topic == self.topic{
+        if topic == self.source_topic{
             print_error!("you can't send on your own topic");
             return false;
         }
@@ -111,7 +113,7 @@ impl Client {
             print_error!("you can't send_all because client not is running");
             return false;
         }
-        if topic == self.topic{
+        if topic == self.source_topic{
             print_error!("you can't send on your own topic");
             return false;
         }
@@ -137,7 +139,7 @@ impl Client {
 
     pub fn subscribe(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        if topic == self.topic{
+        if topic == self.source_topic{
             print_error!("you can't subscribe on your own topic");
             return false;
         }
@@ -147,7 +149,11 @@ impl Client {
         }
         match self.db.get_topic_key(topic) {
             Ok(topic_key)=>{
-                self.listener.as_mut().unwrap().subscribe(topic, topic_key);
+                if self.is_run{ 
+                    self.listener.as_mut().unwrap().subscribe(topic, topic_key);
+                }else{
+                    self.subscriptions.insert(topic_key, topic.to_owned());
+                }
             },
             Err(err)=>{
                 print_error!(&format!("{}", err));
@@ -159,7 +165,7 @@ impl Client {
 
     pub fn unsubscribe(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        if topic == self.topic{
+        if topic == self.source_topic{
             print_error!("you can't unsubscribe on your own topic");
             return false;
         }
@@ -169,7 +175,11 @@ impl Client {
         } 
         match self.db.get_topic_key(topic) {
             Ok(topic_key)=>{
-                self.listener.as_mut().unwrap().unsubscribe(topic_key);
+                if self.is_run{                   
+                    self.listener.as_mut().unwrap().unsubscribe(topic_key);
+                }else{
+                    self.subscriptions.remove(&topic_key);
+                }
             },
             Err(err)=>{
                 print_error!(&format!("{}", err));

@@ -154,8 +154,6 @@ pub struct MessageForReceiver{
     pub data_len: usize,
     pub number_mess: u64,
     _decomp_data: Option<Vec<u8>>,
-    mem_alloc_pos: usize,
-    mem_alloc_length: usize,
 }
 
 impl MessageForReceiver{
@@ -190,13 +188,8 @@ impl MessageForReceiver{
                 data_len,
                 number_mess: mess.number_mess,
                 _decomp_data,
-                mem_alloc_pos: mess.mem_alloc_pos,
-                mem_alloc_length: mess.mem_alloc_length,
             }
             
         }
-    }
-    pub fn free(&self, mempool: &mut Mempool){
-        mempool.free(self.mem_alloc_pos, self.mem_alloc_length);
     }
 }

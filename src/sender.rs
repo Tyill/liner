@@ -1,7 +1,7 @@
 use crate::mempool::Mempool;
 use crate::message::Message;
 use crate::redis;
-use crate::print_error;
+use crate::{print_error, print_debug};
 use crate::redis::Connect;
 use crate::settings;
 use crate::common;
@@ -411,9 +411,9 @@ fn append_streams(addrs: &mut Arc<Mutex<Vec<Address>>>,
                 }
                 streams[addr.ix] = Arc::new(Mutex::new(wstream));                
             },
-            Err(err)=>{
+            Err(_err)=>{
                 addrs_lost.push(addr.clone());
-                print_error!(&format!("tcp connect, {} {}", err, addr.address));
+                print_debug!(&format!("tcp connect, {} {}", _err, addr.address));
                 let mess = messages.lock().unwrap()[addr.ix].lock().unwrap().take();
                 if let Some(mess) = mess{
                     save_mess_to_db(mess, db, addr.ix, addr.connection_key, mempools);
