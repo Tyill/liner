@@ -159,11 +159,21 @@ impl Sender {
         }
         let ix = self.addrs_for[addr_to];
         let connection_key = self.connection_key[ix];
+        let listener_topic_key;
+        match db.get_topic_key(listener_topic){
+            Ok(key)=>{
+                listener_topic_key = key;
+            },
+            Err(err)=>{
+                print_error!(format!("couldn't db.get_topic_key {}, err {}", listener_topic, err));
+                return false;
+            }
+        }
         let number_mess = self.last_mess_number[ix] + 1;
         *self.last_mess_number.get_mut(ix).unwrap() = number_mess;
        
         let mess = Message::new(self.mempool_buffer.lock().unwrap().get_mut(ix).unwrap(),
-                                         connection_key, number_mess, data, at_least_once_delivery);
+                                         connection_key, listener_topic_key, number_mess, data, at_least_once_delivery);
         self.send_mess_to_buff(mess, ix);
                
         if is_new_addr{
@@ -201,17 +211,17 @@ impl Sender {
             print_error!(format!("couldn't db.get_listener_unique_name {}", addr_to));
             return false;
         }
-        let mut connection_key = 0;
-        if let Ok(ck) = db.get_connection_key_for_sender(&listener_name, listener_topic){
-            self.connection_key.push(ck);
-            connection_key = ck;
-        }else {
-            if let Err(err) = db.init_connection_key_from_sender(&listener_name, listener_topic, &mut connection_key){            
-                print_error!(&format!("init_last_mess_number_from_sender from db: {}", err));
+        let connection_key;
+        match db.get_connection_key_for_sender(&listener_name){
+            Ok(ck) =>{
+                self.connection_key.push(ck);
+                connection_key = ck;
+            },
+            Err(err)=>{
+                print_error!(&format!("get_connection_key_for_sender from db: {}", err));
                 return false;
             }
-            self.connection_key.push(connection_key);
-        }     
+        }
         let last_mess_num = db.get_last_mess_number_for_sender(connection_key);
         if let Ok(last_mess_num) = last_mess_num{
             self.last_mess_number.push(last_mess_num);
@@ -239,8 +249,8 @@ impl Sender {
         if let Err(err) = db.save_listener_for_sender(addr_to, listener_topic){
             print_error!(&format!("db.save_listener_for_sender {}", err));
         }
-        if let Err(err) = db.set_listener_by_connection_key_from_sender(connection_key, listener_topic){
-            print_error!(&format!("db.set_listener_by_connection_key_from_sender {}", err));
+        if let Err(err) = db.set_sender_topic_by_connection_key_from_sender(connection_key){
+            print_error!(&format!("db.set_sender_topic_by_connection_key_from_sender {}", err));
         }
         self.messages.lock().unwrap().push(Arc::new(Mutex::new(Some(Vec::new()))));
         self.message_buffer.lock().unwrap().push(Some(Vec::new()));

@@ -27,9 +27,8 @@ struct ReadStream{
 }
 
 struct Sender{
-    connection_key: i32,
     sender_topic: String,
-    listener_topic: String,
+    connection_key: i32,
     last_mess_num: u64,
     last_mess_num_preview: u64,
     last_mess_num_saved: u64,
@@ -44,6 +43,7 @@ pub struct Listener{
     stream_thread: Option<JoinHandle<()>>,
     receive_thread: Option<JoinHandle<()>>,
     receive_thread_cvar: Arc<(Mutex<bool>, Condvar)>,
+    listener_topic_key: Arc<Mutex<HashMap<i32, String>>>,
     is_close: Arc<AtomicBool>,
     waker: Arc<Waker>,
 }
@@ -62,6 +62,11 @@ impl Listener {
         let db = Arc::new(Mutex::new(db_conn));
         db.lock().unwrap().set_source_topic(source_topic);
         let db_ = db.clone();
+      
+        let listener_topic_key: Arc<Mutex<HashMap<i32, String>>> = Arc::new(Mutex::new(HashMap::new())); // key listener_topic, value key
+        let topic_key = db.lock().unwrap().get_topic_key(source_topic).expect("couldn't db.get_topic_key");
+        listener_topic_key.lock().unwrap().insert(topic_key, source_topic.to_owned());
+        
         let receive_thread_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
         let receive_thread_cvar_ = receive_thread_cvar.clone();
       
@@ -109,6 +114,7 @@ impl Listener {
         let receive_thread_cvar_ = receive_thread_cvar.clone();
         let is_close = Arc::new(AtomicBool::new(false));
         let is_close_ = is_close.clone();
+        let listener_topic_key_ = listener_topic_key.clone();
         let receive_thread = thread::spawn(move|| {
             let mut prev_time: [u64; 1] = [common::current_time_ms(); 1];
             let mut temp_mempool: Mempool = Mempool::new();
@@ -125,21 +131,28 @@ impl Listener {
                 }    
                 let (mess_buff, has_mess) = mess_for_receive(&messages);
                 if has_mess{
-                    do_receive_cb(mess_buff, &mut temp_mempool, &mempools_, &senders_, receive_cb, &udata); 
+                    do_receive_cb(mess_buff, &mut temp_mempool, &mempools_, &senders_, &listener_topic_key_, receive_cb, &udata); 
                 } 
                 let ctime = common::current_time_ms();
                 if timeout_update_last_mess_number(ctime, &mut prev_time[0]){                    
                     update_last_mess_number(&senders_, &db_);
                 }
             }
-        });  
+        });        
         Self{            
             stream_thread: Some(stream_thread),
             receive_thread: Some(receive_thread),
             receive_thread_cvar,
+            listener_topic_key,
             is_close,
             waker
         }
+    }
+    pub fn subscribe(&mut self, topic: &str, topic_key: i32){
+        self.listener_topic_key.lock().unwrap().insert(topic_key, topic.to_owned());
+    }
+    pub fn unsubscribe(&mut self, topic_key: i32){
+        self.listener_topic_key.lock().unwrap().remove(&topic_key);
     }
 }
 
@@ -163,6 +176,7 @@ fn do_receive_cb(mess_buff: Vec<Option<Vec<Message>>>,
                  temp_mempool: &mut Mempool,
                  mempools: &Arc<Mutex<MempoolList>>,
                  senders: &Arc<Mutex<SenderList>>,
+                 listener_topic_key: &Arc<Mutex<HashMap<i32, String>>>,
                  receive_cb: UCbackIntern,
                  udata: &UData){
 
@@ -176,23 +190,26 @@ fn do_receive_cb(mess_buff: Vec<Option<Vec<Message>>>,
                     mess_for_receive.push(m);
                 }
             }
-            let mut topic_to = String::new();
             let mut topic_from = String::new();
             if let Ok(senders) = senders.lock(){
-                topic_to.clone_from(&senders[ix].listener_topic);
                 topic_from.clone_from(&senders[ix].sender_topic);
-            }
+            }            
             let mut last_mess_num = 0;
             for m in mess_for_receive{
-                let m = MessageForReceiver::new(&m, temp_mempool);                    
-                receive_cb(topic_to.as_ptr() as *const i8, 
-                           topic_from.as_ptr() as *const i8, 
-                           m.data, m.data_len, 
-                           udata.0);
-                m.free(temp_mempool);
-                if m.number_mess > last_mess_num{
-                    last_mess_num = m.number_mess;
-                }
+                 if let Some(topic_to) = listener_topic_key.lock().unwrap().get(&m.listener_topic_key){
+                    let m = MessageForReceiver::new(&m, temp_mempool);                    
+                    receive_cb(topic_to.as_ptr() as *const i8, 
+                               topic_from.as_ptr() as *const i8, 
+                               m.data, m.data_len, 
+                               udata.0);
+                    m.free(temp_mempool);
+                    if m.number_mess > last_mess_num{
+                        last_mess_num = m.number_mess;
+                    }
+                }else{
+                    print_error!(&format!("unsubscribe on topic_key {}", m.listener_topic_key));
+                    continue;
+                }                
             }
             let mut senders = senders.lock().unwrap();
             if senders[ix].last_mess_num < last_mess_num{
@@ -222,8 +239,7 @@ fn listener_accept(poll: &Poll,
                 if let Ok(()) = poll.registry().register(&mut stream, token, Interest::READABLE){
                     if ix == usize::MAX{
                         streams.push(Arc::new(Mutex::new(ReadStream{stream: Arc::new(Some(stream)), is_active: false, is_close: false})));    
-                        senders.lock().unwrap().push(Sender{connection_key: -1, sender_topic: "".to_string(), listener_topic: "".to_string(),
-                                                            last_mess_num: 0, last_mess_num_preview: 0, last_mess_num_saved: 0});
+                        senders.lock().unwrap().push(Sender{sender_topic: "".to_owned(), connection_key: 0, last_mess_num: 0, last_mess_num_preview: 0, last_mess_num_saved: 0});
                         mempools.lock().unwrap().push(Arc::new(Mutex::new(Mempool::new())));
                         messages.lock().unwrap().push(None);
                         address.insert(addr, address.len());
@@ -287,7 +303,7 @@ fn read_stream(token: Token,
                     let sender = senders.get_mut(token.0).unwrap();
                     if sender.connection_key == -1{
                         sender.connection_key = mess.connection_key(&mempool);
-                        (sender.sender_topic, sender.listener_topic) = get_sender_listener_topic(&db, sender.connection_key);
+                        sender.sender_topic = get_sender_topic(&db, sender.connection_key);
                     } 
                     last_mess_num = get_last_mess_number(&db, sender.connection_key, 0);                    
                 }
@@ -369,14 +385,14 @@ fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, connection_key: i32, de
     }
 }
 
-fn get_sender_listener_topic(db: &Arc<Mutex<redis::Connect>>, connection_key: i32)->(String, String){
-    match db.lock().unwrap().get_sender_listener_topic_by_connection_key(connection_key){
+fn get_sender_topic(db: &Arc<Mutex<redis::Connect>>, connection_key: i32)->String{
+    match db.lock().unwrap().get_sender_topic_by_connection_key(connection_key){
         Ok(v)=>{
             v
         },
         Err(err)=>{
-            print_error!(&format!("couldn't get_sender_listener_topic, conn_key {}, err {}", connection_key, err));
-            ("".to_string(), "".to_string())
+            print_error!(&format!("couldn't get_sender_topic, conn_key {}, err {}", connection_key, err));
+            "".to_string()
         }
     }
 }

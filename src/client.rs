@@ -137,10 +137,6 @@ impl Client {
 
     pub fn subscribe(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        if self.is_run{
-            print_error!("you can't subscribe because client already is running");
-            return false;
-        }
         if topic == self.topic{
             print_error!("you can't subscribe on your own topic");
             return false;
@@ -148,16 +144,21 @@ impl Client {
         if let Err(err) = self.db.regist_topic(topic){
             print_error!(&format!("{}", err));
             return false;
+        }
+        match self.db.get_topic_key(topic) {
+            Ok(topic_key)=>{
+                self.listener.as_mut().unwrap().subscribe(topic, topic_key);
+            },
+            Err(err)=>{
+                print_error!(&format!("{}", err));
+                return false;
+            }
         } 
         true
     }
 
     pub fn unsubscribe(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        if self.is_run{
-            print_error!("you can't unsubscribe because client already is running");
-            return false;
-        }
         if topic == self.topic{
             print_error!("you can't unsubscribe on your own topic");
             return false;
@@ -165,6 +166,15 @@ impl Client {
         if let Err(err) = self.db.unregist_topic(topic){
             print_error!(&format!("{}", err));
             return false;
+        } 
+        match self.db.get_topic_key(topic) {
+            Ok(topic_key)=>{
+                self.listener.as_mut().unwrap().unsubscribe(topic_key);
+            },
+            Err(err)=>{
+                print_error!(&format!("{}", err));
+                return false;
+            }
         } 
         true
     }
