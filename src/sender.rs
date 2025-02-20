@@ -1,7 +1,7 @@
 use crate::mempool::Mempool;
 use crate::message::Message;
 use crate::redis;
-use crate::{print_error, print_debug};
+use crate::{ErrorCbackIntern, print_error, print_debug};
 use crate::redis::Connect;
 use crate::settings;
 use crate::common;
@@ -73,7 +73,7 @@ pub struct Sender{
 }
 
 impl Sender {
-    pub fn new(unique_name: &str, redis_path: &str, source_topic: &str)->Sender{
+    pub fn new(unique_name: &str, redis_path: &str, source_topic: &str, error_cb: ErrorCbackIntern)->Sender{
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let messages_ = messages.clone();
         let message_buffer: Arc<Mutex<MessBuffList>> = Arc::new(Mutex::new(Vec::new()));

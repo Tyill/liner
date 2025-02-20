@@ -1,5 +1,5 @@
 use crate::redis;
-use crate::{UCbackIntern, UData};
+use crate::{ReceiveCbackIntern, ErrorCbackIntern, UData};
 use crate::listener::Listener;
 use crate::sender::Sender;
 use crate::settings;
@@ -47,7 +47,7 @@ impl Client {
             }
         )
     }
-    pub fn run(&mut self, receive_cb: UCbackIntern, udata: UData) -> bool {
+    pub fn run(&mut self, receive_cb: ReceiveCbackIntern, error_cb: ErrorCbackIntern, udata: UData) -> bool {
         let _lock = self.mtx.lock();
         if self.is_run{
             print_error!("client already is running");
@@ -66,8 +66,8 @@ impl Client {
             print_error!(&format!("{}", err));
             return false;        
         }
-        self.listener = Some(Listener::new(tcp_listener.unwrap(), &self.unique_name, &self.db.redis_path(), &self.source_topic, &self.subscriptions, receive_cb, udata));
-        self.sender = Some(Sender::new(&self.unique_name, &self.db.redis_path(), &self.source_topic, ));
+        self.listener = Some(Listener::new(tcp_listener.unwrap(), &self.unique_name, &self.db.redis_path(), &self.source_topic, &self.subscriptions, receive_cb, error_cb, udata));
+        self.sender = Some(Sender::new(&self.unique_name, &self.db.redis_path(), &self.source_topic, error_cb));
         self.sender.as_mut().unwrap().load_prev_connects(&mut self.db);
         self.is_run = true;
 

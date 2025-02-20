@@ -4,7 +4,7 @@ use crate::mempool::Mempool;
 use crate::redis;
 use crate::settings;
 use crate::common;
-use crate::{UCbackIntern, UData};
+use crate::{ReceiveCbackIntern, ErrorCbackIntern, UData};
 use crate::{print_error, print_debug};
 
 use std::collections::HashMap;
@@ -51,7 +51,8 @@ pub struct Listener{
 
 impl Listener {
     pub fn new(mut listener: TcpListener,
-               unique_name: &str, redis_path: &str, source_topic: &str, subscriptions: &HashMap<i32, String>, receive_cb: UCbackIntern, udata: UData)->Listener{
+               unique_name: &str, redis_path: &str, source_topic: &str, subscriptions: &HashMap<i32, String>, 
+               receive_cb: ReceiveCbackIntern, error_cb: ErrorCbackIntern, udata: UData)->Listener{
         let mut poll = Poll::new().expect("couldn't create poll queue");
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let mut messages_ = messages.clone();
@@ -183,7 +184,7 @@ fn do_receive_cb(mess_buff: Vec<Option<Vec<Message>>>,
                  mempools: &Arc<Mutex<MempoolList>>,
                  senders: &Arc<Mutex<SenderList>>,
                  listener_topic: &Arc<Mutex<HashMap<i32, String>>>,
-                 receive_cb: UCbackIntern,
+                 receive_cb: ReceiveCbackIntern,
                  udata: &UData){
 
     for (ix, mess) in mess_buff.into_iter().enumerate(){

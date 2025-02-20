@@ -38,6 +38,7 @@ typedef enum BOOL{ FALSE = 0, TRUE = 1}BOOL;
 
 typedef void* lnr_uData;
 typedef void(*lnr_receive_cb)(const char* to, const char* from, const char* data, size_t data_size, lnr_uData);
+typedef void(*lnr_error_cb)(const char* error, lnr_uData);
 
 typedef void* lnr_hClient;
 
@@ -52,8 +53,9 @@ LINER_API lnr_hClient lnr_new_client(const char* unique_name, const char* topic,
 /// Run transfer data
 /// @param lnr_hClient
 /// @param receive_cb - callback for receive data from other topics
+/// @param error_cb - callback for error string
 /// @return true - ok
-LINER_API BOOL lnr_run(lnr_hClient client, lnr_receive_cb receive_cb, lnr_uData);
+LINER_API BOOL lnr_run(lnr_hClient client, lnr_receive_cb receive_cb, lnr_error_cb error_cb, lnr_uData);
 
 /// Send data to other topic - only to one
 /// @param lnr_hClient

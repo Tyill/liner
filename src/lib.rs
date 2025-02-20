@@ -15,10 +15,10 @@
 //!    
 //!     client1.run(Box::new(|_to: &str, _from: &str, _data: &[u8]|{
 //!         println!("receive_from {}", _from);
-//!     }));
+//!     }), None);
 //!     client2.run(Box::new(|_to: &str, _from: &str, _data: &[u8]|{
 //!         println!("receive_from {}", _from);
-//!     }));
+//!     }), None);
 //!  
 //!     let array = [0; 100];
 //!     for _ in 0..10{
@@ -43,12 +43,13 @@ use crate::client::Client;
 use std::ffi::CStr;
 use std::ffi::CString;
 
-type UCback = Box<dyn FnMut(&str, &str, &[u8])>;
+type ReceiveCback = Box<dyn FnMut(&str, &str, &[u8])>;
+type ErrorCback = Box<dyn FnMut(&str)>;
 
-extern "C" fn cb_(to: *const i8, from: *const i8,  data: *const u8, dsize: usize, udata: *mut libc::c_void){
+extern "C" fn receive_cb_(to: *const i8, from: *const i8,  data: *const u8, dsize: usize, udata: *mut libc::c_void){
     unsafe {    
         if let Some(liner) = udata.cast::<Liner>().as_mut(){
-            if let Some(ucback) = liner.ucback.as_mut(){
+            if let Some(ucback) = liner.receive_cback.as_mut(){
                 let to = CStr::from_ptr(to).to_str().unwrap();
                 let from = CStr::from_ptr(from).to_str().unwrap();           
                 (ucback)(to, from, std::slice::from_raw_parts(data, dsize));
@@ -57,9 +58,21 @@ extern "C" fn cb_(to: *const i8, from: *const i8,  data: *const u8, dsize: usize
     }
 }
 
+extern "C" fn error_cb_(error: *const i8, udata: *mut libc::c_void){
+    unsafe {    
+        if let Some(liner) = udata.cast::<Liner>().as_mut(){
+            if let Some(ucback) = liner.error_cback.as_mut(){
+                let error = CStr::from_ptr(error).to_str().unwrap();      
+                (ucback)(error);
+            }
+        }
+    }
+}
+
 pub struct Liner{
     hclient: *mut Client,
-    ucback: Option<UCback>,
+    receive_cback: Option<ReceiveCback>,
+    error_cback: Option<ErrorCback>,
 }
 
 impl Liner {
@@ -73,21 +86,22 @@ impl Liner {
         let localhost = CString::new(localhost).unwrap();
         let topic_client = CString::new(topic).unwrap();
         let hclient = lnr_new_client(unique.as_ptr(),
-                                                        topic_client.as_ptr(),
-                                                        localhost.as_ptr(),
-                                                        dbpath.as_ptr());
+                                                  topic_client.as_ptr(),
+                                                  localhost.as_ptr(),
+                                                  dbpath.as_ptr());
         if !hclient.is_null(){
-            Self{hclient, ucback: None}
+            Self{hclient, receive_cback: None, error_cback: None}
         }else{
             panic!("error create client");
         }
     }   
     }
-    pub fn run(&mut self, ucback: UCback)->bool{        
+    pub fn run(&mut self, receive_cb: ReceiveCback, error_cb: Option<ErrorCback>)->bool{        
         unsafe{
-            self.ucback = Some(ucback);
+            self.receive_cback = Some(receive_cb);
+            self.error_cback = error_cb;
             let ud = self as *const Self as *mut libc::c_void;
-            lnr_run(self.hclient, cb_, ud)
+            lnr_run(self.hclient, receive_cb_, error_cb_, ud)
         }
     }
     pub fn send_to(&mut self, topic: &str, data: &[u8])->bool{
@@ -172,7 +186,8 @@ pub unsafe extern "C" fn lnr_new_client(unique_name: *const i8,
 }
 
 pub struct UData(*mut libc::c_void);
-type UCbackIntern = extern "C" fn(to: *const i8, from: *const i8, data: *const u8, dsize: usize, udata: *mut libc::c_void);
+type ReceiveCbackIntern = extern "C" fn(to: *const i8, from: *const i8, data: *const u8, dsize: usize, udata: *mut libc::c_void);
+type ErrorCbackIntern = extern "C" fn(error: *const i8, udata: *mut libc::c_void);
 
 unsafe impl Send for UData {}
 
@@ -184,12 +199,12 @@ unsafe impl Send for UData {}
 /// 
 /// # Safety
 #[no_mangle]
-pub unsafe extern "C" fn lnr_run(client: *mut Client, receive_cb: UCbackIntern, udata: *mut libc::c_void)->bool{
+pub unsafe extern "C" fn lnr_run(client: *mut Client, receive_cb: ReceiveCbackIntern, error_cb: ErrorCbackIntern, udata: *mut libc::c_void)->bool{
     if !has_client(client){
         return false;
     }
     let udata: UData = UData(udata);
-    (*client).run(receive_cb, udata)
+    (*client).run(receive_cb, error_cb, udata)
 }
 
 /// Send message to other client.
