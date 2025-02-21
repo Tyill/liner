@@ -52,7 +52,7 @@ pub struct Listener{
 impl Listener {
     pub fn new(mut listener: TcpListener,
                unique_name: &str, redis_path: &str, source_topic: &str, subscriptions: &HashMap<i32, String>, 
-               receive_cb: ReceiveCbackIntern, error_cb: ErrorCbackIntern, udata: UData)->Listener{
+               receive_cb: ReceiveCbackIntern, error_cb: Option<ErrorCbackIntern>, udata: UData)->Listener{
         let mut poll = Poll::new().expect("couldn't create poll queue");
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let mut messages_ = messages.clone();

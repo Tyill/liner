@@ -73,7 +73,7 @@ pub struct Sender{
 }
 
 impl Sender {
-    pub fn new(unique_name: &str, redis_path: &str, source_topic: &str, error_cb: ErrorCbackIntern)->Sender{
+    pub fn new(unique_name: &str, redis_path: &str, source_topic: &str, error_cb: Option<ErrorCbackIntern>)->Sender{
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let messages_ = messages.clone();
         let message_buffer: Arc<Mutex<MessBuffList>> = Arc::new(Mutex::new(Vec::new()));

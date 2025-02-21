@@ -47,7 +47,7 @@ impl Client {
             }
         )
     }
-    pub fn run(&mut self, receive_cb: ReceiveCbackIntern, error_cb: ErrorCbackIntern, udata: UData) -> bool {
+    pub fn run(&mut self, receive_cb: ReceiveCbackIntern, error_cb: Option<ErrorCbackIntern>, udata: UData) -> bool {
         let _lock = self.mtx.lock();
         if self.is_run{
             print_error!("client already is running");

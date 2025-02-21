@@ -204,7 +204,7 @@ pub unsafe extern "C" fn lnr_run(client: *mut Client, receive_cb: ReceiveCbackIn
         return false;
     }
     let udata: UData = UData(udata);
-    (*client).run(receive_cb, error_cb, udata)
+    (*client).run(receive_cb, Some(error_cb), udata)
 }
 
 /// Send message to other client.
