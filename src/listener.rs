@@ -47,6 +47,8 @@ pub struct Listener{
     listener_topic: Arc<Mutex<HashMap<i32, String>>>,
     is_close: Arc<AtomicBool>,
     waker: Arc<Waker>,
+    error_cb: Arc<Mutex<Option<ErrorCbackIntern>>>,
+    udata: Arc<Mutex<UData>>,
 }
 
 impl Listener {
@@ -73,6 +75,10 @@ impl Listener {
                 lr.insert(*s.0, s.1.clone());
             }
         }
+        let error_cb: Arc<Mutex<Option<ErrorCbackIntern>>> = Arc::new(Mutex::new(error_cb));
+        let error_cb_ = error_cb.clone();
+        let udata: Arc<Mutex<UData>> = Arc::new(Mutex::new(udata));
+        let udata_ = udata.clone();
 
         let receive_thread_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
         let receive_thread_cvar_ = receive_thread_cvar.clone();
@@ -88,7 +94,10 @@ impl Listener {
             loop{ 
                 if let Err(err) = poll.poll(&mut events, None){
                     if err.kind() != std::io::ErrorKind::Interrupted{
-                        print_error!(&format!("couldn't poll.poll: {}", err));
+                        let mess = format!("couldn't poll.poll: {}", err);
+                        if !call_error_cb(&mess, &error_cb_, &udata_){
+                            print_error!(mess);
+                        }
                         break;
                     }
                 }
@@ -97,7 +106,7 @@ impl Listener {
                     match ev.token() {                    
                         SERVER => {
                             listener_accept(&poll, &mut address, &mut streams, &mut senders, &listener, 
-                                &mut mempools, &mut messages_);
+                                &mut mempools, &mut messages_, &error_cb_, &udata_);
                         }
                         WAKER => {
                             has_wake = true;
@@ -106,7 +115,7 @@ impl Listener {
                         client =>{
                             if let Some(stream) = streams.get(client.0){
                                 read_stream(client, stream, &senders,
-                                            db.clone(), &mempools, &messages_, &receive_thread_cvar_);
+                                            db.clone(), &mempools, &messages_, &receive_thread_cvar_, &error_cb_, &udata_);
                             }
                         }                        
                     }
@@ -115,13 +124,15 @@ impl Listener {
                     break;
                 }
             }
-            update_last_mess_number(&senders, &db);       
+            update_last_mess_number(&senders, &db, &error_cb_, &udata_); 
         });
 
         let receive_thread_cvar_ = receive_thread_cvar.clone();
         let is_close = Arc::new(AtomicBool::new(false));
         let is_close_ = is_close.clone();
         let listener_topic_ = listener_topic.clone();
+        let error_cb_ = error_cb.clone();
+        let udata_ = udata.clone();
         let receive_thread = thread::spawn(move|| {
             let mut prev_time: [u64; 1] = [common::current_time_ms(); 1];
             let mut temp_mempool: Mempool = Mempool::new();
@@ -138,11 +149,12 @@ impl Listener {
                 }    
                 let (mess_buff, has_mess) = mess_for_receive(&messages);
                 if has_mess{
-                    do_receive_cb(mess_buff, &mut temp_mempool, &mempools_, &senders_, &listener_topic_, receive_cb, &udata); 
+                    do_receive_cb(mess_buff, &mut temp_mempool, &mempools_, &senders_, &listener_topic_,
+                                  receive_cb, &udata_); 
                 } 
                 let ctime = common::current_time_ms();
                 if timeout_update_last_mess_number(ctime, &mut prev_time[0]){                    
-                    update_last_mess_number(&senders_, &db_);
+                    update_last_mess_number(&senders_, &db_, &error_cb_, &udata_);
                 }
             }
         });        
@@ -152,7 +164,9 @@ impl Listener {
             receive_thread_cvar,
             listener_topic,
             is_close,
-            waker
+            waker,
+            error_cb,
+            udata,
         }
     }
     pub fn subscribe(&mut self, topic: &str, topic_key: i32){
@@ -185,7 +199,7 @@ fn do_receive_cb(mess_buff: Vec<Option<Vec<Message>>>,
                  senders: &Arc<Mutex<SenderList>>,
                  listener_topic: &Arc<Mutex<HashMap<i32, String>>>,
                  receive_cb: ReceiveCbackIntern,
-                 udata: &UData){
+                 udata: &Arc<Mutex<UData>>){
 
     for (ix, mess) in mess_buff.into_iter().enumerate(){
         if let Some(mess) = mess{
@@ -199,6 +213,7 @@ fn do_receive_cb(mess_buff: Vec<Option<Vec<Message>>>,
             }
             let topic_from = CString::new(senders.lock().unwrap()[ix].sender_topic.as_bytes()).unwrap();
             let mut last_mess_num = 0;
+            let udata = udata.lock().unwrap();
             for m in mess_for_receive{
                 let mut topic_to = None;
                 if let Some(topic) = listener_topic.lock().unwrap().get(&m.listener_topic_key){
@@ -232,7 +247,9 @@ fn listener_accept(poll: &Poll,
                    senders: &mut Arc<Mutex<SenderList>>,
                    listener: &TcpListener,
                    mempools: &mut Arc<Mutex<MempoolList>>,
-                   messages: &mut Arc<Mutex<MessList>>){
+                   messages: &mut Arc<Mutex<MessList>>,
+                   error_cb: &Arc<Mutex<Option<ErrorCbackIntern>>>, 
+                   udata: &Arc<Mutex<UData>>){
     
     loop {
         match listener.accept() {
@@ -254,12 +271,18 @@ fn listener_accept(poll: &Poll,
                         streams[ix] = Arc::new(Mutex::new(ReadStream{stream: Arc::new(Some(stream)), is_active: false, is_close: false}));    
                     }
                 }else{
-                    print_error!(format!("couldn't poll.registry() stream"));
+                    let mess = format!("couldn't poll.registry() stream");
+                    if !call_error_cb(&mess, &error_cb, &udata){
+                        print_error!(mess);
+                    }
                 }                
             }
             Err(err) => {
                 if err.kind() != io::ErrorKind::WouldBlock && err.kind() != std::io::ErrorKind::Interrupted {
-                    print_error!(&format!("couldn't listener accept: {}", err));
+                    let mess = format!("couldn't listener accept: {}", err);
+                    if !call_error_cb(&mess, &error_cb, &udata){
+                        print_error!(mess);
+                    }
                 }
                 if err.kind() != std::io::ErrorKind::Interrupted{
                     break;
@@ -275,7 +298,9 @@ fn read_stream(token: Token,
                db: Arc<Mutex<redis::Connect>>,
                mempools: &Arc<Mutex<MempoolList>>,
                messages: &Arc<Mutex<MessList>>,
-               receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
+               receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>,
+               error_cb: &Arc<Mutex<Option<ErrorCbackIntern>>>, 
+               udata: &Arc<Mutex<UData>>){
     if let Ok(mut stream) = stream.lock(){
         if !stream.is_active && !stream.is_close{
             stream.is_active = true;
@@ -290,6 +315,8 @@ fn read_stream(token: Token,
     let mempool = mempools.lock().unwrap()[token.0].clone();
     let messages = messages.clone();
     let receive_thread_cvar = receive_thread_cvar.clone();
+    let error_cb = error_cb.clone();
+    let udata = udata.clone();
 
     rayon::spawn(move || {           
         let mut mess_buff: Vec<Message> = Vec::new();      
@@ -310,9 +337,9 @@ fn read_stream(token: Token,
                     let sender = senders.get_mut(token.0).unwrap();
                     if sender.connection_key == -1{
                         sender.connection_key = mess.connection_key(&mempool);
-                        sender.sender_topic = get_sender_topic(&db, sender.connection_key);
+                        sender.sender_topic = get_sender_topic(&db, sender.connection_key, &error_cb, &udata);
                     } 
-                    last_mess_num = get_last_mess_number(&db, sender.connection_key, 0);                    
+                    last_mess_num = get_last_mess_number(&db, sender.connection_key, 0, &error_cb, &udata);                    
                 }
                 if mess.number_mess > last_mess_num{
                     last_mess_num = mess.number_mess;
@@ -365,40 +392,53 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
 }
 
 fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
-                           db: &Arc<Mutex<redis::Connect>>){
+                           db: &Arc<Mutex<redis::Connect>>,
+                           error_cb: &Arc<Mutex<Option<ErrorCbackIntern>>>, udata: &Arc<Mutex<UData>>){
     for sender in senders.lock().unwrap().iter_mut(){
         if sender.connection_key >= 0 && sender.last_mess_num_saved < sender.last_mess_num{
-            set_last_mess_number(db, sender.connection_key, sender.last_mess_num);
+            set_last_mess_number(db, sender.connection_key, sender.last_mess_num, &error_cb, &udata);
             sender.last_mess_num_saved = sender.last_mess_num;
         }
     }
 }
 
-fn set_last_mess_number(db: &Arc<Mutex<redis::Connect>>, connection_key: i32, last_mess_num: u64){
+fn set_last_mess_number(db: &Arc<Mutex<redis::Connect>>, connection_key: i32, last_mess_num: u64,
+                        error_cb: &Arc<Mutex<Option<ErrorCbackIntern>>>, udata: &Arc<Mutex<UData>>){
     if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(connection_key, last_mess_num){
-        print_error!(&format!("couldn't db.set_last_mess_number: {}", err));
+        let mess = format!("couldn't db.set_last_mess_number: {}", err);
+        if !call_error_cb(&mess, &error_cb, &udata){
+            print_error!(mess);
+        }
     }
 }
 
-fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, connection_key: i32, default_mess_number: u64)->u64{
+fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, connection_key: i32, default_mess_number: u64,
+                        error_cb: &Arc<Mutex<Option<ErrorCbackIntern>>>, udata: &Arc<Mutex<UData>>)->u64{
     match db.lock().unwrap().get_last_mess_number_for_listener(connection_key){
         Ok(num)=>{
             num
         },
         Err(err)=>{
-            print_error!(&format!("couldn't get_last_mess_number_for_listener: {}", err));
+            let mess = format!("couldn't get_last_mess_number_for_listener: {}", err);
+            if !call_error_cb(&mess, &error_cb, &udata){
+                print_error!(mess);
+            }
             default_mess_number
         }
     }
 }
 
-fn get_sender_topic(db: &Arc<Mutex<redis::Connect>>, connection_key: i32)->String{
+fn get_sender_topic(db: &Arc<Mutex<redis::Connect>>, connection_key: i32,
+                    error_cb: &Arc<Mutex<Option<ErrorCbackIntern>>>, udata: &Arc<Mutex<UData>>)->String{
     match db.lock().unwrap().get_sender_topic_by_connection_key(connection_key){
         Ok(v)=>{
             v
         },
         Err(err)=>{
-            print_error!(&format!("couldn't get_sender_topic, conn_key {}, err {}", connection_key, err));
+            let mess = format!("couldn't get_sender_topic, conn_key {}, err {}", connection_key, err);
+            if !call_error_cb(&mess, &error_cb, &udata){
+                print_error!(mess);
+            }
             "".to_string()
         }
     }
@@ -409,11 +449,17 @@ impl Drop for Listener {
         self.is_close.store(true, Ordering::Relaxed);
         receive_thread_notify(&self.receive_thread_cvar);
         if let Err(err) = self.receive_thread.take().unwrap().join(){
-            print_error!(&format!("wdelay_thread.join, {:?}", err));
+            let mess = format!("wdelay_thread.join, {:?}", err);
+            if !call_error_cb(&mess, &self.error_cb, &self.udata){
+                print_error!(mess);
+            }
         }      
         self.waker.wake().expect("unable to wake");
         if let Err(err) = self.stream_thread.take().unwrap().join(){
-            print_error!(&format!("stream_thread.join, {:?}", err));
+            let mess = format!("stream_thread.join, {:?}", err);
+            if !call_error_cb(&mess, &self.error_cb, &self.udata){
+                print_error!(mess);
+            }
         }
     }
 }
@@ -422,4 +468,14 @@ fn receive_thread_notify(receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
     let (lock, cvar) = &**receive_thread_cvar;
     *lock.lock().unwrap() = true;
     cvar.notify_one();
+}
+
+fn call_error_cb(mess: &str, error_cb: &Arc<Mutex<Option<ErrorCbackIntern>>>, udata: &Arc<Mutex<UData>>)->bool{
+    if let Ok(error_cb) = error_cb.lock(){
+        if error_cb.is_some(){
+            error_cb.unwrap()(mess.as_ptr() as *const i8, udata.lock().unwrap().0);
+            return true;
+        }
+    }
+    return false;
 }

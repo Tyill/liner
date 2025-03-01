@@ -203,6 +203,10 @@ pub unsafe extern "C" fn lnr_run(client: *mut Client, receive_cb: ReceiveCbackIn
     if !has_client(client){
         return false;
     }
+    if Some(receive_cb).is_none(){
+        print_error!("receive_cb is null");
+        return false;
+    }
     let udata: UData = UData(udata);
     (*client).run(receive_cb, Some(error_cb), udata)
 }
