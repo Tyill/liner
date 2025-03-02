@@ -77,7 +77,7 @@ def receive_server(to: str, from_: str, data: bytes):
 
 <p float="left">
  <img src="docs/arch.png" 
-  width="500" height="150" alt="lorem">
+  width="500" height="300" alt="lorem">
 </p>
 
 ### Examples of use
