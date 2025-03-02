@@ -73,6 +73,13 @@ def receive_server(to: str, from_: str, data: bytes):
  - download this repo
  - while in the folder repo, execute in console: `cargo build`
  
+### Architecture of library
+
+<p float="left">
+ <img src="docs/arch.png" 
+  width="500" height="150" alt="lorem">
+</p>
+
 ### Examples of use
 
 One to one: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_one.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/one_to_one.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/one_to_one.rs)
