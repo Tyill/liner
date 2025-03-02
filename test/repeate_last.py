@@ -15,7 +15,7 @@ liner.loadLib(module_path + "/../target/release/libliner_broker.so")
 if __name__ == "__main__":
     
     prPath = os.path.expanduser("~") + '/projects/rust/liner/'
-    binPath = prPath + 'test/client_object.py'
+    binPath = prPath + 'test/client_process.py'
         
     hClient2 = liner.Client('client2', 'topic2', 'localhost:2256', "redis://localhost/")       
     def receive_cback2(to: str, from_: str, data_):
