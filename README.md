@@ -55,7 +55,7 @@ def receive_server(to: str, from_: str, data: bytes):
 
 ### Features
 
- - high speed transmission of multiple messages ([benchmark](https://github.com/Tyill/liner/blob/main/benchmark))
+ - high message throughput ([benchmark](https://github.com/Tyill/liner/blob/main/benchmark))
 
  - delivery guarantee: at least once delivery (using redis db)
 
