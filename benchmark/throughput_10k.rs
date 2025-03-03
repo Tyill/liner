@@ -16,7 +16,7 @@ fn  main() {
     client2.clear_addresses_of_topic();
 
     const MESS_SEND_COUNT: usize = 10000;
-    const MESS_SIZE: usize = 100;
+    const MESS_SIZE: usize = 1024;
     const SEND_CYCLE_COUNT: usize = 10;
 
     let mut receive_count: i32 = 0;
