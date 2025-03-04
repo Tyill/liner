@@ -1,6 +1,7 @@
 # liner
 
 Redis based message serverless broker.  
+The library is written on Rust, C-interface.  
 Data transfer via TCP.
 
 Rust example:  
@@ -67,6 +68,8 @@ def receive_server(to: str, from_: str, data: bytes):
 
  - crossplatform (linux, windows)
  
+ - various messaging options: one-to-one, one-to-many, many-to-many, and topic subscription 
+ 
 ### Build
  - install [Rust and Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
  - while in the folder repo, execute in console: `cargo build`
@@ -112,6 +115,39 @@ Producer-consumer: [Python](https://github.com/Tyill/liner/blob/main/python/prod
 </p>
 
 ### [Benchmark](https://github.com/Tyill/liner/blob/main/benchmark)
+
+```
+alex@ubuntu2004:~/projects/rust/liner/target/release$ ./throughput_10k 
+send_to 8 ms
+receive_from 8 ms
+send_to 5 ms
+receive_from 5 ms
+send_to 7 ms
+receive_from 3 ms
+send_to 11 ms
+receive_from 3 ms
+send_to 6 ms
+receive_from 3 ms
+```
+10ms on average for 10k messages
+
+```
+alex@ubuntu2004:~/projects/rust/liner/benchmark/compare_with_zeromq$ make
+g++ -Wall -O2 -std=c++17 -g -Wno-write-strings -o compare_with_zmq compare_with_zmq.cpp -lzmq
+alex@ubuntu2004:~/projects/rust/liner/benchmark/compare_with_zeromq$ ./compare_with_zmq 
+Connecting to tcp://127.0.0.1:34079
+send_to 20.198 ms
+send_to 16.504 ms
+send_to 11.5 ms
+send_to 13.153 ms
+send_to 10.964 ms
+send_to 10.788 ms
+send_to 10.785 ms
+send_to 11.119 ms
+send_to 11.348 ms
+send_to 10.826 ms
+```
+For ZeroMQ it is similar
 
 ### [Tests](https://github.com/Tyill/liner/blob/main/test)
 
