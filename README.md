@@ -55,7 +55,7 @@ def receive_server(to: str, from_: str, data: bytes):
 
 ### Features
 
- - high message throughput ([benchmark](https://github.com/Tyill/liner/blob/main/benchmark))
+ - high message bandwidth ([benchmark](https://github.com/Tyill/liner/blob/main/benchmark))
 
  - delivery guarantee: at least once delivery (using redis db)
 
@@ -69,8 +69,6 @@ def receive_server(to: str, from_: str, data: bytes):
  
 ### Build
  - install [Rust and Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
- - install [Redis](https://redis.io/docs/latest/operate/oss_and_stack/install/install-redis/)
- - download this repo
  - while in the folder repo, execute in console: `cargo build`
  
 ### Architecture of library
