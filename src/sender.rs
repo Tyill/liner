@@ -47,7 +47,6 @@ struct Address{
     ix: usize,
     connection_key: i32,
     address: String,
-    is_new_addr: bool,
 }
 
 type MempoolList = Vec<Arc<Mutex<Mempool>>>;
@@ -179,8 +178,7 @@ impl Sender {
         if is_new_addr{
             self.addrs_new.lock().unwrap().push(Address{ix,
                                                         connection_key,
-                                                        address: addr_to.to_string(),
-                                                        is_new_addr: true});
+                                                        address: addr_to.to_string()});
             self.is_new_addr.store(true, Ordering::Relaxed);
         }
         true
@@ -266,8 +264,7 @@ impl Sender {
                         let connection_key = self.connection_key[ix];
                         self.addrs_new.lock().unwrap().push(Address{ix, 
                                                                     connection_key,
-                                                                    address: t.0.clone(),
-                                                                    is_new_addr: true });
+                                                                    address: t.0.clone()});
                         self.addrs_for.insert(t.0, ix);
                     }
                 }
@@ -375,10 +372,6 @@ fn append_streams(addrs: &mut Arc<Mutex<Vec<Address>>>,
                   mempools: &Arc<Mutex<MempoolList>>){
     let mut addrs_lost: Vec<Address> = Vec::new();
     for addr in addrs.lock().unwrap().iter(){
-        if !addr.is_new_addr && messages.lock().unwrap()[addr.ix].lock().unwrap().is_none(){
-            addrs_lost.push(addr.clone());
-            continue;
-        }                   
         match TcpStream::connect(&addr.address){
             Ok(stream)=>{
                 let mempool = mempools.lock().unwrap()[addr.ix].clone();
@@ -535,7 +528,7 @@ fn check_streams_close(streams: &mut WriteStreamList,
                 if let Some(mess) = mess{
                     save_mess_to_db(mess, db, ix, connection_key, mempools);            
                 }
-                addrs_new.lock().unwrap().push(Address{ix, connection_key, address, is_new_addr: false});
+                addrs_new.lock().unwrap().push(Address{ix, connection_key, address});
             
                 stream.is_closed = true;
             }

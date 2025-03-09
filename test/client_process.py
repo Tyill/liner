@@ -26,7 +26,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     hClient1 = liner.Client(args.client_name, args.client_topic, args.client_addr, "redis://localhost/")
-   
+    hClient1.clear_addresses_of_topic()
+    hClient1.clear_stored_messages()
+
     def receive_cback1(to: str, from_: str, data_):
         print(f"{args.client_name} receive_from {from_}, data: {data_}")
         hClient1.send_to(from_, data_)
