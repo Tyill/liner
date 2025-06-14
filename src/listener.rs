@@ -126,18 +126,17 @@ impl Listener {
             let mut temp_mempool: Mempool = Mempool::new();
             while !is_close_.load(Ordering::Relaxed){
                 let (lock, cvar) = &*receive_thread_cvar_;
-                if let Ok(mut _started) = lock.lock(){                    
-                    if !messages.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some()) && !*_started{
-                        _started = cvar.wait_timeout(_started, Duration::from_millis(settings::LISTENER_THREAD_WAIT_TIMEOUT_MS)).unwrap().0;
+                let mut has_mess = false;
+                if let Ok(mut _started) = lock.lock(){
+                    has_mess = messages.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some());                 
+                    if !has_mess{
                         *_started = false;
+                        _started = cvar.wait_timeout(_started, Duration::from_millis(settings::LISTENER_THREAD_WAIT_TIMEOUT_MS)).unwrap().0;
+                        has_mess = *_started;
                     }
-                }                
-                if settings::LISTENER_THREAD_READ_MESS_DELAY_MS > 0{
-                    std::thread::sleep(Duration::from_millis(settings::LISTENER_THREAD_READ_MESS_DELAY_MS));
-                }    
-                let (mess_buff, has_mess) = mess_for_receive(&messages);
+                }
                 if has_mess{
-                    do_receive_cb(mess_buff, &mut temp_mempool, &mempools_, &senders_, &listener_topic_, receive_cb, &udata); 
+                    do_receive_cb(&messages, &mut temp_mempool, &mempools_, &senders_, &listener_topic_, receive_cb, &udata); 
                 } 
                 let ctime = common::current_time_ms();
                 if timeout_update_last_mess_number(ctime, &mut prev_time[0]){                    
@@ -162,23 +161,7 @@ impl Listener {
     }
 }
 
-
-fn mess_for_receive(messages: &Arc<Mutex<MessList>>)->(Vec<Option<Vec<Message>>>, bool){
-    let mut mess_buff: Vec<Option<Vec<Message>>> = Vec::new();
-    let mut has_mess = false;
-    for mess in messages.lock().unwrap().iter_mut(){
-        if let Some(m) = mess.take(){
-            mess_buff.push(Some(m));
-            has_mess = true;
-        }else{
-            mess_buff.push(None);
-        }
-    }
-    (mess_buff, has_mess)
-}
-
-
-fn do_receive_cb(mess_buff: Vec<Option<Vec<Message>>>,
+fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,
                  temp_mempool: &mut Mempool,
                  mempools: &Arc<Mutex<MempoolList>>,
                  senders: &Arc<Mutex<SenderList>>,
@@ -186,7 +169,11 @@ fn do_receive_cb(mess_buff: Vec<Option<Vec<Message>>>,
                  receive_cb: UCbackIntern,
                  udata: &UData){
 
-    for (ix, mess) in mess_buff.into_iter().enumerate(){
+    let mut mess_from_buff: Vec<Option<Vec<Message>>> = Vec::new();
+    for m in message_buffer.lock().unwrap().iter_mut(){
+        mess_from_buff.push(m.take());
+    }
+    for (ix, mess) in mess_from_buff.into_iter().enumerate(){
         if let Some(mess) = mess{
             let mempool_lock = mempools.lock().unwrap()[ix].clone();
             let mut mess_for_receive: Vec<Message> = Vec::new();    
