@@ -104,13 +104,11 @@ impl Sender {
                 let mut has_new_mess = false;
                 if let Ok(mut _started) = lock.lock(){
                     has_new_mess = message_buffer_.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some());
-                    if !has_new_mess && !*_started{
-                        _started = cvar.wait_timeout(_started, Duration::from_millis(settings::SENDER_THREAD_WAIT_TIMEOUT_MS)).unwrap().0;
+                    if !has_new_mess{
                         *_started = false;
+                        _started = cvar.wait_timeout(_started, Duration::from_millis(settings::SENDER_THREAD_WAIT_TIMEOUT_MS)).unwrap().0;
+                        has_new_mess = *_started;
                     }
-                }                
-                if settings::SENDER_THREAD_WRITE_MESS_DELAY_MS > 0{
-                    std::thread::sleep(Duration::from_millis(settings::SENDER_THREAD_WRITE_MESS_DELAY_MS));
                 }
                 let has_old_mess = messages_.lock().unwrap().iter().any(|m: &Arc<Mutex<Option<Vec<Message>>>>| m.lock().unwrap().is_some());
                 if has_new_mess || has_old_mess{
@@ -453,15 +451,22 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
             loop{
                 let mut mess_for_send = None;
                 if let Ok(mut mess_lock) = messages.lock(){
-                    mess_for_send = mess_lock.take();
-                    let mess_for_send_is_none = mess_for_send.is_none();
-                    if mess_for_send_is_none || is_shutdown{
-                        if !mess_for_send_is_none{
-                            buff.append(&mut mess_for_send.unwrap());
-                        }
-                        break;
+                    mess_for_send = mess_lock.take();                    
+                } 
+                let mut mess_for_send_is_none = mess_for_send.is_none();
+                if settings::SENDER_THREAD_WRITE_MESS_DELAY_MS > 0 && mess_for_send_is_none && !is_shutdown{
+                    std::thread::sleep(Duration::from_millis(settings::SENDER_THREAD_WRITE_MESS_DELAY_MS));
+                    if let Ok(mut mess_lock) = messages.lock(){
+                        mess_for_send = mess_lock.take();                    
                     }
-                }   
+                    mess_for_send_is_none = mess_for_send.is_none();
+                }
+                if mess_for_send_is_none || is_shutdown{
+                    if !mess_for_send_is_none{
+                        buff.append(&mut mess_for_send.unwrap());
+                    }
+                    break;
+                }  
                 for mess in mess_for_send.unwrap(){                    
                     let num_mess = mess.number_mess;
                     if !is_shutdown && last_send_mess_number < num_mess{
