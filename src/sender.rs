@@ -110,7 +110,7 @@ impl Sender {
                         has_new_mess = *_started;
                     }
                 }
-                let has_old_mess = messages_.lock().unwrap().iter().any(|m: &Arc<Mutex<Option<Vec<Message>>>>| m.lock().unwrap().is_some());
+                let has_old_mess = has_new_mess || messages_.lock().unwrap().iter().any(|m: &Arc<Mutex<Option<Vec<Message>>>>| m.lock().unwrap().is_some());
                 if has_new_mess || has_old_mess{
                     send_mess_to_listener(&streams, &messages_, &message_buffer_, &mempools_, &mempool_buffer_);
                 }
@@ -317,7 +317,13 @@ fn send_mess_to_listener(streams: &WriteStreamList,
             }
         }
         if let Some(stream) = streams.get(ix){
-            if messages.lock().unwrap()[ix].lock().unwrap().is_some(){
+            let mut has_new_mess = false;
+            if let Ok(mess_lock) = messages.lock().unwrap()[ix].lock(){
+                if let Some(mess) = mess_lock.as_ref(){
+                    has_new_mess = mess.last().unwrap().number_mess > stream.lock().unwrap().last_send_mess_number;
+                }
+            }
+            if has_new_mess{
                 write_stream(stream, messages, mempools);
             }
         }
@@ -453,14 +459,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 if let Ok(mut mess_lock) = messages.lock(){
                     mess_for_send = mess_lock.take();                    
                 } 
-                let mut mess_for_send_is_none = mess_for_send.is_none();
-                if settings::SENDER_THREAD_WRITE_MESS_DELAY_MS > 0 && mess_for_send_is_none && !is_shutdown{
-                    std::thread::sleep(Duration::from_millis(settings::SENDER_THREAD_WRITE_MESS_DELAY_MS));
-                    if let Ok(mut mess_lock) = messages.lock(){
-                        mess_for_send = mess_lock.take();                    
-                    }
-                    mess_for_send_is_none = mess_for_send.is_none();
-                }
+                let mess_for_send_is_none = mess_for_send.is_none();
                 if mess_for_send_is_none || is_shutdown{
                     if !mess_for_send_is_none{
                         buff.append(&mut mess_for_send.unwrap());
