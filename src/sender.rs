@@ -99,16 +99,25 @@ impl Sender {
         let wdelay_thread = thread::spawn(move||{
             let mut streams: WriteStreamList = Vec::new();
             let mut prev_time: [u64; 2] = [common::current_time_ms(); 2];
+            let mut rep_count = 0;
             while !is_close_.load(Ordering::Relaxed){ // write delay cycle
                 let (lock, cvar) = &*delay_write_cvar_;
-                let mut has_new_mess = false;
+                let mut has_new_mess = false;                
                 if let Ok(mut _started) = lock.lock(){
                     has_new_mess = message_buffer_.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some());
-                    if !has_new_mess{
+                    if !has_new_mess && rep_count > 100{
+                        rep_count = 0;
                         *_started = false;
                         _started = cvar.wait_timeout(_started, Duration::from_millis(settings::SENDER_THREAD_WAIT_TIMEOUT_MS)).unwrap().0;
                         has_new_mess = *_started;
+                    }else if has_new_mess{
+                        rep_count = 0;
+                    }else{
+                        rep_count += 1;
                     }
+                }
+                if settings::SENDER_THREAD_WRITE_MESS_DELAY_MS > 0{
+                    std::thread::sleep(Duration::from_millis(settings::SENDER_THREAD_WRITE_MESS_DELAY_MS));
                 }
                 let has_old_mess = has_new_mess || messages_.lock().unwrap().iter().any(|m: &Arc<Mutex<Option<Vec<Message>>>>| m.lock().unwrap().is_some());
                 if has_new_mess || has_old_mess{
