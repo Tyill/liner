@@ -131,11 +131,11 @@ impl Listener {
                 if let Ok(mut _started) = lock.lock(){
                     has_new_mess = messages.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some());                 
                     if !has_new_mess && rep_count > settings::LISTENER_THREAD_READ_MESS_DELAY_REPEATE_COUNT{
-                        rep_count = 0;
                         *_started = false;
                         _started = cvar.wait_timeout(_started, Duration::from_millis(settings::LISTENER_THREAD_WAIT_TIMEOUT_MS)).unwrap().0;
                         has_new_mess = *_started;
-                    }else if has_new_mess{
+                    }
+                    if has_new_mess{
                         rep_count = 0;
                     }else{
                         rep_count += 1;
