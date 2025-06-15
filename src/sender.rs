@@ -105,7 +105,7 @@ impl Sender {
                 let mut has_new_mess = false;                
                 if let Ok(mut _started) = lock.lock(){
                     has_new_mess = message_buffer_.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some());
-                    if !has_new_mess && rep_count > 100{
+                    if !has_new_mess && rep_count > settings::SENDER_THREAD_WRITE_MESS_DELAY_REPEATE_COUNT{
                         rep_count = 0;
                         *_started = false;
                         _started = cvar.wait_timeout(_started, Duration::from_millis(settings::SENDER_THREAD_WAIT_TIMEOUT_MS)).unwrap().0;
@@ -116,7 +116,7 @@ impl Sender {
                         rep_count += 1;
                     }
                 }
-                if settings::SENDER_THREAD_WRITE_MESS_DELAY_MS > 0{
+                if settings::SENDER_THREAD_WRITE_MESS_DELAY_MS > 0 && !has_new_mess{
                     std::thread::sleep(Duration::from_millis(settings::SENDER_THREAD_WRITE_MESS_DELAY_MS));
                 }
                 let has_old_mess = has_new_mess || messages_.lock().unwrap().iter().any(|m: &Arc<Mutex<Option<Vec<Message>>>>| m.lock().unwrap().is_some());
