@@ -94,7 +94,7 @@ impl Mempool{
             self.new_free_mem = 0;
             return None;
         }
-        let mut max_free_len: usize = 0;
+        let mut min_free_len: usize = 0;
         let mut free_mem: Vec<(usize, usize)> = Vec::new();
         {
             let mut prev_free_len: usize = 0;
@@ -121,8 +121,8 @@ impl Mempool{
                     }
                 }
                 if new_free_len > prev_free_len{
-                    if new_free_len > max_free_len{
-                        max_free_len = new_free_len;
+                    if new_free_len >= req_size && (new_free_len < min_free_len || min_free_len == 0){
+                        min_free_len = new_free_len;
                     }
                     free_mem.push((start_free_pos, new_free_len));                                     
                 }
@@ -136,7 +136,7 @@ impl Mempool{
         let mut req_pos: usize = 0;
         for m in free_mem{
             let (free_pos, free_len) = m;
-            if !has_req_mem && free_len == max_free_len && max_free_len >= req_size{
+            if !has_req_mem && free_len == min_free_len && min_free_len >= req_size{
                 if let btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {
                     e.insert((1, Vec::new()));
                 }else{
