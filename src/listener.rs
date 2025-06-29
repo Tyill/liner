@@ -143,6 +143,7 @@ impl Listener {
                 }
                 if settings::LISTENER_THREAD_READ_MESS_DELAY_MS > 0 && !has_new_mess{
                     std::thread::sleep(Duration::from_millis(settings::LISTENER_THREAD_READ_MESS_DELAY_MS));
+                    has_new_mess = messages.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some()); 
                 }
                 if has_new_mess{
                     do_receive_cb(&messages, &mut temp_mempool, &mempools_, &senders_, &listener_topic_, receive_cb, &udata); 

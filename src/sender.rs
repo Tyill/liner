@@ -118,6 +118,7 @@ impl Sender {
                 }
                 if settings::SENDER_THREAD_WRITE_MESS_DELAY_MS > 0 && !has_new_mess{
                     std::thread::sleep(Duration::from_millis(settings::SENDER_THREAD_WRITE_MESS_DELAY_MS));
+                    has_new_mess = message_buffer_.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some());
                 }
                 let has_old_mess = has_new_mess || messages_.lock().unwrap().iter().any(|m: &Arc<Mutex<Option<Vec<Message>>>>| m.lock().unwrap().is_some());
                 if has_new_mess || has_old_mess{
