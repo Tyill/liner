@@ -72,7 +72,7 @@ def receive_server(to: str, from_: str, data: bytes):
  
 ### Build
  - install [Rust and Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
- - while in the folder repo, execute in console: `cargo build --release`
+ - execute: `cargo build --release`
  
 ### Architecture of library
 
