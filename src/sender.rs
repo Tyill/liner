@@ -102,10 +102,12 @@ impl Sender {
             let mut rep_count = 0;
             while !is_close_.load(Ordering::Relaxed){ // write delay cycle
                 let (lock, cvar) = &*delay_write_cvar_;
-                let mut has_new_mess = false;                
+                let mut has_new_mess = false;
+                let mut has_old_mess = false;
                 if let Ok(mut _started) = lock.lock(){
                     has_new_mess = message_buffer_.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some());
-                    if !has_new_mess && rep_count > settings::SENDER_THREAD_WRITE_MESS_DELAY_REPEATE_COUNT{
+                    has_old_mess = has_new_mess || messages_.lock().unwrap().iter().any(|m: &Arc<Mutex<Option<Vec<Message>>>>| m.lock().unwrap().is_some());
+                    if !has_new_mess && !has_old_mess && rep_count > settings::SENDER_THREAD_WRITE_MESS_DELAY_REPEATE_COUNT{
                         *_started = false;
                         _started = cvar.wait_timeout(_started, Duration::from_millis(settings::SENDER_THREAD_WAIT_TIMEOUT_MS)).unwrap().0;
                         has_new_mess = *_started;
@@ -116,11 +118,10 @@ impl Sender {
                         rep_count += 1;
                     }
                 }
-                if settings::SENDER_THREAD_WRITE_MESS_DELAY_MS > 0 && !has_new_mess{
+                if settings::SENDER_THREAD_WRITE_MESS_DELAY_MS > 0 && !has_new_mess && !has_old_mess{
                     std::thread::sleep(Duration::from_millis(settings::SENDER_THREAD_WRITE_MESS_DELAY_MS));
                     has_new_mess = message_buffer_.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some());
                 }
-                let has_old_mess = has_new_mess || messages_.lock().unwrap().iter().any(|m: &Arc<Mutex<Option<Vec<Message>>>>| m.lock().unwrap().is_some());
                 if has_new_mess || has_old_mess{
                     send_mess_to_listener(&streams, &messages_, &message_buffer_, &mempools_, &mempool_buffer_);
                 }
