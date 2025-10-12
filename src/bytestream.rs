@@ -46,7 +46,7 @@ where
                         break;
                     }
                 }else{ // close stream on other side
-                    if mem_pos > 0{
+                    if mem_alloc_length > 0{
                         mempool.lock().unwrap().free(mem_pos, mem_alloc_length);
                         mem_pos = 0;
                         mem_fill_length = 0;
@@ -63,7 +63,7 @@ where
                     }
                 }else if e != std::io::ErrorKind::Interrupted{
                     print_error!(&format!("{}", e));
-                    if mem_pos > 0{
+                    if mem_alloc_length > 0{
                         mempool.lock().unwrap().free(mem_pos, mem_alloc_length);
                         mem_pos = 0;
                         mem_fill_length = 0;
