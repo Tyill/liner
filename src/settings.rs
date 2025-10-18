@@ -13,3 +13,5 @@ pub const MIN_SIZE_DATA_FOR_COMPRESS_BYTE: usize = 1024*1024;
 pub const DATA_COMPRESS_LEVEL: i32 = 0; // A level of `0` uses zstd's default (currently `3`).
 pub const IS_CHECK_NEW_ADDRESS_TOPIC_ENABLE: bool = false;
 pub const MEMPOOL_MIN_PERCENT_FOR_COMPRESS: f32 = 0.2;
+pub const MEMPOOL_MIN_PERCENT_FOR_RESIZE: f32 = 0.8;
+pub const MEMPOOL_OVER_SIZE_MB: usize = 10;

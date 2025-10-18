@@ -90,7 +90,8 @@ impl Mempool{
                 }
             }
         }
-        if free_mem_pos.is_empty() || free_len_all < (settings::MEMPOOL_MIN_PERCENT_FOR_COMPRESS * self.buff.len() as f32) as usize{
+        let buff_len = self.buff.len();
+        if free_mem_pos.is_empty() || free_len_all < (settings::MEMPOOL_MIN_PERCENT_FOR_COMPRESS * buff_len as f32) as usize{
             self.new_free_mem = 0;
             return None;
         }
@@ -152,6 +153,32 @@ impl Mempool{
             }else{
                 self.free_mem_insert_pos(free_len, free_pos);
             }                
+        }
+        if free_len_all > (settings::MEMPOOL_MIN_PERCENT_FOR_RESIZE * buff_len as f32) as usize &&
+            buff_len > settings::MEMPOOL_OVER_SIZE_MB * 1024 * 1024{
+            let mut free_len = 0;
+            let mut free_ix = 0;
+            let mut has_free_end = false;
+            for m in &self.free_mem{
+                if !m.1.1.is_empty(){
+                    free_len = *m.0;
+                    free_ix = 0;
+                    for pos in &m.1.1{
+                        if *pos + free_len == buff_len && *pos != req_pos{
+                            self.buff.resize(*pos, 0);
+                            has_free_end = true;
+                            break;
+                        }
+                        free_ix += 1;                        
+                    }
+                }
+                if has_free_end{
+                    break;
+                }
+            }
+            if has_free_end{
+                self.free_mem_remove_pos(free_len, free_ix);
+            }
         }
         self.new_free_mem = 0;
         if has_req_mem{    
