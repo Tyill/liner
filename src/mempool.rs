@@ -71,12 +71,7 @@ impl Mempool{
         }
         let csz = self.buff.len();
         self.buff.resize(csz + req_size, 0);
-        if let btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {
-            e.insert((1, Vec::new()));
-        }else{
-            let count = &mut self.free_mem.get_mut(&req_size).unwrap().0;
-            *count += 1;            
-        }
+        self.free_mem_insert_empty_pos(req_size);
         (csz, req_size)
     }
     fn check_free_mem(&mut self, req_size: usize)->Option<(usize, usize)>{
@@ -138,12 +133,7 @@ impl Mempool{
         for m in free_mem{
             let (free_pos, free_len) = m;
             if !has_req_mem && free_len == min_free_len && min_free_len >= req_size{
-                if let btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {
-                    e.insert((1, Vec::new()));
-                }else{
-                    let count = &mut self.free_mem.get_mut(&req_size).unwrap().0;
-                    *count += 1;
-                }
+                self.free_mem_insert_empty_pos(req_size);
                 let endlen = free_len - req_size;
                 if endlen > 0 {                    
                     self.free_mem_insert_pos(endlen, free_pos + req_size);
@@ -159,20 +149,24 @@ impl Mempool{
             let mut free_len = 0;
             let mut free_ix = 0;
             let mut has_free_end = false;
+            let mut has_break = false;
             for m in &self.free_mem{
                 if !m.1.1.is_empty(){
                     free_len = *m.0;
                     free_ix = 0;
                     for pos in &m.1.1{
-                        if *pos + free_len == buff_len && *pos != req_pos{
-                            self.buff.resize(*pos, 0);
-                            has_free_end = true;
+                        if *pos + free_len == buff_len{
+                            if *pos != req_pos{
+                                self.buff.resize(*pos, 0);
+                                has_free_end = true;
+                            }
+                            has_break = true;
                             break;
                         }
                         free_ix += 1;                        
                     }
                 }
-                if has_free_end{
+                if has_break{
                     break;
                 }
             }
@@ -193,6 +187,14 @@ impl Mempool{
         }else{
             self.free_mem.get_mut(&free_len).unwrap().1.push(free_pos);
             let count = &mut self.free_mem.get_mut(&free_len).unwrap().0;
+            *count += 1;
+        }
+    }
+    fn free_mem_insert_empty_pos(&mut self, req_size: usize){
+        if let btree_map::Entry::Vacant(e) = self.free_mem.entry(req_size) {
+            e.insert((1, Vec::new()));
+        }else{
+            let count = &mut self.free_mem.get_mut(&req_size).unwrap().0;
             *count += 1;
         }
     }
