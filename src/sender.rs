@@ -124,15 +124,14 @@ impl Sender {
                 let ctime = common::current_time_ms();
                 ctime_.store(ctime, Ordering::Relaxed);
                 if check_available_stream(&is_new_addr_, ctime, &mut prev_time[0]) {
-                    append_streams(&mut addrs_new_, &mut streams, 
-                                   &messages_, &db, &mempools_);
+                    append_streams(&mut streams, &mut addrs_new_, &db, &messages_, &mempools_);
                 }
                 if timeout_update_last_mess_number(ctime, &mut prev_time[1]){
-                    update_last_mess_number(&mut streams, &db);
+                    update_last_mess_number(&mut streams, &db, &messages_, &mempools_);
                 }
-                check_streams_close(&mut streams, &messages_, &addrs_new_, &db, &mempools_);
+                check_streams_close(&mut streams, &addrs_new_, &db, &messages_, &mempools_);
             }
-            close_streams(&messages_, &streams, &db, &mempools_);
+            close_streams(&streams, &db, &messages_, &mempools_);
         });
         Self{
             addrs_for,
@@ -312,14 +311,12 @@ fn send_mess_to_listener(streams: &WriteStreamList,
                     m.change_mempool(mempool_buffer,
                                      mempool_dst);
                 }
-            }
-            {   
-                let mess_lock = messages.lock().unwrap()[ix].clone();
-                let mut mess_for_send = mess_lock.lock().unwrap();
-                if let Some(mess) = mess_for_send.as_mut(){
+            }   
+            if let Ok(mut mess_lock) = messages.lock().unwrap()[ix].lock(){
+                if let Some(mess) = mess_lock.as_mut(){
                     mess.append(&mut buff);
                 }else{
-                    *mess_for_send = Some(buff);
+                    *mess_lock = Some(buff);
                 }
             }
         }
@@ -357,7 +354,9 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
 }
 
 fn update_last_mess_number(streams: &mut WriteStreamList,
-                           db: &Arc<Mutex<redis::Connect>>){
+                           db: &Arc<Mutex<redis::Connect>>,
+                           messages: &Arc<Mutex<MessList>>,
+                           mempools: &Arc<Mutex<MempoolList>>){
     let mut connection_keys: Vec<i32> = Vec::new();
     for stream_lock in streams.iter(){
         if let Ok(stream) = stream_lock.lock(){
@@ -368,6 +367,23 @@ fn update_last_mess_number(streams: &mut WriteStreamList,
         match db.lock().unwrap().get_last_mess_number_for_sender(*connection_key){
             Ok(last_mess_number)=>{
                 streams.get_mut(ix).unwrap().lock().unwrap().last_mess_number = last_mess_number;
+
+                let mempool = mempools.lock().unwrap()[ix].clone();
+                if let Ok(mut mess_lock ) = messages.lock().unwrap()[ix].lock(){
+                    if let Some(mess) = mess_lock.take(){
+                        let mut mess_for_send = Vec::new();
+                        for m in mess{
+                            if last_mess_number < m.number_mess{
+                                mess_for_send.push(m);
+                            }else{
+                                m.free(&mut mempool.lock().unwrap());
+                            }
+                        }
+                        if !mess_for_send.is_empty(){
+                            *mess_lock = Some(mess_for_send);
+                        }          
+                    }
+                }
             },
             Err(err)=>{
                 print_error!(&format!("get_last_mess_number_for_sender from db, {}", err));
@@ -376,10 +392,10 @@ fn update_last_mess_number(streams: &mut WriteStreamList,
     }
 }
 
-fn append_streams(addrs: &mut Arc<Mutex<Vec<Address>>>,
-                  streams: &mut WriteStreamList,
-                  messages: &Arc<Mutex<MessList>>,
+fn append_streams(streams: &mut WriteStreamList,
+                  addrs: &mut Arc<Mutex<Vec<Address>>>,
                   db: &Arc<Mutex<redis::Connect>>,
+                  messages: &Arc<Mutex<MessList>>,
                   mempools: &Arc<Mutex<MempoolList>>){
     let mut addrs_lost: Vec<Address> = Vec::new();
     for addr in addrs.lock().unwrap().iter(){
@@ -495,7 +511,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
             for mess in buff{
                 let num_mess = mess.number_mess;
                 let at_least_once_delivery = mess.at_least_once_delivery();
-                if is_shutdown || (at_least_once_delivery && last_mess_number < num_mess){
+                if (is_shutdown || at_least_once_delivery) && last_mess_number < num_mess{
                     no_send_mess.push(mess);
                 }else{
                     mess.free(&mut mempool.lock().unwrap());
@@ -521,9 +537,9 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
 }
 
 fn check_streams_close(streams: &mut WriteStreamList,
-                       messages: &Arc<Mutex<MessList>>,
                        addrs_new: &Arc<Mutex<Vec<Address>>>,
                        db: &Arc<Mutex<redis::Connect>>,
+                       messages: &Arc<Mutex<MessList>>,
                        mempools: &Arc<Mutex<MempoolList>>){
     for stream in streams.iter(){
         if let Ok(mut stream) = stream.lock(){
@@ -568,9 +584,9 @@ fn save_mess_to_db(mess: Vec<Message>, db: &Arc<Mutex<redis::Connect>>,
     }
 }
 
-fn close_streams(messages: &Arc<Mutex<MessList>>,
-                 streams: &WriteStreamList,
+fn close_streams(streams: &WriteStreamList,
                  db: &Arc<Mutex<redis::Connect>>,
+                 messages: &Arc<Mutex<MessList>>,
                  mempools: &Arc<Mutex<MempoolList>>){
     for stream in streams.iter(){
         if let Ok(mut stream) = stream.lock(){
