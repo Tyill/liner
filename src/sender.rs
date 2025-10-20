@@ -50,7 +50,6 @@ struct Address{
 }
 
 type MempoolList = Vec<Arc<Mutex<Mempool>>>;
-type MempoolBuffList = Vec<Mempool>;
 type MessList = Vec<Arc<Mutex<Option<Vec<Message>>>>>; 
 type MessBuffList = Vec<Option<Vec<Message>>>; 
 type WriteStreamList = Vec<Arc<Mutex<WriteStream>>>; 
@@ -61,7 +60,7 @@ pub struct Sender{
     message_buffer: Arc<Mutex<MessBuffList>>,
     messages: Arc<Mutex<MessList>>, 
     mempools: Arc<Mutex<MempoolList>>, 
-    mempool_buffer: Arc<Mutex<MempoolBuffList>>, 
+    mempool_buffer: Arc<Mutex<MempoolList>>, 
     last_mess_number: Vec<u64>,
     connection_key: Vec<i32>,
     is_new_addr: Arc<AtomicBool>,
@@ -79,7 +78,7 @@ impl Sender {
         let message_buffer_ = message_buffer.clone();
         let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(Vec::new()));
         let mempools_ = mempools.clone();
-        let mempool_buffer: Arc<Mutex<MempoolBuffList>> = Arc::new(Mutex::new(Vec::new()));
+        let mempool_buffer: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(Vec::new()));
         let mempool_buffer_ = mempool_buffer.clone();  
         let addrs_for: HashMap<String, usize> = HashMap::new();
         let addrs_new: Arc<Mutex<Vec<Address>>> = Arc::new(Mutex::new(Vec::new()));
@@ -175,7 +174,7 @@ impl Sender {
         let number_mess = self.last_mess_number[ix] + 1;
         *self.last_mess_number.get_mut(ix).unwrap() = number_mess;
        
-        let mess = Message::new(self.mempool_buffer.lock().unwrap().get_mut(ix).unwrap(),
+        let mess = Message::new(&self.mempool_buffer.lock().unwrap().get_mut(ix).unwrap(),
                                          connection_key, listener_topic_key, number_mess, data, at_least_once_delivery);
         self.send_mess_to_buff(mess, ix);
                
@@ -236,7 +235,7 @@ impl Sender {
         }
         let ix = self.mempools.lock().unwrap().len();    
         self.mempools.lock().unwrap().push(Arc::new(Mutex::new(Mempool::new())));
-        self.mempool_buffer.lock().unwrap().push(Mempool::new());
+        self.mempool_buffer.lock().unwrap().push(Arc::new(Mutex::new(Mempool::new())));
         let mempool = self.mempools.lock().unwrap().get_mut(ix).unwrap().clone();
         if let Ok(last_mess) = db.load_last_message_for_sender(&mempool, connection_key){
             if let Some(mess) = last_mess{
@@ -295,7 +294,7 @@ fn send_mess_to_listener(streams: &WriteStreamList,
                          messages: &Arc<Mutex<MessList>>,
                          message_buffer: &Arc<Mutex<MessBuffList>>,
                          mempools: &Arc<Mutex<MempoolList>>,
-                         mempool_buffer: &Arc<Mutex<MempoolBuffList>>){
+                         mempool_buffer: &Arc<Mutex<MempoolList>>){
     let mut mess_from_buff: Vec<Option<Vec<Message>>> = Vec::new();
     for m in message_buffer.lock().unwrap().iter_mut(){
         mess_from_buff.push(m.take());
@@ -304,9 +303,9 @@ fn send_mess_to_listener(streams: &WriteStreamList,
         if let Some(mut buff) = buff{
             {
                 let mempool_dst_lock = mempools.lock().unwrap().get_mut(ix).unwrap().clone();
-                let mut mempool_buffer_lock = mempool_buffer.lock().unwrap();
-                let mempool_buffer = mempool_buffer_lock.get_mut(ix).unwrap();
                 let mempool_dst = &mut mempool_dst_lock.lock().unwrap();
+                let mempool_buffer_lock = mempool_buffer.lock().unwrap().get_mut(ix).unwrap().clone();
+                let mempool_buffer = &mut mempool_buffer_lock.lock().unwrap();
                 for m in &mut buff{
                     m.change_mempool(mempool_buffer,
                                      mempool_dst);

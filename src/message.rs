@@ -15,8 +15,8 @@ pub struct Message{
     mem_alloc_length: usize,
 }
 
-impl Message{
-    pub fn new(mempool: &mut Mempool, connection_key: i32, listener_topic_key: i32,
+impl Message{ 
+    pub fn new(mempool: &Arc<Mutex<Mempool>>, connection_key: i32, listener_topic_key: i32,
                number_mess: u64, data: &[u8], at_least_once_delivery: bool) -> Message {
         let mut flags = 0;
         if at_least_once_delivery{
@@ -40,24 +40,27 @@ impl Message{
                                listener_topic_key_len +              
                                flags_len +
                                data_len;
-      
-        let (mem_alloc_pos, mem_alloc_length) = mempool.alloc(mess_size);
-        let number_mess_pos = mem_alloc_pos; 
-        let connection_key_pos = number_mess_pos + number_mess_len;
-        let listener_topic_key_pos = connection_key_pos + connection_key_len;        
-        let flags_pos = listener_topic_key_pos + listener_topic_key_len;
-        let data_pos = flags_pos + flags_len;
-                     
-        mempool.write_num(number_mess_pos, number_mess);
-        mempool.write_num(connection_key_pos, connection_key);
-        mempool.write_num(listener_topic_key_pos, listener_topic_key);
-        mempool.write_num(flags_pos, flags);
-        match cdata{
-            Some(cdata)=>{
-                mempool.write_array(data_pos, &cdata);
-            },
-            None=>{
-                mempool.write_array(data_pos, data);
+        let mut mem_alloc_pos = 0;
+        let mut mem_alloc_length = 0;
+        if let Ok(mut mempool) = mempool.lock(){
+            (mem_alloc_pos, mem_alloc_length) = mempool.alloc(mess_size);
+            let number_mess_pos = mem_alloc_pos; 
+            let connection_key_pos = number_mess_pos + number_mess_len;
+            let listener_topic_key_pos = connection_key_pos + connection_key_len;        
+            let flags_pos = listener_topic_key_pos + listener_topic_key_len;
+            let data_pos = flags_pos + flags_len;
+                        
+            mempool.write_num(number_mess_pos, number_mess);
+            mempool.write_num(connection_key_pos, connection_key);
+            mempool.write_num(listener_topic_key_pos, listener_topic_key);
+            mempool.write_num(flags_pos, flags);
+            match cdata{
+                Some(cdata)=>{
+                    mempool.write_array(data_pos, &cdata);
+                },
+                None=>{
+                    mempool.write_array(data_pos, data);
+                }
             }
         }
         Message{number_mess, listener_topic_key, flags, mem_alloc_pos, mem_alloc_length}
