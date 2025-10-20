@@ -464,18 +464,16 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
         let mut is_shutdown = false;
         let mut ix = 0;
         let mut last_send_mess_number = 0;
-        let mut last_mess_number = 0;
         let mut arc_stream = Arc::new(None);
         if let Ok(stream) = stream.lock(){
             ix = stream.ix;
             last_send_mess_number = stream.last_send_mess_number;
-            last_mess_number = stream.last_mess_number;
             arc_stream = stream.stream.clone();
         }
         let messages = messages.lock().unwrap()[ix].clone();
-        if let Some(stream) = arc_stream.as_ref(){
+        if let Some(tcp_stream) = arc_stream.as_ref(){
             let mut buff: Vec<Message> = Vec::new();
-            let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, stream); 
+            let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, tcp_stream); 
             let mempool = mempools.lock().unwrap()[ix].clone();
             loop{
                 let mut mess_for_send = None;
@@ -506,6 +504,10 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                     is_shutdown = true;
                     break;
                 }
+            }
+            let mut last_mess_number = 0;
+            if let Ok(stream) = stream.lock(){
+                last_mess_number = stream.last_mess_number;
             }
             let mut no_send_mess: Vec<Message> = Vec::new();
             for mess in buff{
