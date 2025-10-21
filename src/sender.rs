@@ -334,7 +334,9 @@ fn check_has_messages(streams: &WriteStreamList, messages: &Arc<Mutex<MessList>>
             if let Ok(mess_lock) = mess.lock(){
                 if let Some(mess) = mess_lock.as_ref(){
                     has_mess = mess.last().unwrap().number_mess > stream.lock().unwrap().last_send_mess_number;
-                    break;
+                    if has_mess{
+                        break;
+                    }
                 }
             }
         }
