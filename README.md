@@ -151,7 +151,7 @@ For ZeroMQ it is similar
 
 ### [Tests](https://github.com/Tyill/liner/blob/main/test)
 
-### [Docs](https://docs.rs/liner_broker/1.1.8/liner_broker/)
+### [Docs](https://docs.rs/liner_broker/1.1.9/liner_broker/)
 
 ### License
 Licensed under an [MIT-2.0]-[license](LICENSE).
