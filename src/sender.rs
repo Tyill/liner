@@ -105,12 +105,14 @@ impl Sender {
                 let mut has_old_mess = false;
                 if let Ok(mut _started) = lock.lock(){
                     has_new_mess = message_buffer_.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some());
-                    has_old_mess = has_new_mess || messages_.lock().unwrap().iter().any(|m: &Arc<Mutex<Option<Vec<Message>>>>| m.lock().unwrap().is_some());
+                    if !has_new_mess{
+                        has_old_mess = check_has_messages(&streams, &messages_);
+                    }
                     if !has_new_mess && !has_old_mess && !ppl_wait{
                         *_started = false;
                         _started = cvar.wait_timeout(_started, Duration::from_millis(settings::SENDER_THREAD_WAIT_TIMEOUT_MS)).unwrap().0;
                         has_new_mess = *_started || message_buffer_.lock().unwrap().iter().any(|m: &Option<Vec<Message>>| m.is_some());
-                    }                    
+                    } 
                 }
                 if settings::SENDER_THREAD_WRITE_MESS_DELAY_MS > 0 && !has_new_mess && !has_old_mess{
                     std::thread::sleep(Duration::from_millis(settings::SENDER_THREAD_WRITE_MESS_DELAY_MS));
@@ -319,18 +321,25 @@ fn send_mess_to_listener(streams: &WriteStreamList,
                 }
             }
         }
-        if let Some(stream) = streams.get(ix){
-            let mut has_new_mess = false;
-            if let Ok(mess_lock) = messages.lock().unwrap()[ix].lock(){
+        if let Some(stream) = streams.get(ix){            
+            write_stream(stream, messages, mempools);
+        }
+    }
+}
+
+fn check_has_messages(streams: &WriteStreamList, messages: &Arc<Mutex<MessList>>)->bool{
+    let mut has_mess = false;
+    for (ix, mess) in messages.lock().unwrap().iter().enumerate(){
+        if let Some(stream) = streams.get(ix){            
+            if let Ok(mess_lock) = mess.lock(){
                 if let Some(mess) = mess_lock.as_ref(){
-                    has_new_mess = mess.last().unwrap().number_mess > stream.lock().unwrap().last_send_mess_number;
+                    has_mess = mess.last().unwrap().number_mess > stream.lock().unwrap().last_send_mess_number;
+                    break;
                 }
-            }
-            if has_new_mess{
-                write_stream(stream, messages, mempools);
             }
         }
     }
+    has_mess
 }
 
 fn check_available_stream(is_new_addr: &Arc<AtomicBool>, ctime: u64, prev_time: &mut u64)->bool{
