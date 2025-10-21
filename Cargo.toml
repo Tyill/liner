@@ -1,6 +1,6 @@
 [package]
 name = "liner_broker"
-version = "1.1.8"
+version = "1.1.9"
 edition = "2021"
 keywords = ["broker", "serverless", "redis", "network"]
 categories = ["concurrency", "asynchronous"]
