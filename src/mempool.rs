@@ -83,14 +83,17 @@ impl Mempool{
            (self.free_len - req_size) < (settings::MEMPOOL_MIN_PERCENT_FOR_COMPRESS * self.buff.len() as f32) as usize{
             return None;
         }
+        let mut free_len_all = 0;
         let mut free_mem_pos: BTreeMap<usize, usize> = BTreeMap::new(); // pos, len
         for m in &self.free_mem{
             if !m.1.1.is_empty(){
                 for pos in &m.1.1{
                     free_mem_pos.insert(*pos, *m.0);
+                    free_len_all += m.0;
                 }
             }
         }
+        self.free_len = free_len_all;     // на всякий обновим
         let mut min_free_len: usize = 0;
         let mut free_mem: Vec<(usize, usize)> = Vec::new();
         {
