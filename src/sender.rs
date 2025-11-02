@@ -65,7 +65,6 @@ pub struct Sender{
     connection_key: Vec<i32>,
     is_new_addr: Arc<AtomicBool>,
     is_close: Arc<AtomicBool>,
-    ctime: Arc<AtomicU64>,
     delay_write_cvar: Arc<(Mutex<bool>, Condvar)>,
     wdelay_thread: Option<JoinHandle<()>>,
 }
@@ -145,7 +144,6 @@ impl Sender {
             connection_key: Vec::new(),
             is_new_addr,
             is_close,
-            ctime,
             delay_write_cvar,
             wdelay_thread: Some(wdelay_thread),
         }
@@ -281,10 +279,7 @@ impl Sender {
         if !self.addrs_new.lock().unwrap().is_empty(){
             self.is_new_addr.store(true, Ordering::Relaxed);            
         }   
-    }
-    pub fn get_ctime(&self)->u64{
-        self.ctime.load(Ordering::Relaxed)
-    }
+    }    
     fn wdelay_thread_notify(&self){
         let (lock, cvar) = &*self.delay_write_cvar;
         *lock.lock().unwrap() = true;

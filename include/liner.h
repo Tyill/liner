@@ -91,6 +91,12 @@ LINER_API BOOL lnr_subscribe(lnr_hClient client, const char* topic);
 /// @return true - ok
 LINER_API BOOL lnr_unsubscribe(lnr_hClient client, const char* topic);
 
+/// Refresh address of topic (actual for new clients)
+/// @param lnr_hClient
+/// @param topic
+/// @return true - ok
+LINER_API BOOL lnr_refresh_address_topic(lnr_hClient client, const char* topic);
+
 /// Clear stored messages
 /// @param lnr_hClient
 /// @return true - ok

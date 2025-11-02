@@ -2,7 +2,6 @@ use crate::redis;
 use crate::{UCbackIntern, UData};
 use crate::listener::Listener;
 use crate::sender::Sender;
-use crate::settings;
 use crate::print_error;
 
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -22,7 +21,6 @@ pub struct Client{
     mtx: Mutex<()>,
     address_topic: HashMap<String, Vec<String>>,
     subscriptions: HashMap<i32, String>,
-    prev_time: [u64; 2],
 }
 
 impl Client {
@@ -42,8 +40,7 @@ impl Client {
                 is_run: false,
                 mtx: Mutex::new(()),
                 address_topic: HashMap::new(),
-                subscriptions: HashMap::new(),    
-                prev_time: [0; 2]
+                subscriptions: HashMap::new(), 
             }
         )
     }
@@ -84,10 +81,8 @@ impl Client {
             print_error!("you can't send on your own topic");
             return false;
         }
-        let has_addr = self.address_topic.contains_key(topic);
-        if !has_addr || settings::IS_CHECK_NEW_ADDRESS_TOPIC_ENABLE{ 
-            let ctime = self.sender.as_ref().unwrap().get_ctime();
-            if let Some(addr) = get_address_topic(topic, &mut self.db, !has_addr, ctime, &mut self.prev_time[0]){
+        if !self.address_topic.contains_key(topic){ 
+            if let Some(addr) = get_address_topic(topic, &mut self.db){
                 self.address_topic.insert(topic.to_string(), addr);
             }
         }
@@ -117,10 +112,8 @@ impl Client {
             print_error!("you can't send on your own topic");
             return false;
         }
-        let has_addr = self.address_topic.contains_key(topic);
-        if !has_addr || settings::IS_CHECK_NEW_ADDRESS_TOPIC_ENABLE{ 
-            let ctime = self.sender.as_ref().unwrap().get_ctime();
-            if let Some(addr) = get_address_topic(topic, &mut self.db, !has_addr, ctime, &mut self.prev_time[0]){
+        if !self.address_topic.contains_key(topic){ 
+            if let Some(addr) = get_address_topic(topic, &mut self.db){
                 self.address_topic.insert(topic.to_string(), addr);
             }
         }
@@ -189,6 +182,15 @@ impl Client {
         true
     }
 
+    pub fn refresh_address_topic(&mut self, topic: &str) -> bool {
+        let _lock = self.mtx.lock();
+        
+        if let Some(addr) = get_address_topic(topic, &mut self.db){
+            self.address_topic.insert(topic.to_string(), addr);
+        }
+        true
+    }
+
     pub fn clear_stored_messages(&mut self) -> bool {
         let _lock = self.mtx.lock();
         if self.is_run{
@@ -215,29 +217,18 @@ impl Client {
     }
 }
 
-fn get_address_topic(topic: &str, db: &mut redis::Connect, force: bool, ctime: u64, prev_time: &mut u64)->Option<Vec<String>>{
-    if force || check_new_address_topic_by_time(ctime, prev_time){
-        match db.get_addresses_of_topic(true, topic){
-            Ok(addresses)=>{
-                if !addresses.is_empty(){
-                    return Some(addresses);
-                }
-            },
-            Err(err)=>{
-                print_error!(&format!("{}", err));
+fn get_address_topic(topic: &str, db: &mut redis::Connect)->Option<Vec<String>>{
+    match db.get_addresses_of_topic(true, topic){
+        Ok(addresses)=>{
+            if !addresses.is_empty(){
+                return Some(addresses);
             }
+        },
+        Err(err)=>{
+            print_error!(&format!("{}", err));
         }
     }
     None
-}
-
-fn check_new_address_topic_by_time(ctime: u64, prev_time: &mut u64)->bool{
-    if ctime - *prev_time > settings::UPDATE_SENDER_ADDRESSES_TIMEOUT_MS{
-        *prev_time = ctime;
-        true
-    }else{
-        false
-    }
 }
 
 fn str_to_socket_addr(localhost: &str)->Option<SocketAddr>{
