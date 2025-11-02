@@ -92,6 +92,14 @@ class Client:
         pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p)
         return pfun(self.hClient_, c_to_topic)
     
+    def refresh_address_topic(self, to_topic: str)->bool:
+        c_to_topic = to_topic.encode("utf-8")
+        
+        pfun = lib_.lnr_refresh_address_topic
+        pfun.restype = ctypes.c_bool
+        pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p)
+        return pfun(self.hClient_, c_to_topic)
+    
     def clear_stored_messages(self)->bool:
         pfun = lib_.lnr_clear_stored_messages
         pfun.restype = ctypes.c_bool

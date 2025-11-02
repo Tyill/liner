@@ -55,6 +55,13 @@ public:
       return false;
   }
 
+  bool refresh_address_topic(const std::string& topic){
+      if (m_hClient){
+          return lnr_refresh_address_topic(m_hClient, topic.c_str());
+      }
+      return false;
+  }
+
   bool clear_addresses_of_topic(){
       if (m_hClient){
           return lnr_clear_addresses_of_topic(m_hClient);

@@ -114,6 +114,12 @@ impl Liner {
             lnr_unsubscribe(self.hclient, topic.as_ptr())
         }
     }
+    pub fn refresh_address_topic(&mut self, topic: &str)->bool{
+        unsafe{
+            let topic = CString::new(topic).unwrap();
+            lnr_refresh_address_topic(self.hclient, topic.as_ptr())
+        }
+    }
     pub fn clear_stored_messages(&mut self)->bool{
         unsafe{
             lnr_clear_stored_messages(self.hclient)
@@ -253,7 +259,6 @@ pub unsafe extern "C" fn lnr_send_all(client: *mut Client,
 }
 
 /// Subscribe to the topic and receive messages from other clients.
-/// Call only when the client is not running yet.
 /// 
 /// Possible errors:
 /// - no connection to redis
@@ -276,7 +281,6 @@ pub unsafe extern "C" fn lnr_subscribe(client: *mut Client,
 }
 
 /// Unsubscribe from the topic and do not receive messages from other clients.
-/// Call only when the client is not running yet.
 /// 
 /// Possible errors:
 /// - no connection to redis
@@ -297,6 +301,29 @@ pub unsafe extern "C" fn lnr_unsubscribe(client: *mut Client,
     }
     (*client).unsubscribe(topic)
 }
+
+/// Refresh address of topic (actual for new clients)
+/// 
+/// Possible errors:
+/// - no connection to redis
+/// - no other client with this topic
+/// 
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_refresh_address_topic(client: *mut Client,
+                                                   topic: *const i8)->bool{
+    let topic = CStr::from_ptr(topic).to_str().unwrap();
+    
+    if !has_client(client){
+        return false;
+    }
+    if topic.is_empty(){
+        print_error!("topic.is_empty()");
+        return false;
+    }
+    (*client).refresh_address_topic(topic)
+}
+
 
 /// Clearing messages that were not previously sent for some reason.
 /// Call only when the client is not running yet.
