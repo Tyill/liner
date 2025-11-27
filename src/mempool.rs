@@ -270,15 +270,56 @@ impl Mempool{
             cpos += settings::MEMPOOL_CHUNK_SIZE_BYTE - offset;
             clen += wlen;
         }
-    }    
+    }
+   
     pub fn read_u64(&self, pos: usize)->u64{
-        u64::from_be_bytes(u8_8(&self.buff[pos.. pos + std::mem::size_of::<u64>()]))
+        let lpos = pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
+        let offset = pos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
+        
+        if offset + std::mem::size_of::<u64>() <= settings::MEMPOOL_CHUNK_SIZE_BYTE{
+            let arr = &self.buff[lpos];
+            u64::from_be_bytes(u8_8(&arr[offset..offset + std::mem::size_of::<u64>()]))
+        }else{
+            let mut oarr= [0; 8];
+
+            let aleft = &self.buff[lpos];
+            let left = aleft.len() - offset;
+            let right = std::mem::size_of::<u64>() - left;
+            oarr[..right].copy_from_slice(&aleft[left..]);
+
+            let aright = &self.buff[lpos + 1];
+            oarr[right..].copy_from_slice(&aright[..right]);
+
+            u64::from_be_bytes(oarr)
+        }
     }
     pub fn read_u32(&self, pos: usize)->u32{
-        u32::from_be_bytes(u8_4(&self.buff[pos.. pos + std::mem::size_of::<u32>()]))
+        let lpos = pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
+        let offset = pos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
+        
+        if offset + std::mem::size_of::<u32>() <= settings::MEMPOOL_CHUNK_SIZE_BYTE{
+            let arr = &self.buff[lpos];
+            u32::from_be_bytes(u8_4(&arr[offset..offset + std::mem::size_of::<u32>()]))
+        }else{
+            let mut oarr= [0; 4];
+
+            let aleft = &self.buff[lpos];
+            let left = aleft.len() - offset;
+            let right = std::mem::size_of::<u32>() - left;
+            oarr[..right].copy_from_slice(&aleft[left..]);
+
+            let aright = &self.buff[lpos + 1];
+            oarr[right..].copy_from_slice(&aright[..right]);
+
+            u32::from_be_bytes(oarr)
+        }
     }
     pub fn read_u8(&self, pos: usize)->u8{
-        self.buff[pos]
+        let lpos = pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
+        let offset = pos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
+        
+        let arr = &self.buff[lpos];
+        arr[offset]
     }   
     pub fn read_data(&self, pos: usize, sz: usize)->&[u8]{
         &self.buff[pos.. pos + sz]
