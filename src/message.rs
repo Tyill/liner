@@ -69,16 +69,11 @@ impl Message{
     pub fn free(&self, mempool: &mut Mempool){
         mempool.free(self.mem_alloc_pos, self.mem_alloc_length);
     }
-
-    pub fn raw_data<'a>(&self, mempool: &'a Mempool)->&'a[u8]{
-        mempool.read_data(self.mem_alloc_pos, self.mem_alloc_length)
-    }
     
     pub fn from_stream<T>(mempool: &Arc<Mutex<Mempool>>, stream: &mut T, is_shutdown: &mut bool) -> Option<Message>
         where T: Read{
-        let (mem_alloc_pos, mem_alloc_length, 
-            mess_size, is_shutdown_) = bytestream::read_stream(stream, mempool);
-        if mess_size == 0{
+        let (mem_alloc_pos, mem_alloc_length, is_shutdown_) = bytestream::read_stream(stream, mempool);
+        if mem_alloc_length == 0{
             *is_shutdown = is_shutdown_;
             return None;
         }
@@ -103,6 +98,38 @@ impl Message{
     pub fn to_stream<T>(&self, mempool: &Arc<Mutex<Mempool>>, stream: &mut T)->bool 
         where T: Write{        
         bytestream::write_stream(stream, self.mem_alloc_pos, self.mem_alloc_length, mempool)       
+    }
+
+    pub fn get_data(&self, mempool: &Arc<Mutex<Mempool>>, out: &mut Vec<u8>)->usize{ 
+        
+        if out.len() < self.mem_alloc_length{
+            out.resize(self.mem_alloc_length, 0);
+        }
+        if let Ok(mempool) = mempool.lock(){
+            mempool.read_data(self.mem_alloc_pos, &mut out[..self.mem_alloc_length]);
+        }
+        let number_mess_pos = 0; 
+        let number_mess_len = std::mem::size_of::<u64>();        
+        let connection_key_pos = number_mess_pos + number_mess_len;
+        let connection_key_len = std::mem::size_of::<u32>();
+        let listener_topic_key_pos = connection_key_pos + connection_key_len;
+        let listener_topic_key_len = std::mem::size_of::<u32>();
+        let flags_pos = listener_topic_key_pos + listener_topic_key_len; 
+        let flags_len = std::mem::size_of::<u8>(); 
+        let data_pos = flags_pos + flags_len;
+
+        let len: isize = std::mem::size_of::<u32>() as isize;
+        let data_len = bytestream::read_u32(data_pos, &out[data_pos..]) as usize;
+        if self.is_compressed(){            
+            let data_pos = data_pos + len as usize;
+            let decomp_data = decompress(&out[data_pos.. data_pos + data_len]);
+            if out.len() < decomp_data.len(){
+                out.resize(decomp_data.len(), 0);
+            } 
+            out[..decomp_data.len()].copy_from_slice(&decomp_data);
+            return decomp_data.len()
+        }
+        data_len
     }
     
     pub fn at_least_once_delivery(&self)->bool{
@@ -141,48 +168,4 @@ fn decompress(cdata: &[u8])->Vec<u8>{
         }
     }
     data
-}
-
-
-pub struct MessageForReceiver{
-    pub data: *const u8, 
-    pub data_len: usize,
-    _decomp_data: Option<Vec<u8>>,
-}
-
-impl MessageForReceiver{
-    pub fn new(mess: &Message, mempool: &Mempool)->MessageForReceiver{
-        let raw_data =  mess.raw_data(mempool);
-        
-        let number_mess_pos = 0; 
-        let number_mess_len = std::mem::size_of::<u64>();        
-        let connection_key_pos = number_mess_pos + number_mess_len;
-        let connection_key_len = std::mem::size_of::<u32>();
-        let listener_topic_key_pos = connection_key_pos + connection_key_len;
-        let listener_topic_key_len = std::mem::size_of::<u32>();
-        let flags_pos = listener_topic_key_pos + listener_topic_key_len; 
-        let flags_len = std::mem::size_of::<u8>(); 
-        let data_pos = flags_pos + flags_len;
-
-        let len: isize = std::mem::size_of::<u32>() as isize;
-        unsafe{
-            let mut data = raw_data.as_ptr().offset(data_pos as isize + len);
-            let mut data_len = bytestream::read_u32(data_pos, raw_data) as usize;
-            let mut _decomp_data = None;
-            if mess.is_compressed(){
-                let data_pos = data_pos + len as usize;
-                _decomp_data = Some(decompress(&raw_data[data_pos.. data_pos + data_len]));
-                if let Some(decomp_data) = &_decomp_data{
-                    data = decomp_data.as_ptr();
-                    data_len = decomp_data.len();
-                }
-            }
-            Self{
-                data,
-                data_len,
-                _decomp_data,
-            }
-            
-        }
-    }
 }

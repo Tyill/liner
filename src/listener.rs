@@ -1,5 +1,4 @@
 use crate::message::Message;
-use crate::message::MessageForReceiver;
 use crate::mempool::Mempool;
 use crate::redis;
 use crate::settings;
@@ -123,7 +122,7 @@ impl Listener {
         let listener_topic_ = listener_topic.clone();
         let receive_thread = thread::spawn(move|| {
             let mut prev_time: [u64; 1] = [common::current_time_ms(); 1];
-            let mut temp_mempool: Mempool = Mempool::new();
+            let mut buff_data: Vec<u8> = vec![0; 4086];
             while !is_close_.load(Ordering::Relaxed){
                 let (lock, cvar) = &*receive_thread_cvar_;
                 let mut has_new_mess = false;
@@ -136,7 +135,7 @@ impl Listener {
                     }
                 }
                 if has_new_mess{
-                    do_receive_cb(&messages, &mut temp_mempool, &mempools_, &senders_, &listener_topic_, receive_cb, &udata); 
+                    do_receive_cb(&messages, &mempools_, &senders_, &listener_topic_, receive_cb, &mut buff_data, &udata); 
                 } 
                 let ctime = common::current_time_ms();
                 if timeout_update_last_mess_number(ctime, &mut prev_time[0]){                    
@@ -162,11 +161,11 @@ impl Listener {
 }
 
 fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,
-                 temp_mempool: &mut Mempool,
                  mempools: &Arc<Mutex<MempoolList>>,
                  senders: &Arc<Mutex<SenderList>>,
                  listener_topic: &Arc<Mutex<HashMap<i32, String>>>,
                  receive_cb: UCbackIntern,
+                 buff_data: &mut Vec<u8>,
                  udata: &UData){
 
     let mut mess_from_buff: Vec<Option<Vec<Message>>> = Vec::new();
@@ -175,17 +174,9 @@ fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,
     }
     for (ix, mess) in mess_from_buff.into_iter().enumerate(){
         if let Some(mess) = mess{
-            let mempool_lock = mempools.lock().unwrap()[ix].clone();
-            let mut mess_for_receive: Vec<Message> = Vec::new();    
-            if let Ok(mut mempool) = mempool_lock.lock(){
-                for mut m in mess{
-                    m.change_mempool(&mut mempool, temp_mempool);
-                    mess_for_receive.push(m);
-                }
-            }
             let topic_from = CString::new(senders.lock().unwrap()[ix].sender_topic.as_bytes()).unwrap();
             let mut last_mess_num = 0;
-            for m in mess_for_receive{
+            for m in mess{
                 let mut topic_to = None;
                 if let Some(topic) = listener_topic.lock().unwrap().get(&m.listener_topic_key){
                     topic_to = Some(CString::new(topic.as_bytes()).unwrap());
@@ -193,13 +184,15 @@ fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,
                     print_debug!(&format!("unsubscribe on topic_key {}", m.listener_topic_key));
                 }
                 if let Some(topic_to) = topic_to{
-                    let m = MessageForReceiver::new(&m, temp_mempool);
-                    receive_cb(topic_to.as_c_str().as_ptr(), 
-                               topic_from.as_c_str().as_ptr(), 
-                               m.data, m.data_len, 
-                               udata.0);      
+                    if let Some(mempool) = mempools.lock().unwrap().get(ix){            
+                        let mlen = m.get_data(&mempool, buff_data);
+                        m.free(&mut mempool.lock().unwrap());
+                        receive_cb(topic_to.as_c_str().as_ptr(), 
+                                topic_from.as_c_str().as_ptr(), 
+                                buff_data[..mlen].as_ptr(), mlen, 
+                                udata.0);
+                    }
                 }
-                m.free(temp_mempool);
                 if m.number_mess > last_mess_num{
                     last_mess_num = m.number_mess;
                 }             

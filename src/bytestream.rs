@@ -4,8 +4,8 @@ use crate::mempool::Mempool;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
-// return: mem_pos, mem_alloc_length, mess_size
-pub fn read_stream<T>(stream: &mut T, mempool: &Arc<Mutex<Mempool>>)->(usize, usize, usize, bool) 
+// return: mem_pos, mem_alloc_length
+pub fn read_stream<T>(stream: &mut T, mempool: &Arc<Mutex<Mempool>>)->(usize, usize, bool) 
 where 
     T: Read
 {
@@ -32,6 +32,7 @@ where
                         assert!(msz > 0);
                         if let Ok(mut mempool) = mempool.lock(){
                             (mem_pos, mem_alloc_length) = mempool.alloc(msz);
+                            assert!(msz == mem_alloc_length);
                         }
                         offs = 0;
                     }
@@ -49,7 +50,7 @@ where
                     if mem_alloc_length > 0{
                         mempool.lock().unwrap().free(mem_pos, mem_alloc_length);
                         mem_pos = 0;
-                        mem_fill_length = 0;
+                        mem_alloc_length = 0;
                     }
                     is_shutdown = true;
                     break; 
@@ -66,7 +67,7 @@ where
                     if mem_alloc_length > 0{
                         mempool.lock().unwrap().free(mem_pos, mem_alloc_length);
                         mem_pos = 0;
-                        mem_fill_length = 0;
+                        mem_alloc_length = 0;
                     }
                     is_shutdown = true;
                     break;                  
@@ -74,7 +75,7 @@ where
             }
         }
     }
-    (mem_pos, mem_alloc_length, mem_fill_length, is_shutdown)
+    (mem_pos, mem_alloc_length, is_shutdown)
 }
 
 pub fn read_u32(pos: usize, data: &[u8])->u32{
@@ -101,8 +102,7 @@ where
         let endlen = std::cmp::min(mess_size - wsz + offs, BUFF_LEN);
         if !is_continue{
             if let Ok(mempool) = mempool.lock(){
-                let wdata = mempool.read_data(mem_alloc_pos + wsz, endlen - offs);
-                buff[offs..endlen].copy_from_slice(wdata);                
+                mempool.read_data(mem_alloc_pos + wsz, &mut buff[offs..endlen]);
             }           
         }
         match stream.write_all(&buff[..endlen]){

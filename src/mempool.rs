@@ -265,7 +265,7 @@ impl Mempool{
         
             let arr = &mut self.buff[lpos];
             let wlen = (value.len() - clen).min(settings::MEMPOOL_CHUNK_SIZE_BYTE - offset);
-            arr[offset..].copy_from_slice(&value[clen..clen + wlen]);
+            arr[offset..offset + wlen].copy_from_slice(&value[clen..clen + wlen]);
 
             cpos += settings::MEMPOOL_CHUNK_SIZE_BYTE - offset;
             clen += wlen;
@@ -321,8 +321,20 @@ impl Mempool{
         let arr = &self.buff[lpos];
         arr[offset]
     }   
-    pub fn read_data(&self, pos: usize, sz: usize)->&[u8]{
-        &self.buff[pos.. pos + sz]
+    pub fn read_data(&self, pos: usize, out: &mut[u8]){
+        let mut cpos = pos;
+        let mut clen = 0;
+        for  _ in 0..out.len() / settings::MEMPOOL_CHUNK_SIZE_BYTE + 1{
+            let lpos = cpos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
+            let offset = cpos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
+                    
+            let arr = &self.buff[lpos];
+            let wlen = (out.len() - clen).min(settings::MEMPOOL_CHUNK_SIZE_BYTE - offset);
+            out[clen..clen + wlen].copy_from_slice(&arr[offset..offset + wlen]);
+
+            cpos += settings::MEMPOOL_CHUNK_SIZE_BYTE - offset;
+            clen += wlen;
+        }
     }
 }
 
