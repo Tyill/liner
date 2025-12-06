@@ -101,28 +101,18 @@ impl Message{
     }
 
     pub fn get_data(&self, mempool: &Arc<Mutex<Mempool>>, out: &mut Vec<u8>)->usize{ 
-        
-        if out.len() < self.mem_alloc_length{
-            out.resize(self.mem_alloc_length, 0);
-        }
+        let mut data_len = 0;
         if let Ok(mempool) = mempool.lock(){
-            mempool.read_data(self.mem_alloc_pos, &mut out[..self.mem_alloc_length]);
+            let data_pos =  data_pos();
+            let size_u32 = std::mem::size_of::<u32>() as usize;
+            data_len = mempool.read_u32(self.mem_alloc_pos + data_pos) as usize;
+            if out.len() < data_len{
+                out.resize(data_len, 0);
+            }
+            mempool.read_data(self.mem_alloc_pos + data_pos + size_u32, &mut out[..data_len]);
         }
-        let number_mess_pos = 0; 
-        let number_mess_len = std::mem::size_of::<u64>();        
-        let connection_key_pos = number_mess_pos + number_mess_len;
-        let connection_key_len = std::mem::size_of::<u32>();
-        let listener_topic_key_pos = connection_key_pos + connection_key_len;
-        let listener_topic_key_len = std::mem::size_of::<u32>();
-        let flags_pos = listener_topic_key_pos + listener_topic_key_len; 
-        let flags_len = std::mem::size_of::<u8>(); 
-        let data_pos = flags_pos + flags_len;
-
-        let len: isize = std::mem::size_of::<u32>() as isize;
-        let data_len = bytestream::read_u32(data_pos, &out[data_pos..]) as usize;
         if self.is_compressed(){            
-            let data_pos = data_pos + len as usize;
-            let decomp_data = decompress(&out[data_pos.. data_pos + data_len]);
+            let decomp_data = decompress(&out[..data_len]);
             if out.len() < decomp_data.len(){
                 out.resize(decomp_data.len(), 0);
             } 
@@ -131,7 +121,7 @@ impl Message{
         }
         data_len
     }
-    
+        
     pub fn at_least_once_delivery(&self)->bool{
         self.flags & AT_LEAST_ONCE_DELIVERY > 0
     }
@@ -143,6 +133,19 @@ impl Message{
         let key_pos = self.mem_alloc_pos + number_mess_len;
         mempool.lock().unwrap().read_u32(key_pos) as i32
     }   
+}
+
+fn data_pos()->usize{ 
+    let number_mess_pos = 0; 
+    let number_mess_len = std::mem::size_of::<u64>();        
+    let connection_key_pos = number_mess_pos + number_mess_len;
+    let connection_key_len = std::mem::size_of::<u32>();
+    let listener_topic_key_pos = connection_key_pos + connection_key_len;
+    let listener_topic_key_len = std::mem::size_of::<u32>();
+    let flags_pos = listener_topic_key_pos + listener_topic_key_len; 
+    let flags_len = std::mem::size_of::<u8>(); 
+    let data_pos = flags_pos + flags_len;
+    data_pos
 }
 
 fn compress(data: &[u8])->Vec<u8>{
