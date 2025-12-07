@@ -219,12 +219,7 @@ impl Mempool{
         }else{
             self.free_len = 0;
         }
-    }
-    pub fn alloc_with_write(&mut self, value: &[u8])->(usize, usize){
-        let (pos, sz) = self.alloc(value.len());
-        self.write_data(pos, value);
-        (pos, sz)
-    }
+    }    
     pub fn free(&mut self, pos: usize, length: usize){
         self.free_mem.get_mut(&length).unwrap().1.push(pos);
         self.free_len += length;
@@ -263,7 +258,7 @@ impl Mempool{
             let lpos = cpos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
             let offset = cpos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
         
-            let arr = &mut self.buff[lpos];
+            let arr = &mut self.buff[lpos]; // может не попасть в один 
             let wlen = (value.len() - clen).min(settings::MEMPOOL_CHUNK_SIZE_BYTE - offset);
             arr[offset..offset + wlen].copy_from_slice(&value[clen..clen + wlen]);
 
@@ -328,7 +323,7 @@ impl Mempool{
             let lpos = cpos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
             let offset = cpos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
                     
-            let arr = &self.buff[lpos];
+            let arr = &self.buff[lpos]; // может не попасть в один 
             let wlen = (out.len() - clen).min(settings::MEMPOOL_CHUNK_SIZE_BYTE - offset);
             out[clen..clen + wlen].copy_from_slice(&arr[offset..offset + wlen]);
 
