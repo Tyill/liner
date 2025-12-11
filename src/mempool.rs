@@ -218,11 +218,6 @@ impl Mempool{
             self.free_len = 0;
         }
     }
-    pub fn alloc_with_write(&mut self, value: &[u8])->(usize, usize){
-        let (pos, sz) = self.alloc(value.len());
-        self.write_data(pos, value);
-        (pos, sz)
-    }
     pub fn free(&mut self, pos: usize, length: usize){
         self.free_mem.get_mut(&length).unwrap().1.push(pos);
         self.free_len += length;
@@ -231,12 +226,7 @@ impl Mempool{
             self.check_free_mem(0);
             self.free_count = 0;
         }
-    }    
-    pub fn _write_str(&mut self, mut pos: usize, value: &str){
-        self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
-        pos += std::mem::size_of::<u32>();
-        self.buff[pos.. pos + value.len()].copy_from_slice(value.as_bytes());
-    } 
+    }
     pub fn write_num<T>(&mut self, pos: usize, value: T)
     where T: ToBeBytes{
         self.buff[pos.. pos + std::mem::size_of::<T>()].copy_from_slice(value.to_be_bytes().as_ref());
@@ -249,11 +239,6 @@ impl Mempool{
     pub fn write_data(&mut self, pos: usize, value: &[u8]){
         self.buff[pos.. pos + value.len()].copy_from_slice(value);
     }
-    pub fn _read_string(&self, mut pos: usize)->String{
-        let sz: usize = i32::from_be_bytes(u8_4(&self.buff[pos.. pos + std::mem::size_of::<u32>()])) as usize;
-        pos += std::mem::size_of::<u32>();
-        String::from_utf8_lossy(&self.buff[pos.. pos + sz]).to_string()
-    }
     pub fn read_u64(&self, pos: usize)->u64{
         u64::from_be_bytes(u8_8(&self.buff[pos.. pos + std::mem::size_of::<u64>()]))
     }
@@ -263,13 +248,10 @@ impl Mempool{
     pub fn read_u8(&self, pos: usize)->u8{
         self.buff[pos]
     }
-    pub fn _read_array(&self, mut pos: usize)->&[u8]{
-        let sz: usize = i32::from_be_bytes(u8_4(&self.buff[pos.. pos + 4])) as usize;
-        pos += std::mem::size_of::<u32>();
-        &self.buff[pos.. pos + sz]
-    }
-    pub fn read_data(&self, pos: usize, sz: usize)->&[u8]{
-        &self.buff[pos.. pos + sz]
+    pub fn read_data(&self, pos: usize, out: &mut[u8]){
+        
+        out.copy_from_slice(&self.buff[pos.. pos + out.len()]);
+
     }
 }
 

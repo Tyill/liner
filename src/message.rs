@@ -66,27 +66,16 @@ impl Message{
         Message{number_mess, listener_topic_key, flags, mem_alloc_pos, mem_alloc_length}
     }   
 
-    pub fn free(&self, mempool: &mut Mempool){
-        mempool.free(self.mem_alloc_pos, self.mem_alloc_length);
-    }
-
-    pub fn change_mempool(&mut self, mempool_src: &mut Mempool, mempool_dst: &mut Mempool){
-        let data = mempool_src.read_data(self.mem_alloc_pos, self.mem_alloc_length);
-        let (mem_alloc_pos, mem_alloc_length) = mempool_dst.alloc_with_write(data);
-        mempool_src.free(self.mem_alloc_pos, self.mem_alloc_length);
-        self.mem_alloc_pos = mem_alloc_pos;
-        self.mem_alloc_length = mem_alloc_length;
-    }
-
-    pub fn raw_data<'a>(&self, mempool: &'a Mempool)->&'a[u8]{
-        mempool.read_data(self.mem_alloc_pos, self.mem_alloc_length)
+    pub fn free(&self, mempool: &Arc<Mutex<Mempool>>){
+        if let Ok(mut mempool) = mempool.lock(){
+            mempool.free(self.mem_alloc_pos, self.mem_alloc_length);
+        }
     }
     
     pub fn from_stream<T>(mempool: &Arc<Mutex<Mempool>>, stream: &mut T, is_shutdown: &mut bool) -> Option<Message>
         where T: Read{
-        let (mem_alloc_pos, mem_alloc_length, 
-            mess_size, is_shutdown_) = bytestream::read_stream(stream, mempool);
-        if mess_size == 0{
+        let (mem_alloc_pos, mem_alloc_length, is_shutdown_) = bytestream::read_stream(stream, mempool);
+        if mem_alloc_length == 0{
             *is_shutdown = is_shutdown_;
             return None;
         }
@@ -112,7 +101,29 @@ impl Message{
         where T: Write{        
         bytestream::write_stream(stream, self.mem_alloc_pos, self.mem_alloc_length, mempool)       
     }
-    
+
+    pub fn get_data(&self, mempool: &Arc<Mutex<Mempool>>, out: &mut Vec<u8>)->usize{ 
+        let mut data_len = 0;
+        if let Ok(mempool) = mempool.lock(){
+            let data_pos =  data_pos();
+            let size_u32 = std::mem::size_of::<u32>() as usize;
+            data_len = mempool.read_u32(self.mem_alloc_pos + data_pos) as usize;
+            if out.len() < data_len{
+                out.resize(data_len, 0);
+            }
+            mempool.read_data(self.mem_alloc_pos + data_pos + size_u32, &mut out[..data_len]);
+        }
+        if self.is_compressed(){            
+            let decomp_data = decompress(&out[..data_len]);
+            if out.len() < decomp_data.len(){
+                out.resize(decomp_data.len(), 0);
+            } 
+            out[..decomp_data.len()].copy_from_slice(&decomp_data);
+            return decomp_data.len()
+        }
+        data_len
+    }
+        
     pub fn at_least_once_delivery(&self)->bool{
         self.flags & AT_LEAST_ONCE_DELIVERY > 0
     }
@@ -124,6 +135,19 @@ impl Message{
         let key_pos = self.mem_alloc_pos + number_mess_len;
         mempool.lock().unwrap().read_u32(key_pos) as i32
     }   
+}
+
+fn data_pos()->usize{ 
+    let number_mess_pos = 0; 
+    let number_mess_len = std::mem::size_of::<u64>();        
+    let connection_key_pos = number_mess_pos + number_mess_len;
+    let connection_key_len = std::mem::size_of::<u32>();
+    let listener_topic_key_pos = connection_key_pos + connection_key_len;
+    let listener_topic_key_len = std::mem::size_of::<u32>();
+    let flags_pos = listener_topic_key_pos + listener_topic_key_len; 
+    let flags_len = std::mem::size_of::<u8>(); 
+    let data_pos = flags_pos + flags_len;
+    data_pos
 }
 
 fn compress(data: &[u8])->Vec<u8>{
@@ -149,48 +173,4 @@ fn decompress(cdata: &[u8])->Vec<u8>{
         }
     }
     data
-}
-
-
-pub struct MessageForReceiver{
-    pub data: *const u8, 
-    pub data_len: usize,
-    _decomp_data: Option<Vec<u8>>,
-}
-
-impl MessageForReceiver{
-    pub fn new(mess: &Message, mempool: &Mempool)->MessageForReceiver{
-        let raw_data =  mess.raw_data(mempool);
-        
-        let number_mess_pos = 0; 
-        let number_mess_len = std::mem::size_of::<u64>();        
-        let connection_key_pos = number_mess_pos + number_mess_len;
-        let connection_key_len = std::mem::size_of::<u32>();
-        let listener_topic_key_pos = connection_key_pos + connection_key_len;
-        let listener_topic_key_len = std::mem::size_of::<u32>();
-        let flags_pos = listener_topic_key_pos + listener_topic_key_len; 
-        let flags_len = std::mem::size_of::<u8>(); 
-        let data_pos = flags_pos + flags_len;
-
-        let len: isize = std::mem::size_of::<u32>() as isize;
-        unsafe{
-            let mut data = raw_data.as_ptr().offset(data_pos as isize + len);
-            let mut data_len = bytestream::read_u32(data_pos, raw_data) as usize;
-            let mut _decomp_data = None;
-            if mess.is_compressed(){
-                let data_pos = data_pos + len as usize;
-                _decomp_data = Some(decompress(&raw_data[data_pos.. data_pos + data_len]));
-                if let Some(decomp_data) = &_decomp_data{
-                    data = decomp_data.as_ptr();
-                    data_len = decomp_data.len();
-                }
-            }
-            Self{
-                data,
-                data_len,
-                _decomp_data,
-            }
-            
-        }
-    }
 }
