@@ -353,10 +353,9 @@ fn update_last_mess_number(streams: &mut WriteStreamList,
                     }
                 }
                 if !mess_for_free.is_empty(){
-                    if let Ok(mut mempool) = mempools.lock().unwrap()[ix].lock(){
-                        for m in mess_for_free{
-                            m.free(&mut mempool);
-                        }
+                    let mempool = mempools.lock().unwrap()[ix].clone();
+                    for m in mess_for_free{
+                        m.free(&mempool);
                     }
                 }
             },
@@ -492,10 +491,8 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 }
             }
             if !mess_for_free.is_empty(){
-                if let Ok(mut mempool) = mempool.lock(){
-                    for mess in mess_for_free{
-                        mess.free(&mut mempool);
-                    }
+                for mess in mess_for_free{
+                    mess.free(&mempool);
                 }
             }
             if let Ok(mut mess_lock) = messages.lock(){

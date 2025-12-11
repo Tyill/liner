@@ -78,14 +78,9 @@ where
     (mem_pos, mem_alloc_length, is_shutdown)
 }
 
-pub fn read_u32(pos: usize, data: &[u8])->u32{
-    u32::from_be_bytes(u8_4(&data[pos.. pos + std::mem::size_of::<u32>()]))
-}
-
 fn u8_4(b: &[u8]) -> [u8; 4] {
     b.try_into().unwrap()
 }
-
 
 pub fn write_stream<T>(stream: &mut T, mem_alloc_pos: usize, mem_alloc_length: usize, mempool: &Arc<Mutex<Mempool>>)->bool
 where
