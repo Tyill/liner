@@ -13,5 +13,4 @@ pub const DATA_COMPRESS_LEVEL: i32 = 0; // A level of `0` uses zstd's default (c
 pub const MEMPOOL_MIN_PERCENT_FOR_COMPRESS: f32 = 0.2;
 pub const MEMPOOL_MIN_PERCENT_FOR_RESIZE: f32 = 0.8;
 pub const MEMPOOL_OVER_SIZE_MB: usize = 10;
-pub const MEMPOOL_FREE_COUNT_FOR_RESIZE: usize = 10000;
-pub const MEMPOOL_CHUNK_SIZE_BYTE: usize = 1024 * 8; // 1Mb
+pub const MEMPOOL_FREE_COUNT_FOR_RESIZE: usize = 100000;

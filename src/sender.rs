@@ -457,7 +457,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                         buff.append(&mut mess_for_send.unwrap());
                     }
                     break;
-                }  
+                }
                 for mess in mess_for_send.unwrap(){                    
                     let num_mess = mess.number_mess;
                     if !is_shutdown && last_send_mess_number < num_mess{
@@ -480,22 +480,30 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
             if let Ok(stream) = stream.lock(){
                 last_mess_number = stream.last_mess_number;
             }
-            let mut no_send_mess: Vec<Message> = Vec::new();
+            let mut mess_no_send: Vec<Message> = Vec::new();
+            let mut mess_for_free: Vec<Message> = Vec::new();
             for mess in buff{
                 let num_mess = mess.number_mess;
                 let at_least_once_delivery = mess.at_least_once_delivery();
                 if (is_shutdown || at_least_once_delivery) && last_mess_number < num_mess{
-                    no_send_mess.push(mess);
+                    mess_no_send.push(mess);
                 }else{
-                    mess.free(&mut mempool.lock().unwrap());
+                    mess_for_free.push(mess);
+                }
+            }
+            if !mess_for_free.is_empty(){
+                if let Ok(mut mempool) = mempool.lock(){
+                    for mess in mess_for_free{
+                        mess.free(&mut mempool);
+                    }
                 }
             }
             if let Ok(mut mess_lock) = messages.lock(){
                 if let Some(mut mess_for_send) = mess_lock[ix].take(){
-                    no_send_mess.append(&mut mess_for_send);
+                    mess_no_send.append(&mut mess_for_send);
                 }
-                if !no_send_mess.is_empty(){
-                    *mess_lock.get_mut(ix).unwrap() = Some(no_send_mess);
+                if !mess_no_send.is_empty(){
+                    *mess_lock.get_mut(ix).unwrap() = Some(mess_no_send);
                 }
             }
         }
