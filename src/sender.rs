@@ -496,8 +496,8 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 }
             }
             if let Ok(mut mess_lock) = messages.lock(){
-                if let Some(mut mess_for_send) = mess_lock[ix].take(){
-                    mess_no_send.append(&mut mess_for_send);
+                if let Some(mut mess) = mess_lock[ix].take(){
+                    mess_no_send.append(&mut mess);
                 }
                 if !mess_no_send.is_empty(){
                     *mess_lock.get_mut(ix).unwrap() = Some(mess_no_send);
