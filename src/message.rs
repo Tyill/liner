@@ -66,8 +66,10 @@ impl Message{
         Message{number_mess, listener_topic_key, flags, mem_alloc_pos, mem_alloc_length}
     }   
 
-    pub fn free(&self, mempool: &mut Mempool){
-        mempool.free(self.mem_alloc_pos, self.mem_alloc_length);
+    pub fn free(&self, mempool: &Arc<Mutex<Mempool>>){
+        if let Ok(mut mempool) = mempool.lock(){
+            mempool.free(self.mem_alloc_pos, self.mem_alloc_length);
+        }
     }
     
     pub fn from_stream<T>(mempool: &Arc<Mutex<Mempool>>, stream: &mut T, is_shutdown: &mut bool) -> Option<Message>

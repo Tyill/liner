@@ -176,6 +176,7 @@ fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,
         if let Some(mess) = mess{
             let topic_from = CString::new(senders.lock().unwrap()[ix].sender_topic.as_bytes()).unwrap();
             let mut last_mess_num = 0;
+            let mempool = mempools.lock().unwrap()[ix].clone();            
             for m in mess{
                 let mut topic_to = None;
                 if let Some(topic) = listener_topic.lock().unwrap().get(&m.listener_topic_key){
@@ -184,14 +185,12 @@ fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,
                     print_debug!(&format!("unsubscribe on topic_key {}", m.listener_topic_key));
                 }
                 if let Some(topic_to) = topic_to{
-                    if let Some(mempool) = mempools.lock().unwrap().get(ix){            
-                        let mlen = m.get_data(&mempool, buff_data);
-                        m.free(&mut mempool.lock().unwrap());
-                        receive_cb(topic_to.as_c_str().as_ptr(), 
-                                topic_from.as_c_str().as_ptr(), 
-                                buff_data[..mlen].as_ptr(), mlen, 
-                                udata.0);
-                    }
+                    let mlen = m.get_data(&mempool, buff_data);
+                    m.free(&mempool);
+                    receive_cb(topic_to.as_c_str().as_ptr(), 
+                            topic_from.as_c_str().as_ptr(), 
+                            buff_data[..mlen].as_ptr(), mlen, 
+                            udata.0);
                 }
                 if m.number_mess > last_mess_num{
                     last_mess_num = m.number_mess;
@@ -297,7 +296,7 @@ fn read_stream(token: Token,
                     last_mess_num = mess.number_mess;
                     mess_buff.push(mess);
                 }else{
-                    mess.free(&mut mempool.lock().unwrap());
+                    mess.free(&mempool);
                 }
             }
         }

@@ -182,11 +182,11 @@ impl Sender {
                     mbuff.push(mess);
                 }else{
                     *mess_lock.get_mut(ix).unwrap() = Some(vec![mess]);
-                } 
-                if !*_started{
-                    *_started = true;
-                    cvar.notify_one();
                 }
+            } 
+            if !*_started{
+                *_started = true;
+                cvar.notify_one();
             }
         }
     }
@@ -336,18 +336,26 @@ fn update_last_mess_number(streams: &mut WriteStreamList,
             Ok(last_mess_number)=>{
                 streams.get_mut(ix).unwrap().lock().unwrap().last_mess_number = last_mess_number;
 
-                let mempool = mempools.lock().unwrap()[ix].clone();
-                if let Some(mess) = messages.lock().unwrap()[ix].take(){
-                    let mut mess_for_send = Vec::new();
-                    for m in mess{
-                        if last_mess_number < m.number_mess{
-                            mess_for_send.push(m);
-                        }else{
-                            m.free(&mut mempool.lock().unwrap());
+                let mut mess_for_free = Vec::new();
+                if let Ok(mut mess_lock) = messages.lock(){
+                    if let Some(mess) = mess_lock[ix].take(){
+                        let mut mess_for_send = Vec::new();
+                        for m in mess{
+                            if last_mess_number < m.number_mess{
+                                mess_for_send.push(m);
+                            }else{
+                                mess_for_free.push(m);
+                            }
+                        }
+                        if !mess_for_send.is_empty(){
+                            *mess_lock.get_mut(ix).unwrap() = Some(mess_for_send);
                         }
                     }
-                    if !mess_for_send.is_empty(){
-                        *messages.lock().unwrap().get_mut(ix).unwrap() = Some(mess_for_send);
+                }
+                if !mess_for_free.is_empty(){
+                    let mempool = mempools.lock().unwrap()[ix].clone();
+                    for m in mess_for_free{
+                        m.free(&mempool);
                     }
                 }
             },
@@ -370,10 +378,12 @@ fn append_streams(streams: &mut WriteStreamList,
                 let mempool = mempools.lock().unwrap()[addr.ix].clone();
                 match db.lock().unwrap().load_messages_for_sender(&mempool, addr.connection_key){
                     Ok(mut mess_from_db) =>{
-                        if let Some(mut mess_for_send) = messages.lock().unwrap()[addr.ix].take(){
-                            mess_from_db.append(&mut mess_for_send);
+                        if let Ok(mut mess_lock) = messages.lock(){
+                            if let Some(mut mess_for_send) = mess_lock[addr.ix].take(){
+                                mess_from_db.append(&mut mess_for_send);
+                            }
+                            *mess_lock.get_mut(addr.ix).unwrap() = Some(mess_from_db);
                         }
-                        *messages.lock().unwrap().get_mut(addr.ix).unwrap() = Some(mess_from_db);
                     },
                     Err(err)=>{
                         print_error!(&format!("db.load_messages_for_sender, {} {}", addr.address, err));
@@ -446,7 +456,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                         buff.append(&mut mess_for_send.unwrap());
                     }
                     break;
-                }  
+                }
                 for mess in mess_for_send.unwrap(){                    
                     let num_mess = mess.number_mess;
                     if !is_shutdown && last_send_mess_number < num_mess{
@@ -469,21 +479,29 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
             if let Ok(stream) = stream.lock(){
                 last_mess_number = stream.last_mess_number;
             }
-            let mut no_send_mess: Vec<Message> = Vec::new();
+            let mut mess_no_send: Vec<Message> = Vec::new();
+            let mut mess_for_free: Vec<Message> = Vec::new();
             for mess in buff{
                 let num_mess = mess.number_mess;
                 let at_least_once_delivery = mess.at_least_once_delivery();
                 if (is_shutdown || at_least_once_delivery) && last_mess_number < num_mess{
-                    no_send_mess.push(mess);
+                    mess_no_send.push(mess);
                 }else{
-                    mess.free(&mut mempool.lock().unwrap());
+                    mess_for_free.push(mess);
                 }
             }
-            if let Some(mut mess_for_send) = messages.lock().unwrap()[ix].take(){
-                no_send_mess.append(&mut mess_for_send);
+            if !mess_for_free.is_empty(){
+                for mess in mess_for_free{
+                    mess.free(&mempool);
+                }
             }
-            if !no_send_mess.is_empty(){
-                *messages.lock().unwrap().get_mut(ix).unwrap() = Some(no_send_mess);
+            if let Ok(mut mess_lock) = messages.lock(){
+                if let Some(mut mess) = mess_lock[ix].take(){
+                    mess_no_send.append(&mut mess);
+                }
+                if !mess_no_send.is_empty(){
+                    *mess_lock.get_mut(ix).unwrap() = Some(mess_no_send);
+                }
             }
         }
         if let Ok(mut stream) = stream.lock(){
