@@ -6,7 +6,7 @@ use crate::settings;
 
 
 pub struct Mempool{
-    buff: Vec<[u8; settings::MEMPOOL_CHUNK_SIZE_BYTE]>,
+    buff: Vec<u8>,
     free_mem: BTreeMap<usize, (usize, Vec<usize>)>, // key: size, value: count, free pos
     free_len: usize,
     free_count: usize,
@@ -73,10 +73,8 @@ impl Mempool{
                 return fm;
             } 
         }
-        let csz = self.buff.len() * settings::MEMPOOL_CHUNK_SIZE_BYTE;
-        for  _ in 0..req_size / settings::MEMPOOL_CHUNK_SIZE_BYTE + 1{
-            self.buff.push([0; settings::MEMPOOL_CHUNK_SIZE_BYTE]);
-        }
+        let csz = self.buff.len();
+        self.buff.resize(csz + req_size, 0);
         self.free_mem_insert_empty_pos(req_size);
         (csz, req_size)
     }
@@ -150,38 +148,38 @@ impl Mempool{
                 self.free_mem_insert_pos(free_len, free_pos);
             }                
         }
-        // let buff_len = self.buff.len();
-        // if self.free_len > (settings::MEMPOOL_MIN_PERCENT_FOR_RESIZE * buff_len as f32) as usize &&
-        //     buff_len > settings::MEMPOOL_OVER_SIZE_MB * 1024 * 1024{
-        //     let mut free_len = 0;
-        //     let mut free_ix = 0;
-        //     let mut has_free_end = false;
-        //     let mut has_break = false;
-        //     for m in &self.free_mem{
-        //         if !m.1.1.is_empty(){
-        //             free_len = *m.0;
-        //             free_ix = 0;
-        //             for pos in &m.1.1{
-        //                 if *pos + free_len == buff_len{
-        //                     if !has_req_mem || *pos != req_pos{
-        //                         //self.buff.resize(*pos, 0);
-        //                         has_free_end = true;
-        //                     }
-        //                     has_break = true;
-        //                     break;
-        //                 }
-        //                 free_ix += 1;                        
-        //             }
-        //         }
-        //         if has_break{
-        //             break;
-        //         }
-        //     }
-        //     if has_free_end{
-        //         self.free_mem_remove_pos(free_len, free_ix);
-        //         self.free_mem_len_decrease(free_len);               
-        //     }
-        //}
+        let buff_len = self.buff.len();
+        if self.free_len > (settings::MEMPOOL_MIN_PERCENT_FOR_RESIZE * buff_len as f32) as usize &&
+            buff_len > settings::MEMPOOL_OVER_SIZE_MB * 1024 * 1024{
+            let mut free_len = 0;
+            let mut free_ix = 0;
+            let mut has_free_end = false;
+            let mut has_break = false;
+            for m in &self.free_mem{
+                if !m.1.1.is_empty(){
+                    free_len = *m.0;
+                    free_ix = 0;
+                    for pos in &m.1.1{
+                        if *pos + free_len == buff_len{
+                            if !has_req_mem || *pos != req_pos{
+                                self.buff.resize(*pos, 0);
+                                has_free_end = true;
+                            }
+                            has_break = true;
+                            break;
+                        }
+                        free_ix += 1;                        
+                    }
+                }
+                if has_break{
+                    break;
+                }
+            }
+            if has_free_end{
+                self.free_mem_remove_pos(free_len, free_ix);
+                self.free_mem_len_decrease(free_len);               
+            }
+        }
         if has_req_mem{    
             Some((req_pos, req_size))
         }else{
@@ -219,7 +217,7 @@ impl Mempool{
         }else{
             self.free_len = 0;
         }
-    }    
+    }
     pub fn free(&mut self, pos: usize, length: usize){
         self.free_mem.get_mut(&length).unwrap().1.push(pos);
         self.free_len += length;
@@ -231,105 +229,29 @@ impl Mempool{
     }
     pub fn write_num<T>(&mut self, pos: usize, value: T)
     where T: ToBeBytes{
-        let lpos = pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
-        let offset = pos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
-                        
-        if offset + std::mem::size_of::<T>() <= settings::MEMPOOL_CHUNK_SIZE_BYTE{
-            let arr = &mut self.buff[lpos];
-            arr[offset..offset + std::mem::size_of::<T>()].copy_from_slice(&value.to_be_bytes().as_ref());
-        }else{
-            let aleft = &mut self.buff[lpos];
-            let left = aleft.len() - offset;
-            aleft[offset..].copy_from_slice(&value.to_be_bytes().as_ref()[0..left]);
-
-            let aright = &mut self.buff[lpos + 1];
-            let right = std::mem::size_of::<T>() - left;
-            aright[..right].copy_from_slice(&value.to_be_bytes().as_ref()[left..]);
-        }
+        self.buff[pos.. pos + std::mem::size_of::<T>()].copy_from_slice(value.to_be_bytes().as_ref());
     } 
-    pub fn write_array(&mut self, pos: usize, value: &[u8]){
-        self.write_num(pos, value.len() as i32);
-        self.write_data(pos + std::mem::size_of::<i32>(), value);
+    pub fn write_array(&mut self, mut pos: usize, value: &[u8]){
+        self.buff[pos.. pos + std::mem::size_of::<u32>()].copy_from_slice((value.len() as u32).to_be_bytes().as_ref());
+        pos += std::mem::size_of::<u32>();
+        self.buff[pos.. pos + value.len()].copy_from_slice(value);
     }
     pub fn write_data(&mut self, pos: usize, value: &[u8]){
-        let mut cpos = pos;
-        let mut clen = 0;
-        for  _ in 0..value.len() / settings::MEMPOOL_CHUNK_SIZE_BYTE + 1{
-            let lpos = cpos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
-            let offset = cpos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
-        
-            let arr = &mut self.buff[lpos]; // может не попасть в один 
-            let wlen = (value.len() - clen).min(settings::MEMPOOL_CHUNK_SIZE_BYTE - offset);
-            arr[offset..offset + wlen].copy_from_slice(&value[clen..clen + wlen]);
-
-            cpos += settings::MEMPOOL_CHUNK_SIZE_BYTE - offset;
-            clen += wlen;
-        }
+        self.buff[pos.. pos + value.len()].copy_from_slice(value);
     }
-   
     pub fn read_u64(&self, pos: usize)->u64{
-        let lpos = pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
-        let offset = pos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
-        
-        if offset + std::mem::size_of::<u64>() <= settings::MEMPOOL_CHUNK_SIZE_BYTE{
-            let arr = &self.buff[lpos];
-            u64::from_be_bytes(u8_8(&arr[offset..offset + std::mem::size_of::<u64>()]))
-        }else{
-            let mut oarr= [0; 8];
-
-            let aleft = &self.buff[lpos];
-            let left = aleft.len() - offset;
-            let right = std::mem::size_of::<u64>() - left;
-            oarr[..right].copy_from_slice(&aleft[left..]);
-
-            let aright = &self.buff[lpos + 1];
-            oarr[right..].copy_from_slice(&aright[..right]);
-
-            u64::from_be_bytes(oarr)
-        }
+        u64::from_be_bytes(u8_8(&self.buff[pos.. pos + std::mem::size_of::<u64>()]))
     }
     pub fn read_u32(&self, pos: usize)->u32{
-        let lpos = pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
-        let offset = pos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
-        
-        if offset + std::mem::size_of::<u32>() <= settings::MEMPOOL_CHUNK_SIZE_BYTE{
-            let arr = &self.buff[lpos];
-            u32::from_be_bytes(u8_4(&arr[offset..offset + std::mem::size_of::<u32>()]))
-        }else{
-            let mut oarr= [0; 4];
-
-            let aleft = &self.buff[lpos];
-            let left = aleft.len() - offset;
-            let right = std::mem::size_of::<u32>() - left;
-            oarr[..right].copy_from_slice(&aleft[left..]);
-
-            let aright = &self.buff[lpos + 1];
-            oarr[right..].copy_from_slice(&aright[..right]);
-
-            u32::from_be_bytes(oarr)
-        }
+        u32::from_be_bytes(u8_4(&self.buff[pos.. pos + std::mem::size_of::<u32>()]))
     }
     pub fn read_u8(&self, pos: usize)->u8{
-        let lpos = pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
-        let offset = pos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
-        
-        let arr = &self.buff[lpos];
-        arr[offset]
-    }   
+        self.buff[pos]
+    }
     pub fn read_data(&self, pos: usize, out: &mut[u8]){
-        let mut cpos = pos;
-        let mut clen = 0;
-        for  _ in 0..out.len() / settings::MEMPOOL_CHUNK_SIZE_BYTE + 1{
-            let lpos = cpos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
-            let offset = cpos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
-                    
-            let arr = &self.buff[lpos]; // может не попасть в один 
-            let wlen = (out.len() - clen).min(settings::MEMPOOL_CHUNK_SIZE_BYTE - offset);
-            out[clen..clen + wlen].copy_from_slice(&arr[offset..offset + wlen]);
+        
+        out.copy_from_slice(&self.buff[pos.. pos + out.len()]);
 
-            cpos += settings::MEMPOOL_CHUNK_SIZE_BYTE - offset;
-            clen += wlen;
-        }
     }
 }
 
