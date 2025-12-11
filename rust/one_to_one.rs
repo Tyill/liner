@@ -6,8 +6,8 @@ use liner_broker::Liner;
 
 fn  main() {
 
-    let mut client1 = Liner::new("client1", "topic_client1", "localhost:2255", "redis://localhost/");
-    let mut client2 = Liner::new("client2", "topic_client2", "localhost:2256", "redis://localhost/");
+    let mut client1 = Liner::new("client1", "topic_client1", "localhost:2355", "redis://localhost/");
+    let mut client2 = Liner::new("client2", "topic_client2", "localhost:2356", "redis://localhost/");
    
     client1.clear_stored_messages();
     client2.clear_stored_messages();

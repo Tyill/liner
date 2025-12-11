@@ -292,9 +292,11 @@ fn check_has_messages(streams: &WriteStreamList, messages: &Arc<Mutex<MessList>>
     for (ix, mess) in messages.lock().unwrap().iter().enumerate(){
         if let Some(stream) = streams.get(ix){            
             if let Some(mess) = mess.as_ref(){
-                has_mess = mess.last().unwrap().number_mess > stream.lock().unwrap().last_send_mess_number;
-                if has_mess{
-                    break;
+                if let Ok(stream) = stream.lock(){
+                    has_mess = !stream.is_active && mess.last().unwrap().number_mess > stream.last_send_mess_number;
+                    if has_mess{
+                        break;
+                    }
                 }
             }
         }
