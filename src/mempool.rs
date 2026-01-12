@@ -81,8 +81,9 @@ impl Mempool{
         (csz, req_size)
     }
     fn check_free_mem(&mut self, req_size: usize)->Option<(usize, usize)>{
+        let csz = self.buff.len() * settings::MEMPOOL_CHUNK_SIZE_BYTE;
         if self.free_len < req_size || 
-           (self.free_len - req_size) < (settings::MEMPOOL_MIN_PERCENT_FOR_COMPRESS * self.buff.len() as f32) as usize{
+           (self.free_len - req_size) < (settings::MEMPOOL_MIN_PERCENT_FOR_COMPRESS * csz as f32) as usize{
             return None;
         }
         let mut free_len_all = 0;
@@ -239,7 +240,7 @@ impl Mempool{
             arr[offset..offset + std::mem::size_of::<T>()].copy_from_slice(&value.to_be_bytes().as_ref());
         }else{
             let aleft = &mut self.buff[lpos];
-            let left = aleft.len() - offset;
+            let left = settings::MEMPOOL_CHUNK_SIZE_BYTE - offset;
             aleft[offset..].copy_from_slice(&value.to_be_bytes().as_ref()[0..left]);
 
             let aright = &mut self.buff[lpos + 1];

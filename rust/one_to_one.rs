@@ -15,8 +15,8 @@ fn  main() {
     client1.clear_addresses_of_topic();
     client2.clear_addresses_of_topic();
 
-    const MESS_SEND_COUNT: usize = 1000;
-    const MESS_SIZE: usize = 100;
+    const MESS_SEND_COUNT: usize = 100;
+    const MESS_SIZE: usize = 1024*1024;
     const SEND_CYCLE_COUNT: usize = 10;
 
     let mut receive_count: i32 = 0;
@@ -34,7 +34,7 @@ fn  main() {
         }
     }));
 
-    let array = [0; MESS_SIZE];
+    let array = vec![0; MESS_SIZE];
     for _ in 0..SEND_CYCLE_COUNT{
         let send_begin = current_time_ms();
         for _ in 0..MESS_SEND_COUNT{

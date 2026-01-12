@@ -11,5 +11,5 @@ pub const SENDER_THREAD_WRITE_MESS_DELAY_MS: u64 = 1;
 pub const MIN_SIZE_DATA_FOR_COMPRESS_BYTE: usize = 1024*1024;
 pub const DATA_COMPRESS_LEVEL: i32 = 0; // A level of `0` uses zstd's default (currently `3`).
 pub const MEMPOOL_MIN_PERCENT_FOR_COMPRESS: f32 = 0.2;
-pub const MEMPOOL_FREE_COUNT_FOR_RESIZE: usize = 10000;
+pub const MEMPOOL_FREE_COUNT_FOR_RESIZE: usize = 1000000;
 pub const MEMPOOL_CHUNK_SIZE_BYTE: usize = 1024 * 1024; // 1Mb
