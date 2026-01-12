@@ -78,6 +78,11 @@ impl Mempool{
             self.buff.push(vec![0; settings::MEMPOOL_CHUNK_SIZE_BYTE]);
         }
         self.free_mem_insert_empty_pos(req_size);
+        let endlen = (req_size / settings::MEMPOOL_CHUNK_SIZE_BYTE + 1) * settings::MEMPOOL_CHUNK_SIZE_BYTE - req_size;
+        if endlen > 0{
+            let nsz = self.buff.len() * settings::MEMPOOL_CHUNK_SIZE_BYTE;
+            self.free_mem_insert_pos(endlen, nsz - endlen);
+        }
         (csz, req_size)
     }
     fn check_free_mem(&mut self, req_size: usize)->Option<(usize, usize)>{
