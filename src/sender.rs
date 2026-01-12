@@ -9,7 +9,7 @@ use crate::common;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::sync::{Arc, Mutex, Condvar};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::thread;
 use std::io::{BufWriter, Write};
@@ -85,8 +85,6 @@ impl Sender {
         let is_new_addr_ = is_new_addr.clone();
         let is_close = Arc::new(AtomicBool::new(false));
         let is_close_ = is_close.clone();
-        let ctime = Arc::new(AtomicU64::new(common::current_time_ms()));
-        let ctime_ = ctime.clone();
         let wdelay_thread = thread::spawn(move||{
             let mut streams: WriteStreamList = Vec::new();
             let mut prev_time: [u64; 2] = [common::current_time_ms(); 2];
@@ -111,7 +109,6 @@ impl Sender {
                     send_mess_to_listener(&streams, &messages_, &mempools_);
                 }
                 let ctime = common::current_time_ms();
-                ctime_.store(ctime, Ordering::Relaxed);
                 if check_available_stream(&is_new_addr_, ctime, &mut prev_time[0]) {
                     append_streams(&mut streams, &mut addrs_new_, &db, &messages_, &mempools_);
                 }

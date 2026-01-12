@@ -6,7 +6,7 @@ use crate::settings;
 
 
 pub struct Mempool{
-    buff: Vec<[u8; settings::MEMPOOL_CHUNK_SIZE_BYTE]>,
+    buff: Vec<Vec<u8>>,
     free_mem: BTreeMap<usize, (usize, Vec<usize>)>, // key: size, value: count, free pos
     free_len: usize,
     free_count: usize,
@@ -75,7 +75,7 @@ impl Mempool{
         }
         let csz = self.buff.len() * settings::MEMPOOL_CHUNK_SIZE_BYTE;
         for  _ in 0..req_size / settings::MEMPOOL_CHUNK_SIZE_BYTE + 1{
-            self.buff.push([0; settings::MEMPOOL_CHUNK_SIZE_BYTE]);
+            self.buff.push(vec![0; settings::MEMPOOL_CHUNK_SIZE_BYTE]);
         }
         self.free_mem_insert_empty_pos(req_size);
         (csz, req_size)
