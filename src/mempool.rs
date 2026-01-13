@@ -279,7 +279,7 @@ impl Mempool{
         
         if offset + std::mem::size_of::<u64>() <= settings::MEMPOOL_CHUNK_SIZE_BYTE{
             let arr = &self.buff[lpos];
-            u64::from_be_bytes(u8_8(&arr[offset..offset + std::mem::size_of::<u64>()]))
+            u64::from_be_bytes((&arr[offset..offset + std::mem::size_of::<u64>()]).try_into().unwrap())
         }else{
             let mut oarr= [0; 8];
 
@@ -300,7 +300,7 @@ impl Mempool{
         
         if offset + std::mem::size_of::<u32>() <= settings::MEMPOOL_CHUNK_SIZE_BYTE{
             let arr = &self.buff[lpos];
-            u32::from_be_bytes(u8_4(&arr[offset..offset + std::mem::size_of::<u32>()]))
+            u32::from_be_bytes((&arr[offset..offset + std::mem::size_of::<u32>()]).try_into().unwrap())
         }else{
             let mut oarr= [0; 4];
 
@@ -337,13 +337,6 @@ impl Mempool{
             clen += wlen;
         }
     }
-}
-
-fn u8_4(b: &[u8]) -> [u8; 4] {
-    b.try_into().unwrap()
-}
-fn u8_8(b: &[u8]) -> [u8; 8] {
-    b.try_into().unwrap()
 }
 
 pub trait ToBeBytes {

@@ -28,7 +28,7 @@ where
                 if msz == 0 && n > 0{
                     offs += n;                   
                     if offs == 4{
-                        msz = i32::from_be_bytes(u8_4(&buff[0..4])) as usize;
+                        msz = i32::from_be_bytes((&buff[0..4]).try_into().unwrap()) as usize;
                         assert!(msz > 0);
                         if let Ok(mut mempool) = mempool.lock(){
                             (mem_pos, mem_alloc_length) = mempool.alloc(msz);
@@ -76,10 +76,6 @@ where
         }
     }
     (mem_pos, mem_alloc_length, is_shutdown)
-}
-
-fn u8_4(b: &[u8]) -> [u8; 4] {
-    b.try_into().unwrap()
 }
 
 pub fn write_stream<T>(stream: &mut T, mem_alloc_pos: usize, mem_alloc_length: usize, mempool: &Arc<Mutex<Mempool>>)->bool
