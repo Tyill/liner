@@ -1,0 +1,112 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+
+import os
+import sys
+import time
+import subprocess
+import threading
+import uuid
+from pathlib import Path
+
+MODULE_PATH = Path(__file__).resolve().parent
+PROJECT_ROOT = MODULE_PATH.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from python import liner  # noqa: E402
+
+
+def ensure_release_lib():
+    lib_path = PROJECT_ROOT / "target" / "release" / "libliner_broker.so"
+    if lib_path.exists():
+        return lib_path
+    subprocess.run(
+        ["cargo", "build", "--release"],
+        cwd=str(PROJECT_ROOT),
+        check=True,
+    )
+    if not lib_path.exists():
+        raise RuntimeError(f"release library not found at {lib_path}")
+    return lib_path
+
+
+def main() -> int:
+    # Requires a local Redis at redis://localhost/
+    lib_path = ensure_release_lib()
+    liner.loadLib(str(lib_path))
+
+    suffix = uuid.uuid4().hex[:8]
+    topic_sub = f"topic_sub_{suffix}"
+    client1_name = f"client1_{suffix}"
+    client2_name = f"client2_{suffix}"
+    topic1 = f"topic1_{suffix}"
+    topic2 = f"topic2_{suffix}"
+    addr1 = "localhost:2255"
+    addr2 = "localhost:2256"
+
+    client_process = str((MODULE_PATH / "client_process.py").resolve())
+
+    # Client1 subscribes to topic_sub and echoes everything back to sender.
+    c1 = subprocess.Popen(
+        [
+            client_process,
+            f"--client-name={client1_name}",
+            f"--client-topic={topic1}",
+            f"--client-addr={addr1}",
+            f"--subscr-topic={topic_sub}",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        time.sleep(1.5)
+
+        got = threading.Event()
+        received = {}
+
+        h2 = liner.Client(client2_name, topic2, addr2, "redis://localhost/")
+        # Ensure clean state in redis for this unique client/topic pair.
+        h2.clear_addresses_of_topic()
+        h2.clear_stored_messages()
+
+        def rcb(to: str, from_: str, data_: bytes):
+            received["to"] = to
+            received["from"] = from_
+            received["data"] = data_
+            got.set()
+
+        assert h2.run(rcb)
+
+        payload = b"smoke"
+        assert h2.send_to(topic_sub, payload, True)
+
+        if not got.wait(timeout=3.0):
+            out = ""
+            if c1.stdout:
+                try:
+                    out = c1.stdout.read()
+                except Exception:
+                    out = ""
+            raise AssertionError(f"timeout waiting for echo; client1 output:\n{out}")
+
+        assert received["to"] == topic2
+        assert received["from"] == topic1
+        assert received["data"] == payload
+
+        h2.close()
+        return 0
+    finally:
+        try:
+            c1.kill()
+        except Exception:
+            pass
+        try:
+            c1.wait(timeout=2)
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

@@ -174,3 +174,117 @@ fn decompress(cdata: &[u8])->Vec<u8>{
     }
     data
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roundtrip(
+        connection_key: i32,
+        listener_topic_key: i32,
+        number_mess: u64,
+        payload: &[u8],
+        at_least_once: bool,
+    ) -> (Message, Vec<u8>) {
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let msg = Message::new(
+            &mempool,
+            connection_key,
+            listener_topic_key,
+            number_mess,
+            payload,
+            at_least_once,
+        );
+
+        let mut wire: Vec<u8> = Vec::new();
+        assert!(msg.to_stream(&mempool, &mut wire));
+
+        let mut shutdown = false;
+        let decoded = Message::from_stream(&mempool, &mut &wire[..], &mut shutdown)
+            .expect("expected message");
+        assert!(!shutdown);
+        (decoded, wire)
+    }
+
+    #[test]
+    fn new_to_stream_from_stream_roundtrip_small_uncompressed() {
+        let payload = b"hello world";
+        let (msg, _wire) = roundtrip(123, 7, 42, payload, false);
+        assert_eq!(msg.number_mess, 42);
+        assert_eq!(msg.listener_topic_key, 7);
+        assert!(!msg.at_least_once_delivery());
+
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        // Rebuild the same wire but decode with a fresh mempool.
+        let original = Message::new(&mempool, 123, 7, 42, payload, false);
+        let mut wire = Vec::new();
+        assert!(original.to_stream(&mempool, &mut wire));
+
+        let mut shutdown = false;
+        let decoded =
+            Message::from_stream(&mempool, &mut &wire[..], &mut shutdown).expect("decoded");
+        assert_eq!(decoded.connection_key(&mempool), 123);
+
+        let mut out = Vec::new();
+        let len = decoded.get_data(&mempool, &mut out);
+        assert_eq!(&out[..len], payload);
+    }
+
+    #[test]
+    fn at_least_once_flag_roundtrips() {
+        let payload = b"x";
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let msg = Message::new(&mempool, 1, 1, 1, payload, true);
+        assert!(msg.at_least_once_delivery());
+
+        let mut wire = Vec::new();
+        assert!(msg.to_stream(&mempool, &mut wire));
+        let mut shutdown = false;
+        let decoded = Message::from_stream(&mempool, &mut &wire[..], &mut shutdown).unwrap();
+        assert!(decoded.at_least_once_delivery());
+    }
+
+    #[test]
+    fn connection_key_supports_negative_values() {
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let msg = Message::new(&mempool, -123, 1, 1, b"abc", false);
+        let mut wire = Vec::new();
+        assert!(msg.to_stream(&mempool, &mut wire));
+        let mut shutdown = false;
+        let decoded = Message::from_stream(&mempool, &mut &wire[..], &mut shutdown).unwrap();
+        assert_eq!(decoded.connection_key(&mempool), -123);
+    }
+
+    #[test]
+    fn get_data_resizes_output_buffer() {
+        let payload = b"this is a longer payload";
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let msg = Message::new(&mempool, 1, 1, 1, payload, false);
+        let mut out = vec![0u8; 1];
+        let len = msg.get_data(&mempool, &mut out);
+        assert_eq!(len, payload.len());
+        assert_eq!(&out[..len], payload);
+    }
+
+    #[test]
+    fn large_payload_roundtrips_with_or_without_compression() {
+        // MIN_SIZE_DATA_FOR_COMPRESS_BYTE is 1MB; use slightly above.
+        let payload = vec![0u8; settings::MIN_SIZE_DATA_FOR_COMPRESS_BYTE + 123];
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let msg = Message::new(&mempool, 55, 9, 77, &payload, true);
+        let mut wire = Vec::new();
+        assert!(msg.to_stream(&mempool, &mut wire));
+
+        let mut shutdown = false;
+        let decoded = Message::from_stream(&mempool, &mut &wire[..], &mut shutdown).unwrap();
+        assert_eq!(decoded.number_mess, 77);
+        assert_eq!(decoded.listener_topic_key, 9);
+        assert_eq!(decoded.connection_key(&mempool), 55);
+        assert!(decoded.at_least_once_delivery());
+
+        let mut out = Vec::new();
+        let len = decoded.get_data(&mempool, &mut out);
+        assert_eq!(len, payload.len());
+        assert_eq!(&out[..len], payload.as_slice());
+    }
+}

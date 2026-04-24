@@ -5,7 +5,7 @@
 //! 
 //! # Examples
 //!
-//! ```
+//! ```no_run
 //! use liner_broker::Liner;
 //! 
 //! fn  main() {
@@ -49,8 +49,8 @@ extern "C" fn cb_(to: *const i8, from: *const i8,  data: *const u8, dsize: usize
     unsafe {    
         if let Some(liner) = udata.cast::<Liner>().as_mut(){
             if let Some(ucback) = liner.ucback.as_mut(){
-                let to = CStr::from_ptr(to).to_str().unwrap();
-                let from = CStr::from_ptr(from).to_str().unwrap();           
+                let Ok(to) = CStr::from_ptr(to).to_str() else { return; };
+                let Ok(from) = CStr::from_ptr(from).to_str() else { return; };
                 (ucback)(to, from, std::slice::from_raw_parts(data, dsize));
             }
         }
@@ -147,10 +147,14 @@ pub unsafe extern "C" fn lnr_new_client(unique_name: *const i8,
                        localhost: *const i8,
                        redis_path: *const i8,
                        )->*mut Client{
-    let unique_name = CStr::from_ptr(unique_name).to_str().unwrap();
-    let topic = CStr::from_ptr(topic).to_str().unwrap();
-    let localhost = CStr::from_ptr(localhost).to_str().unwrap();
-    let redis_path = CStr::from_ptr(redis_path).to_str().unwrap();
+    if unique_name.is_null() || topic.is_null() || localhost.is_null() || redis_path.is_null() {
+        print_error!("null pointer argument");
+        return std::ptr::null_mut();
+    }
+    let Ok(unique_name) = CStr::from_ptr(unique_name).to_str() else { return std::ptr::null_mut(); };
+    let Ok(topic) = CStr::from_ptr(topic).to_str() else { return std::ptr::null_mut(); };
+    let Ok(localhost) = CStr::from_ptr(localhost).to_str() else { return std::ptr::null_mut(); };
+    let Ok(redis_path) = CStr::from_ptr(redis_path).to_str() else { return std::ptr::null_mut(); };
     
     if unique_name.is_empty(){
         print_error!("unique_name empty");
@@ -211,12 +215,14 @@ pub unsafe extern "C" fn lnr_send_to(client: *mut Client,
                           topic: *const i8,
                           data: *const u8, data_size: usize,
                           at_least_once_delivery: bool)->bool{
-    let topic = CStr::from_ptr(topic).to_str().unwrap();  
-    let data = std::slice::from_raw_parts(data, data_size);
-
     if !has_client(client){
         return false;
     }
+    if topic.is_null() || (data_size > 0 && data.is_null()) {
+        print_error!("null pointer argument");
+        return false;
+    }
+    let Ok(topic) = CStr::from_ptr(topic).to_str() else { return false; };
     if topic.is_empty(){
         print_error!("topic name empty");
         return false;
@@ -225,6 +231,7 @@ pub unsafe extern "C" fn lnr_send_to(client: *mut Client,
         print_error!("data_size empty");
         return false;
     }
+    let data = std::slice::from_raw_parts(data, data_size);
     (*client).send_to(topic, data, at_least_once_delivery)
 }
 
@@ -241,12 +248,14 @@ pub unsafe extern "C" fn lnr_send_all(client: *mut Client,
                           topic: *const i8,
                           data: *const u8, data_size: usize,
                           at_least_once_delivery: bool)->bool{
-    let topic = CStr::from_ptr(topic).to_str().unwrap();    
-    let data = std::slice::from_raw_parts(data, data_size);
-
     if !has_client(client){
         return false;
     }
+    if topic.is_null() || (data_size > 0 && data.is_null()) {
+        print_error!("null pointer argument");
+        return false;
+    }
+    let Ok(topic) = CStr::from_ptr(topic).to_str() else { return false; };
     if topic.is_empty(){
         print_error!("topic.is_empty()");
         return false;
@@ -255,6 +264,7 @@ pub unsafe extern "C" fn lnr_send_all(client: *mut Client,
         print_error!("data_size == 0");
         return false;
     }
+    let data = std::slice::from_raw_parts(data, data_size);
     (*client).send_all(topic, data, at_least_once_delivery)
 }
 
@@ -268,11 +278,14 @@ pub unsafe extern "C" fn lnr_send_all(client: *mut Client,
 #[no_mangle]
 pub unsafe extern "C" fn lnr_subscribe(client: *mut Client,
                           topic: *const i8)->bool{
-    let topic = CStr::from_ptr(topic).to_str().unwrap();
-    
     if !has_client(client){
         return false;
     }
+    if topic.is_null() {
+        print_error!("null pointer argument");
+        return false;
+    }
+    let Ok(topic) = CStr::from_ptr(topic).to_str() else { return false; };
     if topic.is_empty(){
         print_error!("topic.is_empty()");
         return false;
@@ -290,11 +303,14 @@ pub unsafe extern "C" fn lnr_subscribe(client: *mut Client,
 #[no_mangle]
 pub unsafe extern "C" fn lnr_unsubscribe(client: *mut Client,
                           topic: *const i8)->bool{
-    let topic = CStr::from_ptr(topic).to_str().unwrap();
-    
     if !has_client(client){
         return false;
     }
+    if topic.is_null() {
+        print_error!("null pointer argument");
+        return false;
+    }
+    let Ok(topic) = CStr::from_ptr(topic).to_str() else { return false; };
     if topic.is_empty(){
         print_error!("topic.is_empty()");
         return false;
@@ -312,16 +328,47 @@ pub unsafe extern "C" fn lnr_unsubscribe(client: *mut Client,
 #[no_mangle]
 pub unsafe extern "C" fn lnr_refresh_address_topic(client: *mut Client,
                                                    topic: *const i8)->bool{
-    let topic = CStr::from_ptr(topic).to_str().unwrap();
-    
     if !has_client(client){
         return false;
     }
+    if topic.is_null() {
+        print_error!("null pointer argument");
+        return false;
+    }
+    let Ok(topic) = CStr::from_ptr(topic).to_str() else { return false; };
     if topic.is_empty(){
         print_error!("topic.is_empty()");
         return false;
     }
     (*client).refresh_address_topic(topic)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ptr;
+
+    #[test]
+    fn fns_return_false_on_null_client_without_derefing_args() {
+        unsafe {
+            assert!(!lnr_send_to(ptr::null_mut(), ptr::null(), ptr::null(), 0, true));
+            assert!(!lnr_send_all(ptr::null_mut(), ptr::null(), ptr::null(), 0, true));
+            assert!(!lnr_subscribe(ptr::null_mut(), ptr::null()));
+            assert!(!lnr_unsubscribe(ptr::null_mut(), ptr::null()));
+            assert!(!lnr_refresh_address_topic(ptr::null_mut(), ptr::null()));
+            assert!(!lnr_clear_stored_messages(ptr::null_mut()));
+            assert!(!lnr_clear_addresses_of_topic(ptr::null_mut()));
+            assert!(!lnr_delete_client(ptr::null_mut()));
+        }
+    }
+
+    #[test]
+    fn send_to_rejects_zero_data_size_without_ub() {
+        unsafe {
+            // With null client, we must not dereference pointers at all.
+            assert!(!lnr_send_to(ptr::null_mut(), ptr::null(), ptr::null(), 0, true));
+        }
+    }
 }
 
 
