@@ -180,7 +180,7 @@ You can customize the port/container name:
 LINER_TEST_REDIS_PORT=16379 LINER_TEST_REDIS_CONTAINER=liner-test-redis python3 test/offline_delivery_more.py
 ```
 
-### [Docs](https://docs.rs/liner_broker/1.2.1/liner_broker/)
+### [Docs](https://docs.rs/liner_broker/1.2.2/liner_broker/)
 
 ### License
 Licensed under an [MIT-2.0]-[license](LICENSE).
