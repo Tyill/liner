@@ -58,21 +58,37 @@ impl Client {
         if sa.is_none(){
             return false;
         }
-        let tcp_listener = TcpListener::bind(sa.unwrap());
-        if let Err(err) = tcp_listener {
-            print_error!(&format!("{}", err));
-            return false;        
+        let tcp_listener = match TcpListener::bind(sa.unwrap()) {
+            Ok(l) => l,
+            Err(err) => {
+                print_error!(&format!("{}", err));
+                return false;
+            }
+        };
+        self.listener = Some(Listener::new(
+            tcp_listener,
+            &self.unique_name,
+            &self.db.redis_path(),
+            &self.source_topic,
+            &self.subscriptions,
+            receive_cb,
+            udata,
+        ));
+        self.sender = Some(Sender::new(
+            &self.unique_name,
+            &self.db.redis_path(),
+            &self.source_topic,
+        ));
+        if let Some(sender) = self.sender.as_mut() {
+            sender.load_prev_connects(&mut self.db);
         }
-        self.listener = Some(Listener::new(tcp_listener.unwrap(), &self.unique_name, &self.db.redis_path(), &self.source_topic, &self.subscriptions, receive_cb, udata));
-        self.sender = Some(Sender::new(&self.unique_name, &self.db.redis_path(), &self.source_topic, ));
-        self.sender.as_mut().unwrap().load_prev_connects(&mut self.db);
         self.is_run = true;
 
         true
     }
 
     pub fn send_to(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
-        let _lock = self.mtx.lock();
+        let _lock = self.mtx.lock().unwrap();
         if !self.is_run{
             print_error!("you can't send_to because client not is running");
             return false;
@@ -103,7 +119,7 @@ impl Client {
     }
 
     pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
-        let _lock = self.mtx.lock();
+        let _lock = self.mtx.lock().unwrap();
         if !self.is_run{
             print_error!("you can't send_all because client not is running");
             return false;
@@ -187,8 +203,10 @@ impl Client {
         
         if let Some(addr) = get_address_topic(topic, &mut self.db){
             self.address_topic.insert(topic.to_string(), addr);
+            true
+        } else {
+            false
         }
-        true
     }
 
     pub fn clear_stored_messages(&mut self) -> bool {
@@ -232,16 +250,15 @@ fn get_address_topic(topic: &str, db: &mut redis::Connect)->Option<Vec<String>>{
 }
 
 fn str_to_socket_addr(localhost: &str)->Option<SocketAddr>{
-    let mut sa: Option<SocketAddr> = None;
     match localhost.to_socket_addrs() {
-        Ok(sa_)=>{
-            sa = Some(sa_.last().unwrap());
+        Ok(mut sa_)=>{
+            sa_.next()
         }
         Err(err)=>{
             print_error!(&format!("{}", err));
+            None
         }            
-    }
-    sa
+    }    
 }
 
 impl Drop for Client {
@@ -250,7 +267,23 @@ impl Drop for Client {
         if !self.is_run{
             return;
         }
-        drop(self.sender.take().unwrap());      
-        drop(self.listener.take().unwrap());      
+        drop(self.sender.take());
+        drop(self.listener.take());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn str_to_socket_addr_rejects_invalid() {
+        assert!(str_to_socket_addr("not-a-socket-addr").is_none());
+    }
+
+    #[test]
+    fn str_to_socket_addr_accepts_localhost_port() {
+        assert!(str_to_socket_addr("127.0.0.1:0").is_some());
+        assert!(str_to_socket_addr("localhost:0").is_some());
     }
 }

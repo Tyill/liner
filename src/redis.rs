@@ -4,6 +4,16 @@ use redis::{Commands, ConnectionLike, RedisResult, ErrorKind};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+fn parse_i32_res(s: &str, ctx: &'static str) -> RedisResult<i32> {
+    s.parse::<i32>()
+        .map_err(|_| (ErrorKind::TypeError, ctx).into())
+}
+
+fn parse_u64_res(s: &str, ctx: &'static str) -> RedisResult<u64> {
+    s.parse::<u64>()
+        .map_err(|_| (ErrorKind::TypeError, ctx).into())
+}
+
 pub struct Connect{
     unique_name: String,
     source_topic: String,
@@ -126,7 +136,7 @@ impl Connect {
         let dbconn = self.get_dbconn()?; 
         let res: RedisResult<String> = dbconn.get(format!("lnr_connection:{}:key", key));
         if let Ok(res) = res{
-            Ok(res.parse::<i32>().unwrap())
+            parse_i32_res(&res, "invalid connection key")
         }else{
             let mut value = 0;
             self.init_connection_key(listener_name, &mut value)?;
@@ -148,7 +158,7 @@ impl Connect {
             let dbconn = self.get_dbconn()?; 
             let res: RedisResult<String> = dbconn.get(&format!("lnr_topic:{}:key", topic));
             if let Ok(key) = res{
-                let value = key.parse::<i32>().unwrap();
+                let value = parse_i32_res(&key, "invalid topic key")?;
                 self.topic_key_cache.insert(topic.to_owned(), value);
                 Ok(value)
             }else{
@@ -186,8 +196,17 @@ impl Connect {
     pub fn get_last_mess_number_for_listener(&mut self, connection_key: i32)->RedisResult<u64>{
         if !self.last_mess_number.contains_key(&connection_key){
             let dbconn = self.get_dbconn()?; 
-            let res: String = dbconn.get(&format!("lnr_connection:{}:mess_number", connection_key))?;
-            self.last_mess_number.insert(connection_key, res.parse::<u64>().unwrap());
+            // The key may be absent for a new connection. Treat missing as 0.
+            let res: Option<String> = dbconn.get(&format!("lnr_connection:{}:mess_number", connection_key))?;
+            let value = match res {
+                Some(res) => parse_u64_res(&res, "invalid mess_number")?,
+                None => {
+                    // Persist the default to avoid repeated nil reads.
+                    self.init_last_mess_number_from_sender(connection_key)?;
+                    0
+                },
+            };
+            self.last_mess_number.insert(connection_key, value);
         }
         Ok(self.last_mess_number[&connection_key])              
     }
@@ -199,17 +218,24 @@ impl Connect {
     }
     pub fn get_last_mess_number_for_sender(&mut self, connection_key: i32)->RedisResult<u64>{
         let dbconn = self.get_dbconn()?; 
-        let res: String = dbconn.get(&format!("lnr_connection:{}:mess_number", connection_key))?;
-        Ok(res.parse::<u64>().unwrap())
+        // The key may legitimately be absent for a new connection. Treat missing as 0.
+        let res: Option<String> = dbconn.get(&format!("lnr_connection:{}:mess_number", connection_key))?;
+        match res {
+            Some(res) => parse_u64_res(&res, "invalid mess_number"),
+            None => {
+                // Persist the default to avoid repeated nil reads.
+                self.init_last_mess_number_from_sender(connection_key)?;
+                Ok(0)
+            }
+        }
     }
 
     pub fn save_messages_from_sender(&mut self, mempool: &Arc<Mutex<Mempool>>, connection_key: i32, mess: Vec<Message>)->RedisResult<()>{
         let dbconn = self.get_dbconn()?; 
-        for m in mess{
-            let mut buf: Vec<u8> = Vec::new(); 
-            m.to_stream(mempool, &mut buf);                
+        let encoded = encode_and_free_messages(mempool, mess);
+        for buf in encoded {
             let () = dbconn.rpush(&format!("lnr_connection:{}:messages", connection_key), buf)?;
-        }
+        }        
         Ok(())
     }
 
@@ -259,4 +285,121 @@ impl Connect {
         }
         Ok(&mut self.conn)
     }  
+}
+
+fn encode_and_free_messages(mempool: &Arc<Mutex<Mempool>>, mess: Vec<Message>) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::with_capacity(mess.len());
+    for m in mess {
+        let mut buf: Vec<u8> = Vec::new();
+        m.to_stream(mempool, &mut buf);
+        m.free(mempool);
+        out.push(buf);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    #[ignore]
+    fn roundtrip_save_then_load_messages_via_real_redis() {
+        // Requires a running Redis instance.
+        let redis_url =
+            std::env::var("LINER_TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".into());
+
+        let mut c = Connect::new("it_redis_roundtrip", &redis_url).expect("redis connect failed");
+        c.set_source_topic("topic_it_redis_roundtrip");
+        c.set_source_localhost("127.0.0.1:0");
+
+        // Unique connection_key for the test run.
+        let connection_key: i32 = {
+            let db = c.get_dbconn().expect("get_dbconn");
+            db.incr("lnr_test_unique_key", 1).expect("incr")
+        };
+        let list_key = format!("lnr_connection:{}:messages", connection_key);
+
+        // Clean any leftovers.
+        {
+            let db = c.get_dbconn().expect("get_dbconn");
+            let _: () = db.del(&list_key).expect("del");
+        }
+
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let free_before = mempool.lock().unwrap().debug_free_len();
+        let count_before = mempool.lock().unwrap().debug_free_count();
+
+        let m1 = Message::new(&mempool, connection_key, 10, 1, b"hello", true);
+        let m2 = Message::new(&mempool, connection_key, 10, 2, b"world", true);
+
+        c.save_messages_from_sender(&mempool, connection_key, vec![m1, m2])
+            .expect("save_messages_from_sender");
+
+        let free_after_save = mempool.lock().unwrap().debug_free_len();
+        let count_after_save = mempool.lock().unwrap().debug_free_count();
+        assert!(free_after_save > free_before);
+        assert!(count_after_save >= count_before + 2);
+
+        {
+            let db = c.get_dbconn().expect("get_dbconn");
+            let llen: usize = db.llen(&list_key).expect("llen");
+            assert_eq!(llen, 2);
+        }
+
+        let loaded = c
+            .load_messages_for_sender(&mempool, connection_key)
+            .expect("load_messages_for_sender");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].number_mess, 1);
+        assert_eq!(loaded[1].number_mess, 2);
+
+        {
+            let db = c.get_dbconn().expect("get_dbconn");
+            let llen: usize = db.llen(&list_key).expect("llen");
+            assert_eq!(llen, 0);
+            let _: () = db.del(&list_key).expect("del cleanup");
+        }
+    }
+
+    #[test]
+    fn parse_helpers_reject_invalid_numbers() {
+        assert!(parse_i32_res("x", "ctx").is_err());
+        assert!(parse_u64_res("x", "ctx").is_err());
+        assert!(parse_u64_res("-1", "ctx").is_err());
+    }
+
+    #[test]
+    fn encode_and_free_messages_frees_mempool_allocations() {
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let free_before = mempool.lock().unwrap().debug_free_len();
+        let count_before = mempool.lock().unwrap().debug_free_count();
+
+        let m1 = Message::new(&mempool, 1, 10, 1, b"hello", true);
+        let m2 = Message::new(&mempool, 1, 10, 2, b"world", true);
+
+        let encoded = encode_and_free_messages(&mempool, vec![m1, m2]);
+        assert_eq!(encoded.len(), 2);
+
+        let free_after = mempool.lock().unwrap().debug_free_len();
+        let count_after = mempool.lock().unwrap().debug_free_count();
+        assert!(
+            free_after > free_before,
+            "expected mempool free_len to increase after freeing messages"
+        );
+        assert!(
+            count_after >= count_before + 2,
+            "expected at least 2 frees to be recorded"
+        );
+
+        // Sanity: encoded payload can be decoded back into a Message.
+        let recv_pool = Arc::new(Mutex::new(Mempool::new()));
+        let mut shutdown = false;
+        let decoded =
+            Message::from_stream(&recv_pool, &mut &encoded[0][..], &mut shutdown).unwrap();
+        assert!(!shutdown);
+        assert_eq!(decoded.number_mess, 1);
+        assert_eq!(decoded.listener_topic_key, 10);
+    }
 }

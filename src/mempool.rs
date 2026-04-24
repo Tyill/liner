@@ -52,6 +52,17 @@ impl Mempool{
             let pos = self.free_mem.get_mut(&length).unwrap().1.pop().unwrap();
             let endlen = length - req_size;
             if endlen > 0 {
+                // We split a free block of size `length` into:
+                // - an allocated block of size `req_size`
+                // - a free tail block of size `endlen`
+                // The original `length` block no longer exists as a segment.
+                {
+                    let count = &mut self.free_mem.get_mut(&length).unwrap().0;
+                    *count -= 1;
+                    if *count == 0{
+                        self.free_mem.remove(&length);
+                    }
+                }
                 if !has_req_sz{
                     self.free_mem.insert(req_size, (1, Vec::new()));
                 }else{
@@ -82,6 +93,7 @@ impl Mempool{
         if endlen > 0{
             let nsz = self.buff.len() * settings::MEMPOOL_CHUNK_SIZE_BYTE;
             self.free_mem_insert_pos(endlen, nsz - endlen);
+            self.free_len += endlen;
         }
         (csz, req_size)
     }
@@ -156,38 +168,44 @@ impl Mempool{
                 self.free_mem_insert_pos(free_len, free_pos);
             }                
         }
-        // let buff_len = self.buff.len();
-        // if self.free_len > (settings::MEMPOOL_MIN_PERCENT_FOR_RESIZE * buff_len as f32) as usize &&
-        //     buff_len > settings::MEMPOOL_OVER_SIZE_MB * 1024 * 1024{
-        //     let mut free_len = 0;
-        //     let mut free_ix = 0;
-        //     let mut has_free_end = false;
-        //     let mut has_break = false;
-        //     for m in &self.free_mem{
-        //         if !m.1.1.is_empty(){
-        //             free_len = *m.0;
-        //             free_ix = 0;
-        //             for pos in &m.1.1{
-        //                 if *pos + free_len == buff_len{
-        //                     if !has_req_mem || *pos != req_pos{
-        //                         //self.buff.resize(*pos, 0);
-        //                         has_free_end = true;
-        //                     }
-        //                     has_break = true;
-        //                     break;
-        //                 }
-        //                 free_ix += 1;                        
-        //             }
-        //         }
-        //         if has_break{
-        //             break;
-        //         }
-        //     }
-        //     if has_free_end{
-        //         self.free_mem_remove_pos(free_len, free_ix);
-        //         self.free_mem_len_decrease(free_len);               
-        //     }
-        //}
+        let buff_len_bytes = self.buff.len() * settings::MEMPOOL_CHUNK_SIZE_BYTE;
+        if buff_len_bytes > 0
+            && self.free_len > (settings::MEMPOOL_MIN_PERCENT_FOR_RESIZE * buff_len_bytes as f32) as usize
+            && buff_len_bytes > settings::MEMPOOL_OVER_SIZE_MB * 1024 * 1024
+        {
+            let reserved_end = if has_req_mem { req_pos + req_size } else { 0 };
+
+            // Iterate from the end (largest free_len first) to maximize shrink.
+            'shrink: for (free_len, (_, positions)) in self.free_mem.iter().rev() {
+                if positions.is_empty() {
+                    continue;
+                }
+                for (ix, pos) in positions.iter().enumerate() {
+                    let ends_at_buffer = *pos + *free_len == buff_len_bytes;
+                    if !ends_at_buffer {
+                        continue;
+                    }
+                    let aligned = *pos % settings::MEMPOOL_CHUNK_SIZE_BYTE == 0
+                        && *free_len % settings::MEMPOOL_CHUNK_SIZE_BYTE == 0;
+                    if !aligned {
+                        continue;
+                    }
+                    // Do not shrink away a region that intersects the reserved req block.
+                    // It's safe to shrink only if the reserved block ends before this tail starts.
+                    if has_req_mem && reserved_end > *pos {
+                        continue;
+                    }
+
+                    let free_pos = *pos;
+                    let free_len = *free_len;
+                    let new_chunk_len = free_pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
+                    self.buff.truncate(new_chunk_len);
+                    self.free_mem_remove_pos(free_len, ix);
+                    self.free_mem_len_decrease(free_len);
+                    break 'shrink;
+                }
+            }
+        }
         if has_req_mem{    
             Some((req_pos, req_size))
         }else{
@@ -235,6 +253,16 @@ impl Mempool{
             self.free_count = 0;
         }
     }
+
+    #[cfg(test)]
+    pub fn debug_free_len(&self) -> usize {
+        self.free_len
+    }
+
+    #[cfg(test)]
+    pub fn debug_free_count(&self) -> usize {
+        self.free_count
+    }
     pub fn write_num<T>(&mut self, pos: usize, value: T)
     where T: ToBeBytes{
         let lpos = pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
@@ -260,7 +288,7 @@ impl Mempool{
     pub fn write_data(&mut self, pos: usize, value: &[u8]){
         let mut cpos = pos;
         let mut clen = 0;
-        for  _ in 0..value.len() / settings::MEMPOOL_CHUNK_SIZE_BYTE + 1{
+        while clen < value.len() {
             let lpos = cpos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
             let offset = cpos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
         
@@ -286,10 +314,10 @@ impl Mempool{
             let aleft = &self.buff[lpos];
             let left = aleft.len() - offset;
             let right = std::mem::size_of::<u64>() - left;
-            oarr[..right].copy_from_slice(&aleft[left..]);
+            oarr[..left].copy_from_slice(&aleft[offset..]);
 
             let aright = &self.buff[lpos + 1];
-            oarr[right..].copy_from_slice(&aright[..right]);
+            oarr[left..].copy_from_slice(&aright[..right]);
 
             u64::from_be_bytes(oarr)
         }
@@ -307,10 +335,10 @@ impl Mempool{
             let aleft = &self.buff[lpos];
             let left = aleft.len() - offset;
             let right = std::mem::size_of::<u32>() - left;
-            oarr[..right].copy_from_slice(&aleft[left..]);
+            oarr[..left].copy_from_slice(&aleft[offset..]);
 
             let aright = &self.buff[lpos + 1];
-            oarr[right..].copy_from_slice(&aright[..right]);
+            oarr[left..].copy_from_slice(&aright[..right]);
 
             u32::from_be_bytes(oarr)
         }
@@ -325,7 +353,7 @@ impl Mempool{
     pub fn read_data(&self, pos: usize, out: &mut[u8]){
         let mut cpos = pos;
         let mut clen = 0;
-        for  _ in 0..out.len() / settings::MEMPOOL_CHUNK_SIZE_BYTE + 1{
+        while clen < out.len() {
             let lpos = cpos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
             let offset = cpos % settings::MEMPOOL_CHUNK_SIZE_BYTE;
                     
@@ -355,9 +383,283 @@ impl ToBeBytes for i32 {
         i32::to_be_bytes(*self)
     }
 }
+impl ToBeBytes for u32 {
+    type ByteArray = [u8; 4];
+    fn to_be_bytes(&self) -> Self::ByteArray {
+        u32::to_be_bytes(*self)
+    }
+}
 impl ToBeBytes for u64 {
     type ByteArray = [u8; 8];
     fn to_be_bytes(&self) -> Self::ByteArray {
         u64::to_be_bytes(*self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_read_u32_across_chunk_boundary() {
+        let mut mp = Mempool::new();
+        let (pos, len) = mp.alloc(settings::MEMPOOL_CHUNK_SIZE_BYTE + 16);
+        assert_eq!(len, settings::MEMPOOL_CHUNK_SIZE_BYTE + 16);
+
+        let p = pos + settings::MEMPOOL_CHUNK_SIZE_BYTE - 2; // 2 bytes left in chunk
+        let v: u32 = 0xA1B2_C3D4;
+        mp.write_num(p, v);
+        assert_eq!(mp.read_u32(p), v);
+    }
+
+    #[test]
+    fn write_read_u64_across_chunk_boundary() {
+        let mut mp = Mempool::new();
+        let (pos, len) = mp.alloc(settings::MEMPOOL_CHUNK_SIZE_BYTE + 32);
+        assert_eq!(len, settings::MEMPOOL_CHUNK_SIZE_BYTE + 32);
+
+        let p = pos + settings::MEMPOOL_CHUNK_SIZE_BYTE - 3; // 3 bytes left in chunk
+        let v: u64 = 0x0102_0304_0506_0708;
+        mp.write_num(p, v);
+        assert_eq!(mp.read_u64(p), v);
+    }
+
+    #[test]
+    fn write_read_data_across_chunk_boundary() {
+        let mut mp = Mempool::new();
+        let data_len = 128;
+        let (pos, _) = mp.alloc(settings::MEMPOOL_CHUNK_SIZE_BYTE + data_len);
+
+        let start = pos + settings::MEMPOOL_CHUNK_SIZE_BYTE - 64;
+        let data: Vec<u8> = (0..data_len as u8).collect();
+        mp.write_data(start, &data);
+
+        let mut out = vec![0u8; data_len];
+        mp.read_data(start, &mut out);
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn alloc_reuses_freed_block() {
+        let mut mp = Mempool::new();
+        let (p1, l1) = mp.alloc(256);
+        let (p2, l2) = mp.alloc(256);
+        assert_eq!(l1, 256);
+        assert_eq!(l2, 256);
+        assert_ne!(p1, p2);
+
+        mp.free(p1, l1);
+        let (p3, l3) = mp.alloc(256);
+        assert_eq!(l3, 256);
+        assert_eq!(p3, p1);
+    }
+
+    #[test]
+    fn alloc_split_removes_original_segment_size() {
+        let mut mp = Mempool::new();
+
+        // Allocate one larger block and free it, creating a single free segment of that size.
+        let (p, l) = mp.alloc(512);
+        mp.free(p, l);
+
+        // Alloc a smaller block from it -> split.
+        let (_p2, l2) = mp.alloc(128);
+        assert_eq!(l2, 128);
+
+        // The original 512-size segment should no longer exist.
+        // (It becomes one allocated 128 segment + one free 384 tail segment.)
+        assert!(!mp.free_mem.contains_key(&512));
+        assert!(mp.free_mem.contains_key(&128));
+        assert!(mp.free_mem.contains_key(&384));
+    }
+
+    #[test]
+    fn alloc_exact_keeps_size_bucket_but_consumes_position() {
+        let mut mp = Mempool::new();
+
+        let (p, l) = mp.alloc(256);
+        assert_eq!(l, 256);
+        mp.free(p, l);
+
+        // We should have a bucket for 256 with exactly one position.
+        assert!(mp.free_mem.contains_key(&256));
+        assert_eq!(mp.free_mem.get(&256).unwrap().1.len(), 1);
+
+        // Allocate exactly 256: consumes the position but bucket (count) remains as "empty size".
+        let (p2, l2) = mp.alloc(256);
+        assert_eq!(l2, 256);
+        assert_eq!(p2, p);
+
+        assert!(mp.free_mem.contains_key(&256));
+        assert_eq!(mp.free_mem.get(&256).unwrap().1.len(), 0);
+    }
+
+    #[test]
+    fn check_free_mem_shrinks_free_tail_when_large_enough() {
+        let mut mp = Mempool::new();
+        let chunk = settings::MEMPOOL_CHUNK_SIZE_BYTE;
+
+        // Grow beyond resize threshold (in bytes).
+        let total_mb = settings::MEMPOOL_OVER_SIZE_MB + 16;
+        let total_bytes = total_mb * 1024 * 1024;
+        let total_chunks = (total_bytes + chunk - 1) / chunk;
+
+        let mut positions = Vec::with_capacity(total_chunks);
+        for _ in 0..total_chunks {
+            let (p, l) = mp.alloc(chunk);
+            assert_eq!(l, chunk);
+            positions.push(p);
+        }
+        assert_eq!(mp.buff.len(), total_chunks);
+
+        // Free a big tail: >= 50% to exceed MEMPOOL_MIN_PERCENT_FOR_RESIZE (0.25).
+        let free_tail_chunks = total_chunks / 2;
+        let tail_start_ix = total_chunks - free_tail_chunks;
+        for &p in &positions[tail_start_ix..] {
+            mp.free(p, chunk);
+        }
+
+        let before_chunks = mp.buff.len();
+        let _ = mp.check_free_mem(0);
+        let after_chunks = mp.buff.len();
+
+        assert_eq!(before_chunks - after_chunks, free_tail_chunks);
+    }
+
+    #[test]
+    fn check_free_mem_does_not_shrink_unaligned_tail() {
+        let mut mp = Mempool::new();
+        let chunk = settings::MEMPOOL_CHUNK_SIZE_BYTE;
+
+        // Grow beyond resize threshold.
+        let total_mb = settings::MEMPOOL_OVER_SIZE_MB + 16;
+        let total_bytes = total_mb * 1024 * 1024;
+        let total_chunks = (total_bytes + chunk - 1) / chunk;
+
+        let mut positions = Vec::with_capacity(total_chunks);
+        for _ in 0..total_chunks {
+            let (p, l) = mp.alloc(chunk);
+            assert_eq!(l, chunk);
+            positions.push(p);
+        }
+
+        // Create a tail block that ends at buffer end but is NOT chunk-aligned:
+        // free the last chunk (aligned), then allocate a small piece from it, leaving an unaligned free tail.
+        let last = *positions.last().unwrap();
+        mp.free(last, chunk);
+        let (_p, _l) = mp.alloc(16); // takes from that free chunk, leaving endlen = chunk-16 at last+16
+
+        let before_chunks = mp.buff.len();
+        let _ = mp.check_free_mem(0);
+        let after_chunks = mp.buff.len();
+
+        // Should not shrink because tail free block is unaligned (pos % chunk != 0).
+        assert_eq!(after_chunks, before_chunks);
+    }
+
+    #[test]
+    fn check_free_mem_shrinks_but_keeps_reserved_req_at_tail_start() {
+        let mut mp = Mempool::new();
+        let chunk = settings::MEMPOOL_CHUNK_SIZE_BYTE;
+
+        let total_mb = settings::MEMPOOL_OVER_SIZE_MB + 16;
+        let total_bytes = total_mb * 1024 * 1024;
+        let total_chunks = (total_bytes + chunk - 1) / chunk;
+
+        let mut positions = Vec::with_capacity(total_chunks);
+        for _ in 0..total_chunks {
+            let (p, l) = mp.alloc(chunk);
+            assert_eq!(l, chunk);
+            positions.push(p);
+        }
+        assert_eq!(mp.buff.len(), total_chunks);
+
+        // Free a big tail; then request exactly one chunk. The allocator inside
+        // check_free_mem(req_size) may pick the tail as req_pos; shrinking must not remove req.
+        let free_tail_chunks = total_chunks / 2;
+        let tail_start_ix = total_chunks - free_tail_chunks;
+        let tail_start_pos = positions[tail_start_ix];
+        for &p in &positions[tail_start_ix..] {
+            mp.free(p, chunk);
+        }
+
+        let got = mp.check_free_mem(chunk);
+        let after_chunks = mp.buff.len();
+
+        // We should keep exactly one chunk (the reserved req) at the tail start.
+        assert_eq!(after_chunks, tail_start_ix + 1);
+        assert_eq!(got, Some((tail_start_pos, chunk)));
+    }
+
+    #[test]
+    fn new_mem_updates_free_len_for_endlen() {
+        let mut mp = Mempool::new();
+        let chunk = settings::MEMPOOL_CHUNK_SIZE_BYTE;
+
+        let req = chunk + 16;
+        let (_p, l) = mp.alloc(req);
+        assert_eq!(l, req);
+
+        // new_mem() should have created exactly one free tail block of size (chunk - 16).
+        assert_eq!(mp.free_len, chunk - 16);
+    }
+
+    #[test]
+    fn check_free_mem_coalesces_adjacent_frees_and_satisfies_request() {
+        let mut mp = Mempool::new();
+        let chunk = settings::MEMPOOL_CHUNK_SIZE_BYTE;
+
+        // Make csz large enough so the internal "worth compressing" guard passes.
+        // Allocate N chunks contiguously.
+        let total_chunks = 20;
+        let mut pos = Vec::with_capacity(total_chunks);
+        for _ in 0..total_chunks {
+            let (p, l) = mp.alloc(chunk);
+            assert_eq!(l, chunk);
+            pos.push(p);
+        }
+        for i in 1..total_chunks {
+            assert_eq!(pos[i], pos[i - 1] + chunk);
+        }
+
+        // Free a large contiguous tail; it should coalesce into one big block.
+        // Need enough free_len so the internal guard passes: (free_len - req) >= 0.2 * csz.
+        let ix = 10;
+        for i in ix..total_chunks {
+            mp.free(pos[i], chunk);
+        }
+
+        // Request 1 chunk from that coalesced region.
+        let got = mp.check_free_mem(chunk);
+        assert_eq!(got, Some((pos[ix], chunk)));
+
+        // Next allocation of 1 chunk should reuse the remainder at pos[ix] + chunk.
+        let (p2, l2) = mp.alloc(chunk);
+        assert_eq!(l2, chunk);
+        assert_eq!(p2, pos[ix] + chunk);
+    }
+
+    #[test]
+    fn check_free_mem_does_not_coalesce_when_not_adjacent() {
+        let mut mp = Mempool::new();
+        let chunk = settings::MEMPOOL_CHUNK_SIZE_BYTE;
+
+        let total_chunks = 20;
+        let mut pos = Vec::with_capacity(total_chunks);
+        for _ in 0..total_chunks {
+            let (p, l) = mp.alloc(chunk);
+            assert_eq!(l, chunk);
+            pos.push(p);
+        }
+
+        // Free many chunks, but only at even indices => none are adjacent.
+        for i in (0..total_chunks).step_by(2) {
+            mp.free(pos[i], chunk);
+        }
+
+        // No adjacency => no coalescing => check_free_mem should not find a merged block.
+        // With a large request, alloc() can't satisfy it either, so we expect None.
+        let got = mp.check_free_mem(2 * chunk);
+        assert_eq!(got, None);
     }
 }

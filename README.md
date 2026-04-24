@@ -151,6 +151,35 @@ For ZeroMQ it is similar
 
 ### [Tests](https://github.com/Tyill/liner/blob/main/test)
 
+Run Rust unit tests:
+
+```bash
+cargo test
+```
+
+Run Rust integration test with Redis (ignored by default):
+
+```bash
+LINER_TEST_REDIS=redis://localhost/ cargo test --test offline_delivery_redis -- --ignored
+
+cargo build --release
+python3 test/run_integration.py --list
+```
+
+You can filter or keep running after failures:
+
+```bash
+python3 test/run_integration.py --only offline,burst
+python3 test/run_integration.py --continue-on-fail
+```
+
+Python tests will auto-start Redis via Docker if it isn't reachable.
+You can customize the port/container name:
+
+```bash
+LINER_TEST_REDIS_PORT=16379 LINER_TEST_REDIS_CONTAINER=liner-test-redis python3 test/offline_delivery_more.py
+```
+
 ### [Docs](https://docs.rs/liner_broker/1.2.1/liner_broker/)
 
 ### License
