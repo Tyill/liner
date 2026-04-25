@@ -174,37 +174,7 @@ impl Mempool{
             && buff_len_bytes > settings::MEMPOOL_OVER_SIZE_MB * 1024 * 1024
         {
             let reserved_end = if has_req_mem { req_pos + req_size } else { 0 };
-
-            // Iterate from the end (largest free_len first) to maximize shrink.
-            'shrink: for (free_len, (_, positions)) in self.free_mem.iter().rev() {
-                if positions.is_empty() {
-                    continue;
-                }
-                for (ix, pos) in positions.iter().enumerate() {
-                    let ends_at_buffer = *pos + *free_len == buff_len_bytes;
-                    if !ends_at_buffer {
-                        continue;
-                    }
-                    let aligned = *pos % settings::MEMPOOL_CHUNK_SIZE_BYTE == 0
-                        && *free_len % settings::MEMPOOL_CHUNK_SIZE_BYTE == 0;
-                    if !aligned {
-                        continue;
-                    }
-                    // Do not shrink away a region that intersects the reserved req block.
-                    // It's safe to shrink only if the reserved block ends before this tail starts.
-                    if has_req_mem && reserved_end > *pos {
-                        continue;
-                    }
-
-                    let free_pos = *pos;
-                    let free_len = *free_len;
-                    let new_chunk_len = free_pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
-                    self.buff.truncate(new_chunk_len);
-                    self.free_mem_remove_pos(free_len, ix);
-                    self.free_mem_len_decrease(free_len);
-                    break 'shrink;
-                }
-            }
+            let _ = self.shrink_free_tail(buff_len_bytes, reserved_end, has_req_mem);
         }
         if has_req_mem{    
             Some((req_pos, req_size))
@@ -254,6 +224,82 @@ impl Mempool{
         }
     }
 
+
+    fn shrink_free_tail(
+        &mut self,
+        mut buff_len_bytes: usize,
+        reserved_end: usize,
+        has_req_mem: bool,
+    ) -> usize {
+        // Shrink tail blocks iteratively while possible.
+        // We avoid iterating and mutating `self.free_mem` at the same time by working on snapshots.
+        loop {
+            let mut did_shrink = false;
+
+            // Iterate from the end (largest free_len first) to maximize shrink per step.
+            let free_lens: Vec<usize> = self.free_mem.keys().copied().collect();
+            for free_len in free_lens.into_iter().rev() {
+                let Some((_, positions)) = self.free_mem.get(&free_len) else {
+                    continue;
+                };
+                if positions.is_empty() {
+                    continue;
+                }
+
+                // Snapshot positions so we can mutate the map after we decide.
+                let positions_snapshot: Vec<usize> = positions.clone();
+                for pos in positions_snapshot.iter() {
+                    let ends_at_buffer = *pos + free_len == buff_len_bytes;
+                    if !ends_at_buffer {
+                        continue;
+                    }
+                    let aligned = *pos % settings::MEMPOOL_CHUNK_SIZE_BYTE == 0
+                        && free_len % settings::MEMPOOL_CHUNK_SIZE_BYTE == 0;
+                    if !aligned {
+                        continue;
+                    }
+                    // Do not shrink away a region that intersects the reserved req block.
+                    // It's safe to shrink only if the reserved block ends before this tail starts.
+                    if has_req_mem && reserved_end > *pos {
+                        continue;
+                    }
+
+                    let new_chunk_len = *pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
+                    self.buff.truncate(new_chunk_len);
+
+                    // Remove the exact position from the current map.
+                    if let Some(index) = self.free_mem[&free_len]
+                        .1
+                        .iter()
+                        .position(|v| *v == *pos)
+                    {
+                        self.free_mem_remove_pos(free_len, index);
+                    }
+                    self.free_mem_len_decrease(free_len);
+
+                    buff_len_bytes = self.buff.len() * settings::MEMPOOL_CHUNK_SIZE_BYTE;
+                    did_shrink = true;
+                    break;
+                }
+
+                if did_shrink {
+                    break;
+                }
+            }
+
+            if !did_shrink {
+                break;
+            }
+        }
+        buff_len_bytes
+    }
+
+    #[cfg(test)]
+    fn shrink_free_tail_for_test(&mut self) {
+        let buff_len_bytes = self.buff.len() * settings::MEMPOOL_CHUNK_SIZE_BYTE;
+        let _ = self.shrink_free_tail(buff_len_bytes, 0, false);
+    }
+
     #[cfg(test)]
     pub fn debug_free_len(&self) -> usize {
         self.free_len
@@ -263,6 +309,7 @@ impl Mempool{
     pub fn debug_free_count(&self) -> usize {
         self.free_count
     }
+  
     pub fn write_num<T>(&mut self, pos: usize, value: T)
     where T: ToBeBytes{
         let lpos = pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
@@ -399,6 +446,7 @@ impl ToBeBytes for u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn write_read_u32_across_chunk_boundary() {
@@ -524,6 +572,26 @@ mod tests {
         let after_chunks = mp.buff.len();
 
         assert_eq!(before_chunks - after_chunks, free_tail_chunks);
+    }
+
+    #[test]
+    fn shrink_free_tail_can_shrink_multiple_steps_in_one_call() {
+        let mut mp = Mempool::new();
+        let chunk = settings::MEMPOOL_CHUNK_SIZE_BYTE;
+
+        // Build an artificial free list with two tail blocks that can be shrunk one after another.
+        // This targets the iterative shrink loop itself (not the coalescing logic).
+        mp.buff = vec![vec![0; chunk]; 4];
+        mp.free_len = 2 * chunk;
+        mp.free_count = 0;
+        mp.free_mem = BTreeMap::from([(chunk, (2, vec![2 * chunk, 3 * chunk]))]);
+
+        mp.shrink_free_tail_for_test();
+
+        // We should shrink 2 chunks: from 4 -> 2.
+        assert_eq!(mp.buff.len(), 2);
+        assert_eq!(mp.free_len, 0);
+        assert!(mp.free_mem.get(&chunk).is_none());
     }
 
     #[test]
