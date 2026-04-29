@@ -56,13 +56,7 @@ impl Mempool{
                 // - an allocated block of size `req_size`
                 // - a free tail block of size `endlen`
                 // The original `length` block no longer exists as a segment.
-                {
-                    let count = &mut self.free_mem.get_mut(&length).unwrap().0;
-                    *count -= 1;
-                    if *count == 0{
-                        self.free_mem.remove(&length);
-                    }
-                }
+                self.free_mem_remove_len(length);
                 if !has_req_sz{
                     self.free_mem.insert(req_size, (1, Vec::new()));
                 }else{
@@ -201,6 +195,9 @@ impl Mempool{
     }
     fn free_mem_remove_pos(&mut self, free_len: usize, index: usize){
         self.free_mem.get_mut(&free_len).unwrap().1.swap_remove(index);
+        self.free_mem_remove_len(free_len)
+    }
+    fn free_mem_remove_len(&mut self, free_len: usize){
         let count = &mut self.free_mem.get_mut(&free_len).unwrap().0;
         *count -= 1;
         if *count == 0{
@@ -248,7 +245,7 @@ impl Mempool{
 
                 // Snapshot positions so we can mutate the map after we decide.
                 let positions_snapshot: Vec<usize> = positions.clone();
-                for pos in positions_snapshot.iter() {
+                for (index, pos) in positions_snapshot.iter().enumerate() {
                     let ends_at_buffer = *pos + free_len == buff_len_bytes;
                     if !ends_at_buffer {
                         continue;
@@ -268,13 +265,7 @@ impl Mempool{
                     self.buff.truncate(new_chunk_len);
 
                     // Remove the exact position from the current map.
-                    if let Some(index) = self.free_mem[&free_len]
-                        .1
-                        .iter()
-                        .position(|v| *v == *pos)
-                    {
-                        self.free_mem_remove_pos(free_len, index);
-                    }
+                    self.free_mem_remove_pos(free_len, index);
                     self.free_mem_len_decrease(free_len);
 
                     buff_len_bytes = self.buff.len() * settings::MEMPOOL_CHUNK_SIZE_BYTE;
