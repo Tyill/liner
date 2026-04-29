@@ -22,54 +22,33 @@ impl Mempool{
         }
     }
     pub fn alloc(&mut self, req_size: usize)->(usize, usize){    
-        let mut length = 0;
-        let mut has_req_sz = false;
-        {           
-            let keys: Vec<&usize> = self.free_mem.keys().collect();
-            let mut ix;
-            match keys.binary_search(&&req_size){   
-                Ok(ix_) =>{
-                    ix = ix_;
-                    has_req_sz = true;
-                },
-                Err(ix_)=>{
-                    if ix_ == keys.len(){
-                        return self.new_mem(req_size);
-                    }
-                    ix = ix_;
-                }
-            }            
-            while ix < keys.len(){
-                if !self.free_mem[keys[ix]].1.is_empty(){
-                    length = *keys[ix];
-                    break;
-                }else{
-                    ix += 1;
-                }
+        let has_req_sz = self.free_mem.contains_key(&req_size);
+        let Some((&length, _)) = self
+            .free_mem
+            .range(req_size..)
+            .find(|(_, entry)| !entry.1.is_empty())
+        else {
+            return self.new_mem(req_size);
+        };
+
+        let pos = self.free_mem.get_mut(&length).unwrap().1.pop().unwrap();
+        let endlen = length - req_size;
+        if endlen > 0 {
+            // We split a free block of size `length` into:
+            // - an allocated block of size `req_size`
+            // - a free tail block of size `endlen`
+            // The original `length` block no longer exists as a segment.
+            self.free_mem_remove_len(length);
+            if !has_req_sz{
+                self.free_mem.insert(req_size, (1, Vec::new()));
+            }else{
+                let count = &mut self.free_mem.get_mut(&req_size).unwrap().0;
+                *count += 1;
             }
+            self.free_mem_insert_pos(endlen, pos + req_size);
         }
-        if length > 0{
-            let pos = self.free_mem.get_mut(&length).unwrap().1.pop().unwrap();
-            let endlen = length - req_size;
-            if endlen > 0 {
-                // We split a free block of size `length` into:
-                // - an allocated block of size `req_size`
-                // - a free tail block of size `endlen`
-                // The original `length` block no longer exists as a segment.
-                self.free_mem_remove_len(length);
-                if !has_req_sz{
-                    self.free_mem.insert(req_size, (1, Vec::new()));
-                }else{
-                    let count = &mut self.free_mem.get_mut(&req_size).unwrap().0;
-                    *count += 1;
-                }
-                self.free_mem_insert_pos(endlen, pos + req_size);
-            }
-            self.free_mem_len_decrease(req_size);
-            (pos, req_size)
-        }else{
-            self.new_mem(req_size)
-        }
+        self.free_mem_len_decrease(req_size);
+        (pos, req_size)
     }
     fn new_mem(&mut self, req_size: usize)->(usize, usize){
         if self.free_len > req_size{
@@ -243,25 +222,26 @@ impl Mempool{
                     continue;
                 }
 
-                // Snapshot positions so we can mutate the map after we decide.
-                let positions_snapshot: Vec<usize> = positions.clone();
-                for (index, pos) in positions_snapshot.iter().enumerate() {
+                let shrink_candidate = positions.iter().enumerate().find_map(|(index, pos)| {
                     let ends_at_buffer = *pos + free_len == buff_len_bytes;
                     if !ends_at_buffer {
-                        continue;
+                        return None;
                     }
                     let aligned = *pos % settings::MEMPOOL_CHUNK_SIZE_BYTE == 0
                         && free_len % settings::MEMPOOL_CHUNK_SIZE_BYTE == 0;
                     if !aligned {
-                        continue;
+                        return None;
                     }
                     // Do not shrink away a region that intersects the reserved req block.
                     // It's safe to shrink only if the reserved block ends before this tail starts.
                     if has_req_mem && reserved_end > *pos {
-                        continue;
+                        return None;
                     }
+                    Some((index, *pos))
+                });
 
-                    let new_chunk_len = *pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
+                if let Some((index, pos)) = shrink_candidate {
+                    let new_chunk_len = pos / settings::MEMPOOL_CHUNK_SIZE_BYTE;
                     self.buff.truncate(new_chunk_len);
 
                     // Remove the exact position from the current map.
@@ -270,7 +250,6 @@ impl Mempool{
 
                     buff_len_bytes = self.buff.len() * settings::MEMPOOL_CHUNK_SIZE_BYTE;
                     did_shrink = true;
-                    break;
                 }
 
                 if did_shrink {
