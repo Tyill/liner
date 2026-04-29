@@ -22,7 +22,6 @@ impl Mempool{
         }
     }
     pub fn alloc(&mut self, req_size: usize)->(usize, usize){    
-        let has_req_sz = self.free_mem.contains_key(&req_size);
         let Some((&length, _)) = self
             .free_mem
             .range(req_size..)
@@ -30,7 +29,6 @@ impl Mempool{
         else {
             return self.new_mem(req_size);
         };
-
         let pos = self.free_mem.get_mut(&length).unwrap().1.pop().unwrap();
         let endlen = length - req_size;
         if endlen > 0 {
@@ -39,7 +37,7 @@ impl Mempool{
             // - a free tail block of size `endlen`
             // The original `length` block no longer exists as a segment.
             self.free_mem_remove_len(length);
-            if !has_req_sz{
+            if !self.free_mem.contains_key(&req_size){
                 self.free_mem.insert(req_size, (1, Vec::new()));
             }else{
                 let count = &mut self.free_mem.get_mut(&req_size).unwrap().0;
