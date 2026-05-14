@@ -77,7 +77,7 @@ def receive_server(to: str, from_: str, data: bytes):
 ### Architecture of library
 
 <p float="left">
- <img src="docs/arch.png" 
+ <img src="docs/img/arch.png" 
   width="500" height="300" alt="lorem">
 </p>
 
@@ -86,31 +86,31 @@ def receive_server(to: str, from_: str, data: bytes):
 One to one: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_one.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/one_to_one.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/one_to_one.rs)
 
 <p float="left">
- <img src="docs/one_to_one.gif" 
+ <img src="docs/img/one_to_one.gif" 
   width="500" height="150" alt="lorem">
 </p>
 
 One to one for many: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_one_for_many.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/one_to_one_for_many.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/one_to_one_for_many.rs)
 <p float="left">
- <img src="docs/one_to_one_for_many.gif" 
+ <img src="docs/img/one_to_one_for_many.gif" 
   width="500" height="200" alt="lorem">
 </p>
 
 One to many: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_many.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/one_to_many.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/one_to_many.rs)
 <p float="left">
- <img src="docs/one_to_many.gif" 
+ <img src="docs/img/one_to_many.gif" 
   width="500" height="200" alt="lorem">
 </p>
 
 Many to many: [Python](https://github.com/Tyill/liner/blob/main/python/many_to_many.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/many_to_many.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/many_to_many.rs)
 <p float="left">
- <img src="docs/many_to_many.gif" 
+ <img src="docs/img/many_to_many.gif" 
   width="500" height="200" alt="lorem">
 </p>
 
 Producer-consumer: [Python](https://github.com/Tyill/liner/blob/main/python/producer_consumer.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/producer_consumer.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/producer_consumer.rs)
 <p float="left">
- <img src="docs/producer_consumer.gif" 
+ <img src="docs/img/producer_consumer.gif" 
   width="500" height="200" alt="lorem">
 </p>
 
@@ -180,7 +180,11 @@ You can customize the port/container name:
 LINER_TEST_REDIS_PORT=16379 LINER_TEST_REDIS_CONTAINER=liner-test-redis python3 test/offline_delivery_more.py
 ```
 
-### [Docs](https://docs.rs/liner_broker/1.2.2/liner_broker/)
+### Docs
+
+- [Crate API on docs.rs](https://docs.rs/liner_broker/1.2.2/liner_broker/)
+- [Developer notes (errors, backends, C API, lifecycle)](docs/README.md)
+- [C API compatibility and building (symbols, `cargo`, Linux/Windows)](docs/c-api-compatibility-and-build.md)
 
 ### License
 Licensed under an [MIT-2.0]-[license](LICENSE).

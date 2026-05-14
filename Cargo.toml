@@ -5,10 +5,8 @@ edition = "2021"
 keywords = ["broker", "serverless", "redis", "network"]
 categories = ["concurrency", "asynchronous"]
 exclude = [
-"docs/*",
 ".vscode/*",
 "cpp/*",
-"include/*",
 "python/*",
 "target/*",
 ]
@@ -51,6 +49,7 @@ path = "rust/producer_consumer.rs"
 
 [dependencies]
 redis = "0.26.1"
+rusqlite = { version = "0.32", features = ["bundled"] }
 rayon = "1.10"
 zstd = "0.13"
 libc = "0.2"
