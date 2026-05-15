@@ -41,8 +41,8 @@ The mempool is a bump-style arena backed by **`Vec<Vec<u8>>`** in chunks of **`M
 | **`MEMPOOL_CHUNK_SIZE_BYTE`** | 256 KiB | Growth / alignment unit for backing storage. |
 | **`MEMPOOL_MIN_PERCENT_FOR_COMPRESS`** | `0.2` (20%) | When satisfying an allocation from **fragmented free space**, the allocator may **decline** coalescing if **remaining free** after the alloc would fall **below 20%** of the current pool size—then it **adds new chunks** instead. This trades memory for less aggressive merging under pressure (name is historical, not “turn on zstd”). |
 | **`MEMPOOL_MIN_PERCENT_FOR_RESIZE`** | `0.25` (25%) | Together with size, enables **tail shrink** of the backing buffer when a large aligned free block sits at the end. |
-| **`MEMPOOL_OVER_SIZE_MB`** | **64** | Pool backing must exceed **64 MiB** before tail-shrink logic runs (avoids churn on small pools). |
-| **`MEMPOOL_FREE_COUNT_FOR_RESIZE`** | **1 000 000** | After this many **`free`** calls, the pool runs a **`check_free_mem(0)`** pass to **defragment / coalesce** free blocks. |
+| **`MEMPOOL_OVER_SIZE_MB`** | **16** | Pool backing must exceed **16 MiB** before tail-shrink logic runs (lower than the old **64** default so RSS drops sooner after bursts). |
+| **`MEMPOOL_FREE_COUNT_FOR_RESIZE`** | **4096** | After this many **`free`** calls, the pool runs a **`check_free_mem(0)`** pass to **defragment / coalesce** free blocks (more frequent than the old default so RSS can drop after bursts). |
 
 **What happens with huge messages**
 

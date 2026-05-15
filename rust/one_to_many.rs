@@ -49,7 +49,7 @@ fn  main() {
     for _ in 0..SEND_CYCLE_COUNT{
         let send_begin = current_time_ms();
         for _ in 0..MESS_SEND_COUNT{
-            server1.send_all("topic_client", array.as_slice());
+            server1.send_all("topic_client", array.as_slice(), true);
         }
         let send_end = current_time_ms();
         println!("send_to {} ms", send_end - send_begin);       

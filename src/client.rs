@@ -444,7 +444,8 @@ mod tests {
 
         let mut sent = false;
         for _ in 0..400 {
-            if client_b.send_to(topic_a, b"ping", true) {
+            // Isolated DB paths: listener acks live in A's file; B's sender must not use at_least_once.
+            if client_b.send_to(topic_a, b"ping", false) {
                 sent = true;
                 break;
             }

@@ -26,7 +26,7 @@
 
 ## Offline / persistence flags
 
-C functions **`lnr_send_to`** and **`lnr_send_all`** take **`at_least_once_delivery`**. When `TRUE`, the stack may persist messages for offline delivery depending on topic and connection state. When `FALSE`, behavior is best-effort. Rust `Client` exposes the same flag on `send_to` / `send_all`; the **`Liner`** wrapper hard-codes **`true`** for sends. For persistence rules, reconnect timing, and per-message **`number_mess`** deduplication, see [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md).
+C functions **`lnr_send_to`** and **`lnr_send_all`** take **`at_least_once_delivery`**. When `TRUE`, the stack may persist messages for offline delivery depending on topic and connection state. When `FALSE`, behavior is best-effort. Rust **`Client`** and **`Liner`** expose the same flag on **`send_to`** / **`send_all`**. If peers use **different SQLite files** (no shared store), pass **`false`** for cross-peer sends—see [using-sqlite.md](using-sqlite.md) (*Isolated files and `at_least_once_delivery`*). For persistence rules, reconnect timing, and per-message **`number_mess`** deduplication, see [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md).
 
 ## Clearing state
 

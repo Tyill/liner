@@ -85,7 +85,7 @@ LINER_API BOOL lnr_run(lnr_hClient client, lnr_receive_cb receive_cb, lnr_uData)
 /// @param topic - other topic
 /// @param data
 /// @param data_size
-/// @param at_least_once_delivery
+/// @param at_least_once_delivery - if TRUE, requires a shared store (e.g. one Redis URL or one SQLite path) so listener acks and sender reads the same conn_mess_number; with a different SQLite file per process, prefer FALSE
 /// @return true - ok
 LINER_API BOOL lnr_send_to(lnr_hClient client,
                           const char* topic,
@@ -97,7 +97,7 @@ LINER_API BOOL lnr_send_to(lnr_hClient client,
 /// @param topic - other topic
 /// @param data
 /// @param data_size
-/// @param at_least_once_delivery
+/// @param at_least_once_delivery - same semantics as lnr_send_to
 /// @return true - ok
 LINER_API BOOL lnr_send_all(lnr_hClient client,
                           const char* topic,

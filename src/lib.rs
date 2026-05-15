@@ -22,7 +22,7 @@
 //!  
 //!     let array = [0; 100];
 //!     for _ in 0..10{
-//!         client1.send_to("topic_client2", array.as_slice());
+//!         client1.send_to("topic_client2", array.as_slice(), true);
 //!         println!("send_to client2");       
 //!     }
 //! }
@@ -127,16 +127,31 @@ impl Liner {
             lnr_run(self.hclient, cb_, ud)
         }
     }
-    pub fn send_to(&mut self, topic: &str, data: &[u8])->bool{
-        unsafe{
+    /// Send to a single peer subscribed on `topic`. `at_least_once_delivery` matches C `lnr_send_to`
+    /// (persist / retry semantics; use `false` when peers use different SQLite files — see `docs/using-sqlite.md`).
+    pub fn send_to(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
+        unsafe {
             let topic = CString::new(topic).unwrap();
-            lnr_send_to(self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
+            lnr_send_to(
+                self.hclient,
+                topic.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                at_least_once_delivery,
+            )
         }
     }
-    pub fn send_all(&mut self, topic: &str, data: &[u8])->bool{
-        unsafe{
+    /// Broadcast to all peers on `topic`. Same `at_least_once_delivery` semantics as [`Liner::send_to`].
+    pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
+        unsafe {
             let topic = CString::new(topic).unwrap();
-            lnr_send_all(self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
+            lnr_send_all(
+                self.hclient,
+                topic.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                at_least_once_delivery,
+            )
         }
     }
     pub fn subscribe(&mut self, topic: &str)->bool{

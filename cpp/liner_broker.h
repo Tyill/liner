@@ -27,16 +27,20 @@ public:
       return false;
   }
 
-  bool sendTo(const std::string& topic, const std::string& data){
+  /// Matches C `lnr_send_to` last argument. Default `true` (at-least-once). Use `false` when peers
+  /// use different SQLite files so acks are not shared (see docs/using-sqlite.md).
+  bool sendTo(const std::string& topic, const std::string& data, bool at_least_once_delivery = true){
       if (m_hClient){
-          return lnr_send_to(m_hClient, topic.c_str(), data.data(), data.size(), TRUE);
+          return lnr_send_to(m_hClient, topic.c_str(), data.data(), data.size(),
+                             at_least_once_delivery ? TRUE : FALSE);
       }
       return false;
   }
 
-  bool sendAll(const std::string& topic, const std::string& data){
+  bool sendAll(const std::string& topic, const std::string& data, bool at_least_once_delivery = true){
       if (m_hClient){
-          return lnr_send_all(m_hClient, topic.c_str(), data.data(), data.size(), TRUE);
+          return lnr_send_all(m_hClient, topic.c_str(), data.data(), data.size(),
+                              at_least_once_delivery ? TRUE : FALSE);
       }
       return false;
   }

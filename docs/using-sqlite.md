@@ -14,6 +14,8 @@ This guide is for integrators who run the broker with a **SQLite file** instead 
 
 **Caveat:** if **each process has its own `.sqlite` file**, those catalogs are **not** shared. A sender’s empty DB does not know a peer’s topic until you **seed** the catalog (`receivers_json`, previous run on the same file, or manual SQL). Redis avoids that by sharing one URL.
 
+**Isolated files and `at_least_once_delivery`:** listener acks are written to **that process’s** SQLite file (`conn_mess_number`), while the sender refreshes acks from **its** file. With **different DB paths per peer**, those views do **not** merge—keep **`at_least_once_delivery` false** (`lnr_send_to` / `send_to` / `send_all` last argument, Rust `false`) so the stack does not retain unacked at-least-once traffic in RAM waiting for a store update that never arrives. For real at-least-once across processes, use **one shared SQLite path** (same as one Redis URL) or Redis.
+
 **Isolated pair (empty DBs):** the first logical channel uses wire **`connection_key` = 1** (documented as **token id** for this model). `receivers_json` does **not** carry that id; list **only peers** (their `topic` / `addr` / `client_name`). Seeding inserts **`conn_sender(1, peer_topic)`** and **`conn_key_map`** for those rows, and **`INSERT OR IGNORE topic_key(your_source_topic, 1)`** so your listener’s wire key exists without a self row in JSON. **Wire `topic_key.k = 1`** for every seeded peer topic as well (not passed in JSON).
 
 **One shared SQLite file** (same path for cooperating processes): pass **`receivers_json` empty** (`""` / `[]`); peers register into the same store and `conn_sender` / keys stay consistent without catalog JSON.
@@ -24,7 +26,7 @@ This guide is for integrators who run the broker with a **SQLite file** instead 
 
 ### Rust
 
-Use **`liner_broker::Client`** (full control, `send_to` with delivery flag) or **`liner_broker::Liner`** (Rust `Box` callback, same as Redis examples). The crate README still shows **`Liner::new`** for Redis.
+Use **`liner_broker::Client`** or **`liner_broker::Liner`**; both take **`at_least_once_delivery`** on **`send_to`** / **`send_all`**. The crate README still shows **`Liner::new`** for Redis.
 
 **`Liner::new_sqlite`** takes the same five logical arguments as the C API (`receivers_json` may be `""`).
 
@@ -125,7 +127,7 @@ The repository includes an end-to-end test that exercises **two different SQLite
    - `run` (the test uses a no-op receive callback for B).
 
 4. **Send**  
-   - B calls `send_to("topic_iso_a", payload, at_least_once)` in a retry loop until it returns `true` (TCP and routing may need a few tries).
+   - B calls `send_to("topic_iso_a", payload, false)` in a retry loop until it returns `true` (TCP and routing may need a few tries). Use **`false`** here because A and B use **different** SQLite files; **`true`** would wait on acks in B’s DB that only A’s listener updates (see *Isolated files and `at_least_once_delivery`* above).
 
 5. **Assert delivery**  
    - A’s callback should observe the payload within your timeout.
@@ -139,7 +141,7 @@ The test uses `std::env::temp_dir()` for paths and removes the directory at the 
 | Model | How catalog is shared |
 |--------|------------------------|
 | **One `.sqlite` file** opened by cooperating processes (same host, locking discipline) | `regist_topic` / `run` updates the same `topic_addr` / `topic_key`; peers see each other without JSON if they share that file. Prefer **empty** `receivers_json`. |
-| **One file per process** (isolated empty DBs, single counterparty) | Use **`receivers_json`** so each DB lists the peer’s **`topic`**, **`addr`**, **`client_name`**. First wire **`connection_key`** is **1**; seeded **`topic_key.k`** is **1** for those topics; seeding writes **`conn_sender`** for the callback **`from`**. |
+| **One file per process** (isolated empty DBs, single counterparty) | Use **`receivers_json`** so each DB lists the peer’s **`topic`**, **`addr`**, **`client_name`**. First wire **`connection_key`** is **1**; seeded **`topic_key.k`** is **1** for those topics; seeding writes **`conn_sender`** for the callback **`from`**. For **`send_to` / `send_all`**, use **`at_least_once_delivery == false`** unless you use a **shared** SQLite path (see *Isolated files and `at_least_once_delivery`* above). |
 
 Do not mix **Redis** and **SQLite** for one logical mesh unless you intend two isolated systems ([backends.md](backends.md)).
 

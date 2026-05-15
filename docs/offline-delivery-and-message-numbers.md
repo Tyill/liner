@@ -47,6 +47,10 @@ Therefore **retries or duplicates with the same or an older number cannot be del
 
 Together, **`number_mess`** plus the stored **last acknowledged number per `connection_key`** define what may be resent after a failure and what the listener must ignore as already processed.
 
+### SQLite: one file per process
+
+**`get_last_mess_number_for_sender`** and **`set_last_mess_number_from_listener`** must hit the **same** backing store for a logical channel if you rely on at-least-once **without** growing the sender queue: the listener persists acks, the sender reads them on its polling cadence. If each peer uses a **different `.sqlite` path**, the receiver’s listener updates **its** file only; the sender never sees those rows—use **`at_least_once_delivery == false`** for sends in that deployment, or switch to **one shared SQLite file** (or Redis) for shared counters and queues.
+
 ## Practical summary
 
 | Topic | Behavior |
@@ -55,6 +59,7 @@ Together, **`number_mess`** plus the stored **last acknowledged number per `conn
 | Best-effort sends | **No** guarantee of persistence across disconnects. |
 | Duplicate wire deliveries | **Suppressed** on the listener when `number_mess` is not greater than the last accepted value for that connection. |
 | Ack timing | Listener flushes acks to the store on a **~1 s** cadence (`UPDATE_LAST_MESS_NUMBER_TIMEOUT_MS`). |
+| Isolated SQLite (different path per process) | Do **not** use **`at_least_once_delivery == true`** for cross-peer sends unless you accept unbounded RAM / wrong ack sync; use **`false`** or a **shared** catalog file. |
 
 ## Related reading
 

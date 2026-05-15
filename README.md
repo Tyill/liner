@@ -24,7 +24,7 @@ fn  main() {
 
     let array = [0; 100];
     for _ in 0..10{
-        client1.send_to("topic_client2", array.as_slice());
+        client1.send_to("topic_client2", array.as_slice(), true);
         println!("send_to client2");       
     }
 }
@@ -41,8 +41,8 @@ def foo():
     client2.run(receive_cback2)
     server.run(receive_server)
     
-    b = b'hello world'
-    server.send_all("topic_client", b)
+    b = bytearray(b'hello world')
+    server.send_all("topic_client", b)  # optional third arg: at_least_once (default True)
     
 
 def receive_cback1(to: str, from_: str, data: bytes):
@@ -123,7 +123,7 @@ Producer-consumer: [Python](https://github.com/Tyill/liner/blob/main/python/prod
 Two binaries stress the same **pair of clients + `send_to`** workload; only the **store** differs:
 
 - **`bench_pair_sendto_redis`** — Redis catalog (`redis://localhost/`). `cargo build --release --bin bench_pair_sendto_redis` → `./bench_pair_sendto_redis`.
-- **`bench_pair_sendto_sqlite`** — two **separate** temp SQLite files (isolated DBs) and fixed bind addresses; each side’s `receivers_json` lists **only the peer** (topic / addr / `client_name`). First channel **`connection_key`** is **1** by convention. Alternative: **one** shared temp file for both clients with **empty** `receivers_json` (same idea as one Redis URL). `cargo build --release --bin bench_pair_sendto_sqlite` → `./bench_pair_sendto_sqlite`.
+- **`bench_pair_sendto_sqlite`** — **one** shared temp SQLite file for both clients (same idea as one Redis URL), so listener acks and sender reads hit the same `conn_mess_number`. Fixed bind addresses; each side’s `receivers_json` lists **only the peer** (topic / addr / `client_name`). `cargo build --release --bin bench_pair_sendto_sqlite` → `./bench_pair_sendto_sqlite`.
 
 ```
 alex@ubuntu2004:~/projects/rust/liner/target/release$ ./bench_pair_sendto_redis 

@@ -15,6 +15,7 @@ See [c-api-compatibility-and-build.md](c-api-compatibility-and-build.md). After 
 - **Windows:** use your toolchain’s rules for linking the **`liner_broker`** DLL / import library from `target/release` (flags differ from `g++` on Linux); see the compatibility doc.
 - **Strings:** `std::string` passed as `.c_str()` must not contain embedded **NUL** bytes; topics and addresses are C strings.
 - **SQLite:** the sample C++ class only uses **`lnr_new_client_redis`**. For SQLite, call **`lnr_new_client_sqlite`** with five C strings (`unique_name`, `topic`, `localhost`, `sqlite_path`, **`receivers_json`**) or extend the wrapper. Pass **`NULL`** or **`"[]"`** for `receivers_json` when the catalog is already in the database file. Full walkthrough: [using-sqlite.md](using-sqlite.md).
+- **`sendTo` / `sendAll`:** the wrapper passes **`at_least_once_delivery`** through to the C API (optional third C++ argument, default **`true`**). Use **`false`** when each process has its own SQLite file and acks are not shared — see [using-sqlite.md](using-sqlite.md) (*Isolated files and `at_least_once_delivery`*).
 - **Lifecycle:** `LinerBroker` calls **`lnr_new_client_redis`** in the constructor and **`lnr_delete_client`** in the destructor. Do not destroy the object while **`lnr_run`** is still logically active on another thread unless you have coordinated shutdown (the library owns background threads after a successful `run`). Call **`lnr_run`** before **`lnr_send_to`** / **`lnr_send_all`**; see [using-the-api.md](using-the-api.md).
 
 ## Python
@@ -25,6 +26,7 @@ See [c-api-compatibility-and-build.md](c-api-compatibility-and-build.md). After 
 - **Callbacks:** `run` installs a **`CFUNCTYPE`** callback stored on **`self.recvCBack_`** so it is not garbage-collected while Rust may call it. Keep the callback **short**; heavy work can delay I/O inside the library.
 - **Threading:** the library runs listener/sender work on its own threads; receive callbacks may be invoked from those paths. Avoid calling back into the same **`Client`** from the callback in a way that could **deadlock** with your own locks. Prefer queuing work to another thread if needed.
 - **Data:** `send_to` / `send_all` use **`bytearray`** in the sample; other buffer types may need copying into a form ctypes can pin for the duration of the call.
+- **`at_least_once_delivery`:** optional third argument on **`send_to`** / **`send_all`** (default **`True`**). Set **`False`** for cross-peer sends when each process uses a **different** SQLite path; otherwise the sender may retain unacked traffic in RAM (same rule as C / Rust — [using-sqlite.md](using-sqlite.md)).
 
 ## Keeping bindings in sync
 
