@@ -1,10 +1,10 @@
 # liner
 
-Redis- or **SQLite**-backed message broker (serverless style catalog + TCP between peers).  
+Redis- or SQLite-backed message broker (serverless style catalog + TCP between peers).  
 The library is written in Rust with a C interface.  
 Data transfer via TCP.
 
-**SQLite:** embedded single-file mode (no Redis process). See the guide [docs/using-sqlite.md](docs/using-sqlite.md) for `Client::new_sqlite`, `receivers_json`, and the walkthrough that matches the unit test in `src/client.rs`.
+SQLite: embedded single-file mode (no Redis process). See the guide [docs/using-sqlite.md](docs/using-sqlite.md).
 
 Rust example:  
 ``` Rust
@@ -62,7 +62,7 @@ def receive_server(to: str, from_: str, data: bytes):
 
  - delivery guarantee: at least once delivery (store-backed: Redis or SQLite)
 
- - **SQLite** backend: file per deployment / per process; optional `receivers_json` catalog when each peer has its own DB file ([docs/using-sqlite.md](docs/using-sqlite.md))
+ - SQLite backend: file per deployment / per process ([docs/using-sqlite.md](docs/using-sqlite.md))
 
  - message size is not predetermined and is not limited
 
