@@ -189,6 +189,13 @@ You can customize the port/container name:
 LINER_TEST_REDIS_PORT=16379 LINER_TEST_REDIS_CONTAINER=liner-test-redis python3 test/offline_delivery_more.py
 ```
 
+SQLite-backed Python integration tests (no Redis; shared temp DB per script):
+
+```bash
+cargo build --release
+python3 test/sqlite/run_integration.py
+```
+
 ### Docs
 
 - [Using SQLite (`new_sqlite`, `receivers_json`, reference test walkthrough)](docs/using-sqlite.md)

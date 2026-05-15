@@ -36,6 +36,36 @@ class Client:
     
         if not self.hClient_:
             raise Exception('error init client, check redisPath') 
+
+    @classmethod
+    def new_sqlite(
+        cls,
+        uniqName: str,
+        topic: str,
+        localhost: str,
+        sqlite_path: str,
+        receivers_json: str = "",
+    ):
+        """SQLite-backed client (``lnr_new_client_sqlite``). Use one shared ``sqlite_path`` for cooperating peers."""
+        global lib_
+        if not lib_:
+            raise Exception('lib not load')
+        inst = cls.__new__(cls)
+        pfun = lib_.lnr_new_client_sqlite
+        pfun.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p)
+        pfun.restype = ctypes.c_void_p
+        inst.hClient_ = ctypes.c_void_p(
+            pfun(
+                uniqName.encode("utf-8"),
+                topic.encode("utf-8"),
+                localhost.encode("utf-8"),
+                sqlite_path.encode("utf-8"),
+                receivers_json.encode("utf-8"),
+            )
+        )
+        if not inst.hClient_:
+            raise Exception('error init sqlite client, check sqlite_path / receivers_json')
+        return inst
                  
     def __enter__(self):
         return self
