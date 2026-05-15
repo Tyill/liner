@@ -199,7 +199,7 @@ python3 test/sqlite/run_integration.py
 ### Docs
 
 - [Using SQLite (`new_sqlite`, `receivers_json`, reference test walkthrough)](docs/using-sqlite.md)
-- [Crate API on docs.rs](https://docs.rs/liner_broker/1.2.2/liner_broker/)
+- [Crate API on docs.rs](https://docs.rs/liner_broker/1.3.0/liner_broker/)
 - [Developer notes (errors, backends, C API, lifecycle)](docs/README.md)
 - [C API compatibility and building (symbols, `cargo`, Linux/Windows)](docs/c-api-compatibility-and-build.md)
 
