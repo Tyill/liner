@@ -1,8 +1,14 @@
 use crate::{message::Message, mempool::Mempool, print_error};
 
-use redis::{Commands, ConnectionLike, RedisResult, ErrorKind};
+use super::store::{DbError, DbResult, ReceiverSeedEntry, Store};
+use ::redis::{Commands, ConnectionLike, ErrorKind, RedisResult};
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+fn map_db<T>(r: RedisResult<T>) -> DbResult<T> {
+    r.map_err(|e| DbError::new(e.to_string()))
+}
 
 fn parse_i32_res(s: &str, ctx: &'static str) -> RedisResult<i32> {
     s.parse::<i32>()
@@ -14,22 +20,22 @@ fn parse_u64_res(s: &str, ctx: &'static str) -> RedisResult<u64> {
         .map_err(|_| (ErrorKind::TypeError, ctx).into())
 }
 
-pub struct Connect{
+pub struct Redis {
     unique_name: String,
     source_topic: String,
     source_localhost: String,
     conn_str: String,
-    conn: redis::Connection,
+    conn: ::redis::Connection,
     topic_addr_cache: HashMap<String, Vec<String>>, // key: topic, value: addrs
     topic_key_cache: HashMap<String, i32>, // key: topic, value: key
     unique_name_cache: HashMap<String, String>, // key: addr, value: uname
     last_mess_number: HashMap<i32, u64>, // key: connection_key
 }
-impl Connect {
-    pub fn new(unique_name: &str, conn_str: &str)->RedisResult<Connect>{
-        let client = redis::Client::open(conn_str.to_string())?;
+impl Redis {
+    pub fn new(unique_name: &str, conn_str: &str)->RedisResult<Redis>{
+        let client = ::redis::Client::open(conn_str.to_string())?;
         let conn = client.get_connection()?;
-        Ok(Connect{
+        Ok(Redis{
             unique_name: unique_name.to_string(),
             source_topic: "".to_string(),
             source_localhost: "".to_string(),
@@ -285,6 +291,135 @@ impl Connect {
         }
         Ok(&mut self.conn)
     }  
+
+    /// No-op: Redis uses a shared catalog; `receivers_json` seeding (including SQLite-only
+    /// `conn_sender` / first `connection_key` convention) applies only to SQLite.
+    pub fn seed_receivers(&mut self, _entries: &[ReceiverSeedEntry]) -> RedisResult<()> {
+        Ok(())
+    }
+}
+
+impl Store for Redis {
+    fn set_source_topic(&mut self, topic: &str) {
+        Redis::set_source_topic(self, topic);
+    }
+
+    fn set_source_localhost(&mut self, localhost: &str) {
+        Redis::set_source_localhost(self, localhost);
+    }
+
+    fn regist_topic(&mut self, topic: &str) -> DbResult<()> {
+        map_db(Redis::regist_topic(self, topic))
+    }
+
+    fn unregist_topic(&mut self, topic: &str) -> DbResult<()> {
+        map_db(Redis::unregist_topic(self, topic))
+    }
+
+    fn clear_addresses_of_topic(&mut self) -> DbResult<()> {
+        map_db(Redis::clear_addresses_of_topic(self))
+    }
+
+    fn clear_stored_messages(&mut self) -> DbResult<()> {
+        map_db(Redis::clear_stored_messages(self))
+    }
+
+    fn save_listener_for_sender(&mut self, listener_addr: &str, listener_topic: &str) -> DbResult<()> {
+        map_db(Redis::save_listener_for_sender(
+            self,
+            listener_addr,
+            listener_topic,
+        ))
+    }
+
+    fn get_listeners_of_sender(&mut self) -> DbResult<Vec<(String, String)>> {
+        map_db(Redis::get_listeners_of_sender(self))
+    }
+
+    fn get_addresses_of_topic(&mut self, without_cache: bool, topic: &str) -> DbResult<Vec<String>> {
+        map_db(Redis::get_addresses_of_topic(self, without_cache, topic))
+    }
+
+    fn get_listener_unique_name(&mut self, topic: &str, address: &str) -> DbResult<String> {
+        map_db(Redis::get_listener_unique_name(self, topic, address))
+    }
+
+    fn get_connection_key_for_sender(&mut self, listener_name: &str) -> DbResult<i32> {
+        map_db(Redis::get_connection_key_for_sender(self, listener_name))
+    }
+
+    fn get_topic_key(&mut self, topic: &str) -> DbResult<i32> {
+        map_db(Redis::get_topic_key(self, topic))
+    }
+
+    fn set_sender_topic_by_connection_key_from_sender(&mut self, connection_key: i32) -> DbResult<()> {
+        map_db(Redis::set_sender_topic_by_connection_key_from_sender(
+            self,
+            connection_key,
+        ))
+    }
+
+    fn get_sender_topic_by_connection_key(&mut self, connection_key: i32) -> DbResult<String> {
+        map_db(Redis::get_sender_topic_by_connection_key(self, connection_key))
+    }
+
+    fn set_last_mess_number_from_listener(&mut self, connection_key: i32, val: u64) -> DbResult<()> {
+        map_db(Redis::set_last_mess_number_from_listener(
+            self,
+            connection_key,
+            val,
+        ))
+    }
+
+    fn get_last_mess_number_for_listener(&mut self, connection_key: i32) -> DbResult<u64> {
+        map_db(Redis::get_last_mess_number_for_listener(self, connection_key))
+    }
+
+    fn get_last_mess_number_for_sender(&mut self, connection_key: i32) -> DbResult<u64> {
+        map_db(Redis::get_last_mess_number_for_sender(self, connection_key))
+    }
+
+    fn save_messages_from_sender(
+        &mut self,
+        mempool: &Arc<Mutex<Mempool>>,
+        connection_key: i32,
+        mess: Vec<Message>,
+    ) -> DbResult<()> {
+        map_db(Redis::save_messages_from_sender(
+            self,
+            mempool,
+            connection_key,
+            mess,
+        ))
+    }
+
+    fn load_messages_for_sender(
+        &mut self,
+        mempool: &Arc<Mutex<Mempool>>,
+        connection_key: i32,
+    ) -> DbResult<Vec<Message>> {
+        map_db(Redis::load_messages_for_sender(
+            self,
+            mempool,
+            connection_key,
+        ))
+    }
+
+    fn load_last_message_for_sender(
+        &mut self,
+        mempool: &Arc<Mutex<Mempool>>,
+        connection_key: i32,
+    ) -> DbResult<Option<Message>> {
+        map_db(Redis::load_last_message_for_sender(
+            self,
+            mempool,
+            connection_key,
+        ))
+    }
+
+    fn seed_receivers(&mut self, entries: &[ReceiverSeedEntry]) -> DbResult<()> {
+        map_db(Redis::seed_receivers(self, entries))
+    }
 }
 
 fn encode_and_free_messages(mempool: &Arc<Mutex<Mempool>>, mess: Vec<Message>) -> Vec<Vec<u8>> {
@@ -310,7 +445,7 @@ mod tests {
         let redis_url =
             std::env::var("LINER_TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".into());
 
-        let mut c = Connect::new("it_redis_roundtrip", &redis_url).expect("redis connect failed");
+        let mut c = Redis::new("it_redis_roundtrip", &redis_url).expect("redis connect failed");
         c.set_source_topic("topic_it_redis_roundtrip");
         c.set_source_localhost("127.0.0.1:0");
 

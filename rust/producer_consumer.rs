@@ -73,10 +73,10 @@ fn  main() {
     for _ in 0..SEND_CYCLE_COUNT{
         let send_begin = current_time_ms();
         for _ in 0..MESS_SEND_COUNT{
-            server1.send_to("topic_client1", array.as_slice());
-            server1.send_to("topic_client2", array.as_slice());
-            server1.send_to("topic_client3", array.as_slice());
-            server1.send_to("topic_for_subscr", array.as_slice());
+            server1.send_to("topic_client1", array.as_slice(), true);
+            server1.send_to("topic_client2", array.as_slice(), true);
+            server1.send_to("topic_client3", array.as_slice(), true);
+            server1.send_to("topic_for_subscr", array.as_slice(), true);
         }
         let send_end = current_time_ms();
         println!("send_to {} ms", send_end - send_begin);       

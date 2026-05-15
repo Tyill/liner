@@ -1,8 +1,7 @@
 use crate::mempool::Mempool;
 use crate::message::Message;
-use crate::redis;
+use crate::store::{open_store_mutex, Store, StoreBackend};
 use crate::{print_error, print_debug};
-use crate::redis::Connect;
 use crate::settings;
 use crate::common;
 
@@ -67,7 +66,7 @@ pub struct Sender{
 }
 
 impl Sender {
-    pub fn new(unique_name: &str, redis_path: &str, source_topic: &str)->Sender{
+    pub fn new(unique_name: &str, store_backend: StoreBackend, source_topic: &str)->Sender{
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let messages_ = messages.clone();
         let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(Vec::new()));
@@ -75,8 +74,8 @@ impl Sender {
         let addrs_for: HashMap<String, usize> = HashMap::new();
         let addrs_new: Arc<Mutex<Vec<Address>>> = Arc::new(Mutex::new(Vec::new()));
         let mut addrs_new_ = addrs_new.clone();
-        let db_conn = redis::Connect::new(unique_name, redis_path).expect("couldn't redis::Connect");
-        let db = Arc::new(Mutex::new(db_conn));
+        let db: Arc<Mutex<dyn Store>> =
+            open_store_mutex(unique_name, store_backend).expect("couldn't open store");
         db.lock().unwrap().set_source_topic(source_topic);
         
         let delay_write_cvar = Arc::new((Mutex::new(false), Condvar::new()));
@@ -145,7 +144,7 @@ impl Sender {
         }
     }
     
-    pub fn send_to(&mut self, db: &mut redis::Connect, addr_to: &str, listener_topic: &str, 
+    pub fn send_to(&mut self, db: &mut dyn Store, addr_to: &str, listener_topic: &str, 
                    data: &[u8], at_least_once_delivery: bool)->bool{
         let mut is_new_addr = false;
         if !self.addrs_for.contains_key(addr_to){
@@ -249,7 +248,7 @@ impl Sender {
         }
     }
      
-    fn append_new_state(&mut self, db: &mut redis::Connect, addr_to: &str, listener_topic: &str)->bool{
+    fn append_new_state(&mut self, db: &mut dyn Store, addr_to: &str, listener_topic: &str)->bool{
         let listener_name;
         if let Ok(name) = db.get_listener_unique_name(listener_topic, addr_to){
             listener_name = name;
@@ -331,7 +330,7 @@ impl Sender {
         true
     }
 
-    pub fn load_prev_connects(&mut self, db: &mut Connect){       
+    pub fn load_prev_connects(&mut self, db: &mut dyn Store){
         match db.get_listeners_of_sender() {
             Ok(addr_topic) => {
                 for t in addr_topic{
@@ -418,7 +417,7 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
 }
 
 fn update_last_mess_number(streams: &mut WriteStreamList,
-                           db: &Arc<Mutex<redis::Connect>>,
+                           db: &Arc<Mutex<dyn Store>>,
                            messages: &Arc<Mutex<MessList>>,
                            mempools: &Arc<Mutex<MempoolList>>){
     let mut connection_keys: Vec<i32> = Vec::new();
@@ -485,7 +484,7 @@ fn update_last_mess_number(streams: &mut WriteStreamList,
 
 fn append_streams(streams: &mut WriteStreamList,
                   addrs: &mut Arc<Mutex<Vec<Address>>>,
-                  db: &Arc<Mutex<redis::Connect>>,
+                  db: &Arc<Mutex<dyn Store>>,
                   messages: &Arc<Mutex<MessList>>,
                   mempools: &Arc<Mutex<MempoolList>>){
     let mut addrs_lost: Vec<Address> = Vec::new();
@@ -693,7 +692,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
 
 fn check_streams_close(streams: &mut WriteStreamList,
                        addrs_new: &Arc<Mutex<Vec<Address>>>,
-                       db: &Arc<Mutex<redis::Connect>>,
+                       db: &Arc<Mutex<dyn Store>>,
                        messages: &Arc<Mutex<MessList>>,
                        mempools: &Arc<Mutex<MempoolList>>){
     for stream in streams.iter(){
@@ -725,7 +724,7 @@ fn check_streams_close(streams: &mut WriteStreamList,
     }  
 }
 
-fn save_mess_to_db(mess: Vec<Message>, db: &Arc<Mutex<redis::Connect>>,
+fn save_mess_to_db(mess: Vec<Message>, db: &Arc<Mutex<dyn Store>>,
                    ix: usize, connection_key: i32, mempools: &Arc<Mutex<MempoolList>>){                    
     let mut last_send_mess_number: u64 = 0;
     if let Ok(num) = db.lock().unwrap().get_last_mess_number_for_sender(connection_key){
@@ -748,7 +747,7 @@ fn save_mess_to_db(mess: Vec<Message>, db: &Arc<Mutex<redis::Connect>>,
     };
 
     // Important: free messages we are not going to persist. The remaining ones are freed by
-    // `redis::Connect::save_messages_from_sender` (it takes ownership).
+    // `save_messages_from_sender` on the store (frees encoded messages internally).
     let mut to_save: Vec<Message> = Vec::new();
     let mut to_free: Vec<Message> = Vec::new();
     for m in mess {
@@ -779,7 +778,7 @@ fn save_mess_to_db(mess: Vec<Message>, db: &Arc<Mutex<redis::Connect>>,
 
 fn close_streams(streams: &WriteStreamList,
                  addrs_new: &Arc<Mutex<Vec<Address>>>,
-                 db: &Arc<Mutex<redis::Connect>>,
+                 db: &Arc<Mutex<dyn Store>>,
                  messages: &Arc<Mutex<MessList>>,
                  mempools: &Arc<Mutex<MempoolList>>){
     for stream in streams.iter(){

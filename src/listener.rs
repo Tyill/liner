@@ -1,6 +1,6 @@
 use crate::message::Message;
 use crate::mempool::Mempool;
-use crate::redis;
+use crate::store::{open_store_mutex, Store, StoreBackend};
 use crate::settings;
 use crate::common;
 use crate::{UCbackIntern, UData};
@@ -50,7 +50,7 @@ pub struct Listener{
 
 impl Listener {
     pub fn new(mut listener: TcpListener,
-               unique_name: &str, redis_path: &str, source_topic: &str, subscriptions: &HashMap<i32, String>, receive_cb: UCbackIntern, udata: UData)->Listener{
+               unique_name: &str, store_backend: StoreBackend, source_topic: &str, subscriptions: &HashMap<i32, String>, receive_cb: UCbackIntern, udata: UData)->Listener{
         let mut poll = Poll::new().expect("couldn't create poll queue");
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let mut messages_ = messages.clone();
@@ -58,8 +58,8 @@ impl Listener {
         let mempools_= mempools.clone();
         let mut senders: Arc<Mutex<SenderList>> = Arc::new(Mutex::new(Vec::new()));
         let senders_ = senders.clone();
-        let db_conn = redis::Connect::new(unique_name, redis_path).expect("couldn't redis::Connect");
-        let db = Arc::new(Mutex::new(db_conn));
+        let db: Arc<Mutex<dyn Store>> =
+            open_store_mutex(unique_name, store_backend).expect("couldn't open store");
         db.lock().unwrap().set_source_topic(source_topic);
         let db_ = db.clone();
       
@@ -312,7 +312,7 @@ fn listener_accept(poll: &Poll,
 fn read_stream(token: Token,
                stream: &Arc<Mutex<ReadStream>>,
                senders: &Arc<Mutex<SenderList>>,
-               db: Arc<Mutex<redis::Connect>>,
+               db: Arc<Mutex<dyn Store>>,
                mempools: &Arc<Mutex<MempoolList>>,
                messages: &Arc<Mutex<MessList>>,
                receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
@@ -471,7 +471,7 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
 }
 
 fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
-                           db: &Arc<Mutex<redis::Connect>>){
+                           db: &Arc<Mutex<dyn Store>>){
     for sender in senders.lock().unwrap().iter_mut(){
         if sender.connection_key >= 0 && sender.last_mess_num_saved < sender.last_mess_num{
             set_last_mess_number(db, sender.connection_key, sender.last_mess_num);
@@ -480,13 +480,13 @@ fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
     }
 }
 
-fn set_last_mess_number(db: &Arc<Mutex<redis::Connect>>, connection_key: i32, last_mess_num: u64){
+fn set_last_mess_number(db: &Arc<Mutex<dyn Store>>, connection_key: i32, last_mess_num: u64){
     if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(connection_key, last_mess_num){
         print_error!(&format!("couldn't db.set_last_mess_number: {}", err));
     }
 }
 
-fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, connection_key: i32, default_mess_number: u64)->u64{
+fn get_last_mess_number(db: &Arc<Mutex<dyn Store>>, connection_key: i32, default_mess_number: u64)->u64{
     match db.lock().unwrap().get_last_mess_number_for_listener(connection_key){
         Ok(num)=>{
             num
@@ -498,7 +498,7 @@ fn get_last_mess_number(db: &Arc<Mutex<redis::Connect>>, connection_key: i32, de
     }
 }
 
-fn get_sender_topic(db: &Arc<Mutex<redis::Connect>>, connection_key: i32)->String{
+fn get_sender_topic(db: &Arc<Mutex<dyn Store>>, connection_key: i32)->String{
     match db.lock().unwrap().get_sender_topic_by_connection_key(connection_key){
         Ok(v)=>{
             v

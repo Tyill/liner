@@ -1,8 +1,10 @@
 # liner
 
-Redis based message serverless broker.  
-The library is written on Rust, C-interface.  
+Redis- or **SQLite**-backed message broker (serverless style catalog + TCP between peers).  
+The library is written in Rust with a C interface.  
 Data transfer via TCP.
+
+**SQLite:** embedded single-file mode (no Redis process). See the guide [docs/using-sqlite.md](docs/using-sqlite.md) for `Client::new_sqlite`, `receivers_json`, and the walkthrough that matches the unit test in `src/client.rs`.
 
 Rust example:  
 ``` Rust
@@ -22,7 +24,7 @@ fn  main() {
 
     let array = [0; 100];
     for _ in 0..10{
-        client1.send_to("topic_client2", array.as_slice());
+        client1.send_to("topic_client2", array.as_slice(), true);
         println!("send_to client2");       
     }
 }
@@ -39,8 +41,8 @@ def foo():
     client2.run(receive_cback2)
     server.run(receive_server)
     
-    b = b'hello world'
-    server.send_all("topic_client", b)
+    b = bytearray(b'hello world')
+    server.send_all("topic_client", b)  # optional third arg: at_least_once (default True)
     
 
 def receive_cback1(to: str, from_: str, data: bytes):
@@ -58,7 +60,9 @@ def receive_server(to: str, from_: str, data: bytes):
 
  - high message bandwidth ([benchmark](#benchmark))
 
- - delivery guarantee: at least once delivery (using redis db)
+ - delivery guarantee: at least once delivery (store-backed: Redis or SQLite)
+
+ - **SQLite** backend: file per deployment / per process; optional `receivers_json` catalog when each peer has its own DB file ([docs/using-sqlite.md](docs/using-sqlite.md))
 
  - message size is not predetermined and is not limited
 
@@ -77,7 +81,7 @@ def receive_server(to: str, from_: str, data: bytes):
 ### Architecture of library
 
 <p float="left">
- <img src="docs/arch.png" 
+ <img src="docs/img/arch.png" 
   width="500" height="300" alt="lorem">
 </p>
 
@@ -86,38 +90,43 @@ def receive_server(to: str, from_: str, data: bytes):
 One to one: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_one.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/one_to_one.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/one_to_one.rs)
 
 <p float="left">
- <img src="docs/one_to_one.gif" 
+ <img src="docs/img/one_to_one.gif" 
   width="500" height="150" alt="lorem">
 </p>
 
 One to one for many: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_one_for_many.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/one_to_one_for_many.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/one_to_one_for_many.rs)
 <p float="left">
- <img src="docs/one_to_one_for_many.gif" 
+ <img src="docs/img/one_to_one_for_many.gif" 
   width="500" height="200" alt="lorem">
 </p>
 
 One to many: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_many.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/one_to_many.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/one_to_many.rs)
 <p float="left">
- <img src="docs/one_to_many.gif" 
+ <img src="docs/img/one_to_many.gif" 
   width="500" height="200" alt="lorem">
 </p>
 
 Many to many: [Python](https://github.com/Tyill/liner/blob/main/python/many_to_many.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/many_to_many.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/many_to_many.rs)
 <p float="left">
- <img src="docs/many_to_many.gif" 
+ <img src="docs/img/many_to_many.gif" 
   width="500" height="200" alt="lorem">
 </p>
 
 Producer-consumer: [Python](https://github.com/Tyill/liner/blob/main/python/producer_consumer.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/producer_consumer.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/producer_consumer.rs)
 <p float="left">
- <img src="docs/producer_consumer.gif" 
+ <img src="docs/img/producer_consumer.gif" 
   width="500" height="200" alt="lorem">
 </p>
 
 ### [Benchmark](https://github.com/Tyill/liner/blob/main/benchmark)
 
+Two binaries stress the same **pair of clients + `send_to`** workload; only the **store** differs:
+
+- **`bench_pair_sendto_redis`** — Redis catalog (`redis://localhost/`). `cargo build --release --bin bench_pair_sendto_redis` → `./bench_pair_sendto_redis`.
+- **`bench_pair_sendto_sqlite`** — **one** shared temp SQLite file for both clients (same idea as one Redis URL), so listener acks and sender reads hit the same `conn_mess_number`. Fixed bind addresses; each side’s `receivers_json` lists **only the peer** (topic / addr / `client_name`). `cargo build --release --bin bench_pair_sendto_sqlite` → `./bench_pair_sendto_sqlite`.
+
 ```
-alex@ubuntu2004:~/projects/rust/liner/target/release$ ./throughput_10k 
+alex@ubuntu2004:~/projects/rust/liner/target/release$ ./bench_pair_sendto_redis 
 send_to 8 ms
 receive_from 8 ms
 send_to 5 ms
@@ -180,7 +189,19 @@ You can customize the port/container name:
 LINER_TEST_REDIS_PORT=16379 LINER_TEST_REDIS_CONTAINER=liner-test-redis python3 test/offline_delivery_more.py
 ```
 
-### [Docs](https://docs.rs/liner_broker/1.2.2/liner_broker/)
+SQLite-backed Python integration tests (no Redis; shared temp DB per script):
+
+```bash
+cargo build --release
+python3 test/sqlite/run_integration.py
+```
+
+### Docs
+
+- [Using SQLite (`new_sqlite`, `receivers_json`, reference test walkthrough)](docs/using-sqlite.md)
+- [Crate API on docs.rs](https://docs.rs/liner_broker/1.2.2/liner_broker/)
+- [Developer notes (errors, backends, C API, lifecycle)](docs/README.md)
+- [C API compatibility and building (symbols, `cargo`, Linux/Windows)](docs/c-api-compatibility-and-build.md)
 
 ### License
 Licensed under an [MIT-2.0]-[license](LICENSE).

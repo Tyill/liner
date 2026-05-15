@@ -22,15 +22,19 @@
 //!  
 //!     let array = [0; 100];
 //!     for _ in 0..10{
-//!         client1.send_to("topic_client2", array.as_slice());
+//!         client1.send_to("topic_client2", array.as_slice(), true);
 //!         println!("send_to client2");       
 //!     }
 //! }
 //! 
 //! ```
 
-mod redis;
+mod store;
+pub use store::ReceiverSeedEntry;
+pub use store::redis;
+
 mod client;
+pub use client::Client;
 mod message;
 mod mempool;
 mod bytestream;
@@ -39,7 +43,6 @@ mod sender;
 mod settings;
 mod common;
 
-use crate::client::Client;
 use std::ffi::CStr;
 use std::ffi::CString;
 
@@ -63,26 +66,60 @@ pub struct Liner{
 }
 
 impl Liner {
-    pub fn new(unique_name: &str,
+    /// Creates a client backed by **Redis** (`redis_path` is a Redis URL, e.g. `redis://127.0.0.1/`).
+    pub fn new(unique_name: &str, topic: &str, localhost: &str, redis_path: &str) -> Liner {
+        unsafe {
+            let unique = CString::new(unique_name).unwrap();
+            let dbpath = CString::new(redis_path).unwrap();
+            let localhost = CString::new(localhost).unwrap();
+            let topic_client = CString::new(topic).unwrap();
+            let hclient = lnr_new_client_redis(
+                unique.as_ptr(),
+                topic_client.as_ptr(),
+                localhost.as_ptr(),
+                dbpath.as_ptr(),
+            );
+            Self::from_raw_handle(hclient)
+        }
+    }
+
+    /// Creates a client backed by **SQLite** (`sqlite_path` is the database file path).
+    /// Use empty `receivers_json` (`""` / `[]`) when sharing one DB file so the catalog and
+    /// `conn_sender` come from the store; with isolated empty files, pass JSON per `docs/using-sqlite.md`.
+    pub fn new_sqlite(
+        unique_name: &str,
         topic: &str,
         localhost: &str,
-        redis_path: &str)->Liner{
-    unsafe{
-        let unique = CString::new(unique_name).unwrap();
-        let dbpath = CString::new(redis_path).unwrap();
-        let localhost = CString::new(localhost).unwrap();
-        let topic_client = CString::new(topic).unwrap();
-        let hclient = lnr_new_client(unique.as_ptr(),
-                                                        topic_client.as_ptr(),
-                                                        localhost.as_ptr(),
-                                                        dbpath.as_ptr());
-        if !hclient.is_null(){
-            Self{hclient, ucback: None}
-        }else{
+        sqlite_path: &str,
+        receivers_json: &str,
+    ) -> Liner {
+        unsafe {
+            let unique = CString::new(unique_name).unwrap();
+            let path = CString::new(sqlite_path).unwrap();
+            let localhost = CString::new(localhost).unwrap();
+            let topic_c = CString::new(topic).unwrap();
+            let recv = CString::new(receivers_json).unwrap();
+            let hclient = lnr_new_client_sqlite(
+                unique.as_ptr(),
+                topic_c.as_ptr(),
+                localhost.as_ptr(),
+                path.as_ptr(),
+                recv.as_ptr(),
+            );
+            Self::from_raw_handle(hclient)
+        }
+    }
+
+    fn from_raw_handle(hclient: *mut Client) -> Self {
+        if hclient.is_null() {
             panic!("error create client");
         }
-    }   
+        Self {
+            hclient,
+            ucback: None,
+        }
     }
+
     pub fn run(&mut self, ucback: UCback)->bool{        
         unsafe{
             self.ucback = Some(ucback);
@@ -90,16 +127,31 @@ impl Liner {
             lnr_run(self.hclient, cb_, ud)
         }
     }
-    pub fn send_to(&mut self, topic: &str, data: &[u8])->bool{
-        unsafe{
+    /// Send to a single peer subscribed on `topic`. `at_least_once_delivery` matches C `lnr_send_to`
+    /// (persist / retry semantics; use `false` when peers use different SQLite files — see `docs/using-sqlite.md`).
+    pub fn send_to(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
+        unsafe {
             let topic = CString::new(topic).unwrap();
-            lnr_send_to(self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
+            lnr_send_to(
+                self.hclient,
+                topic.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                at_least_once_delivery,
+            )
         }
     }
-    pub fn send_all(&mut self, topic: &str, data: &[u8])->bool{
-        unsafe{
+    /// Broadcast to all peers on `topic`. Same `at_least_once_delivery` semantics as [`Liner::send_to`].
+    pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
+        unsafe {
             let topic = CString::new(topic).unwrap();
-            lnr_send_all(self.hclient, topic.as_ptr(), data.as_ptr(), data.len(), true)
+            lnr_send_all(
+                self.hclient,
+                topic.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                at_least_once_delivery,
+            )
         }
     }
     pub fn subscribe(&mut self, topic: &str)->bool{
@@ -130,6 +182,15 @@ impl Liner {
             lnr_clear_addresses_of_topic(self.hclient)
         }
     }
+
+    /// After a successful [`Liner::run`], the resolved bind address (e.g. when `localhost` used port `0`).
+    pub fn bound_listen_addr(&self) -> Option<String> {
+        unsafe { (*self.hclient).bound_listen_addr().map(|s| s.to_string()) }
+    }
+
+    pub fn unique_name(&self) -> String {
+        unsafe { (*self.hclient).unique_name().to_string() }
+    }
 }
 
 impl Drop for Liner {
@@ -138,53 +199,118 @@ impl Drop for Liner {
     }
 }
 
-/// Create new client for transfer data.
-/// 
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn lnr_new_client(unique_name: *const i8,
-                       topic: *const i8,
-                       localhost: *const i8,
-                       redis_path: *const i8,
-                       )->*mut Client{
-    if unique_name.is_null() || topic.is_null() || localhost.is_null() || redis_path.is_null() {
+unsafe fn new_client_inner(
+    unique_name: *const i8,
+    topic: *const i8,
+    localhost: *const i8,
+    store_path: *const i8,
+    receivers_json: *const i8,
+    sqlite: bool,
+) -> *mut Client {
+    if unique_name.is_null() || topic.is_null() || localhost.is_null() || store_path.is_null() {
         print_error!("null pointer argument");
         return std::ptr::null_mut();
     }
     let Ok(unique_name) = CStr::from_ptr(unique_name).to_str() else { return std::ptr::null_mut(); };
     let Ok(topic) = CStr::from_ptr(topic).to_str() else { return std::ptr::null_mut(); };
     let Ok(localhost) = CStr::from_ptr(localhost).to_str() else { return std::ptr::null_mut(); };
-    let Ok(redis_path) = CStr::from_ptr(redis_path).to_str() else { return std::ptr::null_mut(); };
-    
-    if unique_name.is_empty(){
+    let Ok(store_path) = CStr::from_ptr(store_path).to_str() else { return std::ptr::null_mut(); };
+
+    if unique_name.is_empty() {
         print_error!("unique_name empty");
         return std::ptr::null_mut();
     }
-    if topic.is_empty(){
+    if topic.is_empty() {
         print_error!("topic empty");
         return std::ptr::null_mut();
     }
-    if localhost.is_empty(){
+    if localhost.is_empty() {
         print_error!("localhost empty");
         return std::ptr::null_mut();
     }
-    if redis_path.is_empty(){
-        print_error!("redis_path empty");
+    if store_path.is_empty() {
+        print_error!("store_path empty");
         return std::ptr::null_mut();
     }
-    if let Some(c) = Client::new(unique_name, topic, localhost, redis_path){
+    let receivers_ref: &str = if sqlite {
+        if receivers_json.is_null() {
+            ""
+        } else {
+            match CStr::from_ptr(receivers_json).to_str() {
+                Ok(s) => s,
+                Err(_) => {
+                    print_error!("receivers_json invalid UTF-8");
+                    return std::ptr::null_mut();
+                }
+            }
+        }
+    } else {
+        ""
+    };
+
+    let client_opt = if sqlite {
+        Client::new_sqlite(unique_name, topic, localhost, store_path, receivers_ref)
+    } else {
+        Client::new_redis(unique_name, topic, localhost, store_path)
+    };
+    if let Some(c) = client_opt {
         let bx = Box::new(c);
         Box::into_raw(bx)
-    }else{
+    } else {
         std::ptr::null_mut()
     }
-    
+}
+
+/// Create new client (Redis URL).
+///
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_new_client_redis(
+    unique_name: *const i8,
+    topic: *const i8,
+    localhost: *const i8,
+    redis_url: *const i8,
+) -> *mut Client {
+    new_client_inner(unique_name, topic, localhost, redis_url, std::ptr::null(), false)
+}
+
+/// Create new client (SQLite database file path).
+///
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_new_client_sqlite(
+    unique_name: *const i8,
+    topic: *const i8,
+    localhost: *const i8,
+    sqlite_path: *const i8,
+    receivers_json: *const i8,
+) -> *mut Client {
+    new_client_inner(unique_name, topic, localhost, sqlite_path, receivers_json, true)
+}
+
+/// Deprecated: use `lnr_new_client_redis`. Same behavior as `lnr_new_client_redis`.
+///
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_new_client(
+    unique_name: *const i8,
+    topic: *const i8,
+    localhost: *const i8,
+    redis_path: *const i8,
+) -> *mut Client {
+    lnr_new_client_redis(unique_name, topic, localhost, redis_path)
 }
 
 pub struct UData(*mut libc::c_void);
 type UCbackIntern = extern "C" fn(to: *const i8, from: *const i8, data: *const u8, dsize: usize, udata: *mut libc::c_void);
 
 unsafe impl Send for UData {}
+
+impl UData {
+    pub fn null() -> Self {
+        UData(std::ptr::null_mut())
+    }
+}
 
 /// Launching a client to send messages and listen for incoming messages. 
 /// 
