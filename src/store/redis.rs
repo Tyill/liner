@@ -27,36 +27,36 @@ pub struct Redis {
     conn_str: String,
     conn: ::redis::Connection,
     topic_addr_cache: HashMap<String, Vec<String>>, // key: topic, value: addrs
-    topic_key_cache: HashMap<String, i32>,         // key: topic, value: key
-    unique_name_cache: HashMap<String, String>,   // key: addr, value: uname
-    last_mess_number: HashMap<i32, u64>,           // key: connection_key
+    topic_key_cache: HashMap<String, i32>, // key: topic, value: key
+    unique_name_cache: HashMap<String, String>, // key: addr, value: uname
+    last_mess_number: HashMap<i32, u64>, // key: connection_key
 }
 impl Redis {
-    pub fn new(unique_name: &str, conn_str: &str) -> RedisResult<Redis> {
+    pub fn new(unique_name: &str, conn_str: &str)->RedisResult<Redis>{
         let client = ::redis::Client::open(conn_str.to_string())?;
         let conn = client.get_connection()?;
-        Ok(Redis {
+        Ok(Redis{
             unique_name: unique_name.to_string(),
             source_topic: "".to_string(),
             source_localhost: "".to_string(),
             conn_str: conn_str.to_string(),
             conn,
-            topic_addr_cache: HashMap::new(),
-            topic_key_cache: HashMap::new(),
+            topic_addr_cache: HashMap::new(), 
+            topic_key_cache: HashMap::new(), 
             unique_name_cache: HashMap::new(),
             last_mess_number: HashMap::new(),
         })
-    }
-    pub fn redis_path(&self) -> String {
+    }    
+    pub fn redis_path(&self)->String{
         self.conn_str.clone()
     }
-    pub fn set_source_topic(&mut self, topic: &str) {
+    pub fn set_source_topic(&mut self, topic: &str){
         self.source_topic = topic.to_string();
-    }
-    pub fn set_source_localhost(&mut self, localhost: &str) {
+    } 
+    pub fn set_source_localhost(&mut self, localhost: &str){
         self.source_localhost = localhost.to_string();
-    }
-    pub fn regist_topic(&mut self, topic: &str) -> RedisResult<()> {
+    }    
+    pub fn regist_topic(&mut self, topic: &str)->RedisResult<()>{
         let localhost = self.source_localhost.to_string();
         let unique: String = self.unique_name.to_string();
         let dbconn = self.get_dbconn()?;
@@ -64,29 +64,29 @@ impl Redis {
         self.init_addresses_of_topic(topic)?;
         Ok(())
     }
-    pub fn unregist_topic(&mut self, topic: &str) -> RedisResult<()> {
+    pub fn unregist_topic(&mut self, topic: &str)->RedisResult<()>{
         let localhost = self.source_localhost.to_string();
         let dbconn = self.get_dbconn()?;
         let () = dbconn.hdel(&format!("lnr_topic:{}:addr", topic), localhost)?;
         self.init_addresses_of_topic(topic)?;
         Ok(())
     }
-    pub fn clear_addresses_of_topic(&mut self) -> RedisResult<()> {
+    pub fn clear_addresses_of_topic(&mut self)->RedisResult<()>{
         let source_topic = self.source_topic.to_string();
-        let dbconn = self.get_dbconn()?;
+        let dbconn = self.get_dbconn()?; 
         let () = dbconn.del(&format!("lnr_topic:{}:addr", source_topic))?;
         Ok(())
     }
-    pub fn clear_stored_messages(&mut self) -> RedisResult<()> {
+    pub fn clear_stored_messages(&mut self)->RedisResult<()>{
         let key = format!("{}:{}", self.unique_name, self.source_topic);
         let addr_topic: Vec<(String, String)>;
         {
             let dbconn = self.get_dbconn()?;
             addr_topic = dbconn.hgetall(&format!("lnr_sender:{}:listener", key))?;
         }
-        for t in addr_topic {
-            if let Ok(listener_name) = self.get_listener_unique_name(&t.1, &t.0) {
-                if let Ok(connection_key) = self.get_connection_key_for_sender(&listener_name) {
+        for t in addr_topic{
+            if let Ok(listener_name) = self.get_listener_unique_name(&t.1, &t.0){
+                if let Ok(connection_key) = self.get_connection_key_for_sender(&listener_name){
                     let dbconn = self.get_dbconn()?;
                     let () = dbconn.del(&format!("lnr_connection:{}:messages", connection_key))?;
                     let () = dbconn.del(&format!("lnr_connection:{}:mess_number", connection_key))?;
@@ -94,100 +94,80 @@ impl Redis {
             }
         }
         let dbconn = self.get_dbconn()?;
-        let () = dbconn.del(&format!("lnr_sender:{}:listener", key))?;
+        let () = dbconn.del(&format!("lnr_sender:{}:listener", key))?;       
         Ok(())
     }
-
-    pub fn save_listener_for_sender(
-        &mut self,
-        listener_addr: &str,
-        listener_topic: &str,
-    ) -> RedisResult<()> {
+           
+    pub fn save_listener_for_sender(&mut self, listener_addr: &str, listener_topic: &str)->RedisResult<()>{
         let key = format!("{}:{}", self.unique_name, self.source_topic);
         let dbconn = self.get_dbconn()?;
-        let () = dbconn.hset(
-            &format!("lnr_sender:{}:listener", key),
-            listener_addr,
-            listener_topic,
-        )?;
+        let () = dbconn.hset(&format!("lnr_sender:{}:listener", key), listener_addr, listener_topic)?;
         Ok(())
     }
-    pub fn get_listeners_of_sender(&mut self) -> RedisResult<Vec<(String, String)>> {
+    pub fn get_listeners_of_sender(&mut self)->RedisResult<Vec<(String, String)>>{
         let key = format!("{}:{}", self.unique_name, self.source_topic);
         let dbconn = self.get_dbconn()?;
-        let addr_topic: Vec<(String, String)> =
-            dbconn.hgetall(&format!("lnr_sender:{}:listener", key))?;
+        let addr_topic: Vec<(String, String)> = dbconn.hgetall(&format!("lnr_sender:{}:listener", key))?;
         Ok(addr_topic)
     }
-    pub fn get_addresses_of_topic(
-        &mut self,
-        without_cache: bool,
-        topic: &str,
-    ) -> RedisResult<Vec<String>> {
-        if !self.topic_addr_cache.contains_key(topic) || without_cache {
+    pub fn get_addresses_of_topic(&mut self, without_cache: bool, topic: &str)->RedisResult<Vec<String>>{
+        if !self.topic_addr_cache.contains_key(topic) || without_cache{
             self.init_addresses_of_topic(topic)?;
         }
         Ok(self.topic_addr_cache[topic].to_vec())
     }
-    pub fn get_listener_unique_name(&mut self, topic: &str, address: &str) -> RedisResult<String> {
-        if !self.topic_addr_cache.contains_key(topic) {
+    pub fn get_listener_unique_name(&mut self, topic: &str, address: &str)->RedisResult<String>{
+        if !self.topic_addr_cache.contains_key(topic){
             self.init_addresses_of_topic(topic)?;
         }
-        if self.unique_name_cache.contains_key(address) {
+        if self.unique_name_cache.contains_key(address){
             return Ok(self.unique_name_cache[address].to_string());
         }
         Err((ErrorKind::TypeError, "!unique_name_cache.contains_key").into())
     }
-    fn init_addresses_of_topic(&mut self, topic: &str) -> RedisResult<()> {
-        let dbconn = self.get_dbconn()?;
-        let addrs_names: Vec<(String, String)> =
-            dbconn.hgetall(&format!("lnr_topic:{}:addr", topic))?;
+    fn init_addresses_of_topic(&mut self, topic: &str)->RedisResult<()>{
+        let dbconn = self.get_dbconn()?; 
+        let addrs_names: Vec<(String, String)> = dbconn.hgetall(&format!("lnr_topic:{}:addr", topic))?;
         let mut addrs: Vec<String> = Vec::new();
-        for an in addrs_names {
+        for an in addrs_names{
             self.unique_name_cache.insert(an.0.clone(), an.1);
             addrs.push(an.0);
-        }
+        }            
         self.topic_addr_cache.insert(topic.to_string(), addrs);
         Ok(())
     }
-
-    pub fn get_connection_key_for_sender(&mut self, listener_name: &str) -> RedisResult<i32> {
-        let key = format!(
-            "{}:{}:{}",
-            self.unique_name, self.source_topic, listener_name
-        );
-        let dbconn = self.get_dbconn()?;
+   
+    pub fn get_connection_key_for_sender(&mut self, listener_name: &str)->RedisResult<i32>{
+        let key = format!("{}:{}:{}", self.unique_name, self.source_topic, listener_name);
+        let dbconn = self.get_dbconn()?; 
         let res: RedisResult<String> = dbconn.get(format!("lnr_connection:{}:key", key));
-        if let Ok(res) = res {
+        if let Ok(res) = res{
             parse_i32_res(&res, "invalid connection key")
-        } else {
+        }else{
             let mut value = 0;
             self.init_connection_key(listener_name, &mut value)?;
             Ok(value)
         }
-    }
-    fn init_connection_key(&mut self, listener_name: &str, value: &mut i32) -> RedisResult<()> {
-        let key = format!(
-            "{}:{}:{}",
-            self.unique_name, self.source_topic, listener_name
-        );
-        let dbconn = self.get_dbconn()?;
+    }        
+    fn init_connection_key(&mut self, listener_name: &str, value: &mut i32)->RedisResult<()>{
+        let key = format!("{}:{}:{}", self.unique_name, self.source_topic, listener_name);
+        let dbconn = self.get_dbconn()?; 
         *value = dbconn.incr("lnr_unique_key", 1)?;
-        dbconn.set::<_, _, ()>(&format!("lnr_connection:{}:key", key), value)?;
+        dbconn.set::<_,_,()>(&format!("lnr_connection:{}:key", key), value)?;
         Ok(())
     }
-
-    pub fn get_topic_key(&mut self, topic: &str) -> RedisResult<i32> {
-        if let Some(key) = self.topic_key_cache.get(topic) {
+        
+    pub fn get_topic_key(&mut self, topic: &str)->RedisResult<i32>{
+        if let Some(key) = self.topic_key_cache.get(topic){
             Ok(*key)
-        } else {
-            let dbconn = self.get_dbconn()?;
+        }else{
+            let dbconn = self.get_dbconn()?; 
             let res: RedisResult<String> = dbconn.get(&format!("lnr_topic:{}:key", topic));
-            if let Ok(key) = res {
+            if let Ok(key) = res{
                 let value = parse_i32_res(&key, "invalid topic key")?;
                 self.topic_key_cache.insert(topic.to_owned(), value);
                 Ok(value)
-            } else {
+            }else{
                 let mut value = 0;
                 self.init_topic_key(topic, &mut value)?;
                 self.topic_key_cache.insert(topic.to_owned(), value);
@@ -195,72 +175,57 @@ impl Redis {
             }
         }
     }
-    fn init_topic_key(&mut self, topic: &str, value: &mut i32) -> RedisResult<()> {
-        let dbconn = self.get_dbconn()?;
+    fn init_topic_key(&mut self, topic: &str, value: &mut i32)->RedisResult<()>{
+        let dbconn = self.get_dbconn()?; 
         *value = dbconn.incr("lnr_unique_key", 1)?;
-        dbconn.set::<_, _, ()>(&format!("lnr_topic:{}:key", topic), value)?;
+        dbconn.set::<_,_,()>(&format!("lnr_topic:{}:key", topic), value)?;
         Ok(())
     }
 
-    pub fn set_sender_topic_by_connection_key_from_sender(
-        &mut self,
-        connection_key: i32,
-    ) -> RedisResult<()> {
+    pub fn set_sender_topic_by_connection_key_from_sender(&mut self, connection_key: i32)->RedisResult<()>{
         let source_topic: String = self.source_topic.clone();
         let dbconn = self.get_dbconn()?;
-        let () = dbconn.set(
-            &format!("lnr_connection:{}:sender", connection_key),
-            source_topic,
-        )?;
+        let () = dbconn.set(&format!("lnr_connection:{}:sender", connection_key), source_topic)?;
         Ok(())
     }
-    pub fn get_sender_topic_by_connection_key(
-        &mut self,
-        connection_key: i32,
-    ) -> RedisResult<String> {
+    pub fn get_sender_topic_by_connection_key(&mut self, connection_key: i32)->RedisResult<String>{
         let dbconn = self.get_dbconn()?;
         dbconn.get(&format!("lnr_connection:{}:sender", connection_key))
     }
-
-    pub fn set_last_mess_number_from_listener(
-        &mut self,
-        connection_key: i32,
-        val: u64,
-    ) -> RedisResult<()> {
+    
+    pub fn set_last_mess_number_from_listener(&mut self, connection_key: i32, val: u64)->RedisResult<()>{
         let dbconn = self.get_dbconn()?;
         let () = dbconn.set(&format!("lnr_connection:{}:mess_number", connection_key), val)?;
         self.last_mess_number.insert(connection_key, val);
         Ok(())
-    }
-    pub fn get_last_mess_number_for_listener(&mut self, connection_key: i32) -> RedisResult<u64> {
-        if !self.last_mess_number.contains_key(&connection_key) {
-            let dbconn = self.get_dbconn()?;
+    }  
+    pub fn get_last_mess_number_for_listener(&mut self, connection_key: i32)->RedisResult<u64>{
+        if !self.last_mess_number.contains_key(&connection_key){
+            let dbconn = self.get_dbconn()?; 
             // The key may be absent for a new connection. Treat missing as 0.
-            let res: Option<String> =
-                dbconn.get(&format!("lnr_connection:{}:mess_number", connection_key))?;
+            let res: Option<String> = dbconn.get(&format!("lnr_connection:{}:mess_number", connection_key))?;
             let value = match res {
                 Some(res) => parse_u64_res(&res, "invalid mess_number")?,
                 None => {
                     // Persist the default to avoid repeated nil reads.
                     self.init_last_mess_number_from_sender(connection_key)?;
                     0
-                }
+                },
             };
             self.last_mess_number.insert(connection_key, value);
         }
-        Ok(self.last_mess_number[&connection_key])
+        Ok(self.last_mess_number[&connection_key])              
     }
-
-    pub fn init_last_mess_number_from_sender(&mut self, connection_key: i32) -> RedisResult<()> {
-        let dbconn = self.get_dbconn()?;
+     
+    pub fn init_last_mess_number_from_sender(&mut self, connection_key: i32)->RedisResult<()>{
+        let dbconn = self.get_dbconn()?; 
         let () = dbconn.set_nx(&format!("lnr_connection:{}:mess_number", connection_key), 0)?;
         Ok(())
     }
-    pub fn get_last_mess_number_for_sender(&mut self, connection_key: i32) -> RedisResult<u64> {
-        let dbconn = self.get_dbconn()?;
+    pub fn get_last_mess_number_for_sender(&mut self, connection_key: i32)->RedisResult<u64>{
+        let dbconn = self.get_dbconn()?; 
         // The key may legitimately be absent for a new connection. Treat missing as 0.
-        let res: Option<String> =
-            dbconn.get(&format!("lnr_connection:{}:mess_number", connection_key))?;
+        let res: Option<String> = dbconn.get(&format!("lnr_connection:{}:mess_number", connection_key))?;
         match res {
             Some(res) => parse_u64_res(&res, "invalid mess_number"),
             None => {
@@ -271,83 +236,61 @@ impl Redis {
         }
     }
 
-    pub fn save_messages_from_sender(
-        &mut self,
-        mempool: &Arc<Mutex<Mempool>>,
-        connection_key: i32,
-        mess: Vec<Message>,
-    ) -> RedisResult<()> {
-        let dbconn = self.get_dbconn()?;
+    pub fn save_messages_from_sender(&mut self, mempool: &Arc<Mutex<Mempool>>, connection_key: i32, mess: Vec<Message>)->RedisResult<()>{
+        let dbconn = self.get_dbconn()?; 
         let encoded = encode_and_free_messages(mempool, mess);
         for buf in encoded {
             let () = dbconn.rpush(&format!("lnr_connection:{}:messages", connection_key), buf)?;
-        }
+        }        
         Ok(())
     }
 
-    pub fn load_messages_for_sender(
-        &mut self,
-        mempool: &Arc<Mutex<Mempool>>,
-        connection_key: i32,
-    ) -> RedisResult<Vec<Message>> {
-        let dbconn = self.get_dbconn()?;
-        let llen: Option<usize> =
-            dbconn.llen(&format!("lnr_connection:{}:messages", connection_key))?;
+    pub fn load_messages_for_sender(&mut self, mempool: &Arc<Mutex<Mempool>>, connection_key: i32)->RedisResult<Vec<Message>>{
+        let dbconn = self.get_dbconn()?; 
+        let llen: Option<usize> = dbconn.llen(&format!("lnr_connection:{}:messages", connection_key))?;
         let mut out = Vec::new();
-        if let Some(llen) = llen {
-            let buff: Vec<Vec<u8>> = dbconn.lpop(
-                &format!("lnr_connection:{}:messages", connection_key),
-                core::num::NonZeroUsize::new(llen),
-            )?;
-            for b in buff {
+        if let Some(llen) = llen{
+            let buff: Vec<Vec<u8>> = dbconn.lpop(&format!("lnr_connection:{}:messages", connection_key), core::num::NonZeroUsize::new(llen))?;
+            for b in buff{
                 let mut is_shutdown = false;
-                if let Some(mess) = Message::from_stream(mempool, &mut &b[..], &mut is_shutdown) {
+                if let Some(mess) = Message::from_stream(mempool, &mut &b[..], &mut is_shutdown){
                     out.push(mess);
-                } else {
+                }else{
                     print_error!("!Message::from_stream");
                 }
             }
-        }
+        }        
         Ok(out)
     }
 
-    pub fn load_last_message_for_sender(
-        &mut self,
-        mempool: &Arc<Mutex<Mempool>>,
-        connection_key: i32,
-    ) -> RedisResult<Option<Message>> {
-        let dbconn = self.get_dbconn()?;
-        let llen: Option<usize> =
-            dbconn.llen(&format!("lnr_connection:{}:messages", connection_key))?;
+    pub fn load_last_message_for_sender(&mut self, mempool: &Arc<Mutex<Mempool>>, connection_key: i32)->RedisResult<Option<Message>>{
+        let dbconn = self.get_dbconn()?; 
+        let llen: Option<usize> = dbconn.llen(&format!("lnr_connection:{}:messages", connection_key))?;
         let mut out = None;
-        if let Some(llen) = llen {
-            if llen == 0 {
-                return Ok(None);
+        if let Some(llen) = llen{
+            if llen == 0{
+                return Ok(None)
             }
-            let buff: Vec<Vec<u8>> = dbconn.lrange(
-                &format!("lnr_connection:{}:messages", connection_key),
-                -1,
-                -1,
-            )?;
-            for b in buff {
+            let buff: Vec<Vec<u8>> = dbconn.lrange(&format!("lnr_connection:{}:messages", connection_key), -1, -1)?;
+            for b in buff{
                 let mut is_shutdown = false;
-                if let Some(mess) = Message::from_stream(mempool, &mut &b[..], &mut is_shutdown) {
+                if let Some(mess) = Message::from_stream(mempool, &mut &b[..], &mut is_shutdown){
                     out = Some(mess);
-                } else {
+                }else{
                     print_error!("!Message::from_stream");
                 }
             }
-        }
+        }        
         Ok(out)
     }
-
-    fn get_dbconn(&mut self) -> RedisResult<&mut ::redis::Connection> {
-        if !self.conn.is_open() {
-            let client = ::redis::Client::open(self.conn_str.clone())?;
+          
+    fn get_dbconn(&mut self)->RedisResult<&mut redis::Connection>{
+        if !self.conn.is_open(){
+            let client = redis::Client::open(self.conn_str.clone())?;
             self.conn = client.get_connection()?;
         }
         Ok(&mut self.conn)
-    }
+    }  
 
     /// No-op: Redis uses a shared catalog; `receivers_json` seeding (including SQLite-only
     /// `conn_sender` / first `connection_key` convention) applies only to SQLite.
