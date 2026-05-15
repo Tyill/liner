@@ -41,13 +41,38 @@ typedef void(*lnr_receive_cb)(const char* to, const char* from, const char* data
 
 typedef void* lnr_hClient;
 
-/// Create new client
+/// Create new client backed by Redis.
 /// @param unique_name
 /// @param topic - current topic
 /// @param localhost - local ip
-/// @param redis_path
+/// @param redis_url - Redis connection URL (e.g. redis://127.0.0.1/)
 /// @return lnr_hClient
-LINER_API lnr_hClient lnr_new_client(const char* unique_name, const char* topic, const char* localhost, const char* redis_path);
+LINER_API lnr_hClient lnr_new_client_redis(const char* unique_name, const char* topic, const char* localhost, const char* redis_url);
+
+/// Create new client backed by SQLite (single database file).
+/// @param unique_name
+/// @param topic - current topic
+/// @param localhost - local ip
+/// @param sqlite_path - path to SQLite database file
+/// @param receivers_json - optional UTF-8 JSON array of {topic,addr,client_name}; NULL, "", whitespace, or "[]" skips seeding. For SQLite: list peers only — `topic` is their registered topic (also `from` when they send). Seeding sets wire `topic_key` **1** for peers and your `source_topic`, and first `connection_key` **1** (not in JSON). With one shared SQLite file for all peers, prefer "" so live rows come from the store.
+/// @return lnr_hClient
+LINER_API lnr_hClient lnr_new_client_sqlite(const char* unique_name, const char* topic, const char* localhost, const char* sqlite_path, const char* receivers_json);
+
+#if defined(__GNUC__) || defined(__clang__)
+#define LINER_DEPRECATED __attribute__((deprecated))
+#elif defined(_MSC_VER)
+#define LINER_DEPRECATED __declspec(deprecated)
+#else
+#define LINER_DEPRECATED
+#endif
+
+/// Deprecated: use lnr_new_client_redis (same behavior).
+/// @param unique_name
+/// @param topic - current topic
+/// @param localhost - local ip
+/// @param redis_path - Redis connection URL
+/// @return lnr_hClient
+LINER_API LINER_DEPRECATED lnr_hClient lnr_new_client(const char* unique_name, const char* topic, const char* localhost, const char* redis_path);
 
 /// Run transfer data
 /// @param lnr_hClient

@@ -10,7 +10,7 @@ class LinerBroker {
 public:
     
   LinerBroker(const std::string& clientName, const std::string& topic, const std::string& addr, const std::string& redisAddr){
-      m_hClient = lnr_new_client(clientName.c_str(), topic.c_str(), addr.c_str(), redisAddr.c_str());
+      m_hClient = lnr_new_client_redis(clientName.c_str(), topic.c_str(), addr.c_str(), redisAddr.c_str());
   }
   ~LinerBroker(){
       if (m_hClient){

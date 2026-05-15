@@ -24,8 +24,12 @@ crate-type = ["cdylib", "rlib"]
 #path = "test/test.rs"
 
 [[bin]]
-name = "throughput_10k"
-path = "benchmark/throughput_10k.rs"
+name = "bench_pair_sendto_redis"
+path = "benchmark/bench_pair_sendto_redis.rs"
+
+[[bin]]
+name = "bench_pair_sendto_sqlite"
+path = "benchmark/bench_pair_sendto_sqlite.rs"
 
 [[bin]]
 name = "one_to_one"
@@ -48,6 +52,8 @@ name = "producer_consumer"
 path = "rust/producer_consumer.rs"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 redis = "0.26.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 rayon = "1.10"

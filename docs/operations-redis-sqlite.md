@@ -63,7 +63,7 @@ The Rust dependency is **`redis = "0.26.1"`** (see `Cargo.toml`). The broker use
 
 ### Files on disk
 
-- **Main DB path** — whatever you pass to `Client::new_sqlite` / `lnr_new_client_sqlite`.
+- **Main DB path** — the path argument to `Client::new_sqlite` / `lnr_new_client_sqlite`. Optional **`receivers_json`** (last C parameter / last Rust argument) seeds **`topic_addr`** and **`topic_key`** (wire key **1** per peer and for your `source_topic`), plus **`conn_sender`** / **`conn_key_map`** for peers; see [backends.md](backends.md) (*Isolated SQLite*).
 - **WAL mode** — SQLite may create **`<db>-wal`** and **`<db>-shm`** next to the main file while connections are open. This is normal.
 
 The library sets **`journal_mode=WAL`** and **`busy_timeout`** (see [backends.md](backends.md)) on open.

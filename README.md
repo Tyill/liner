@@ -1,8 +1,10 @@
 # liner
 
-Redis based message serverless broker.  
-The library is written on Rust, C-interface.  
+Redis- or **SQLite**-backed message broker (serverless style catalog + TCP between peers).  
+The library is written in Rust with a C interface.  
 Data transfer via TCP.
+
+**SQLite:** embedded single-file mode (no Redis process). See the guide [docs/using-sqlite.md](docs/using-sqlite.md) for `Client::new_sqlite`, `receivers_json`, and the walkthrough that matches the unit test in `src/client.rs`.
 
 Rust example:  
 ``` Rust
@@ -58,7 +60,9 @@ def receive_server(to: str, from_: str, data: bytes):
 
  - high message bandwidth ([benchmark](#benchmark))
 
- - delivery guarantee: at least once delivery (using redis db)
+ - delivery guarantee: at least once delivery (store-backed: Redis or SQLite)
+
+ - **SQLite** backend: file per deployment / per process; optional `receivers_json` catalog when each peer has its own DB file ([docs/using-sqlite.md](docs/using-sqlite.md))
 
  - message size is not predetermined and is not limited
 
@@ -116,8 +120,13 @@ Producer-consumer: [Python](https://github.com/Tyill/liner/blob/main/python/prod
 
 ### [Benchmark](https://github.com/Tyill/liner/blob/main/benchmark)
 
+Two binaries stress the same **pair of clients + `send_to`** workload; only the **store** differs:
+
+- **`bench_pair_sendto_redis`** — Redis catalog (`redis://localhost/`). `cargo build --release --bin bench_pair_sendto_redis` → `./bench_pair_sendto_redis`.
+- **`bench_pair_sendto_sqlite`** — two **separate** temp SQLite files (isolated DBs) and fixed bind addresses; each side’s `receivers_json` lists **only the peer** (topic / addr / `client_name`). First channel **`connection_key`** is **1** by convention. Alternative: **one** shared temp file for both clients with **empty** `receivers_json` (same idea as one Redis URL). `cargo build --release --bin bench_pair_sendto_sqlite` → `./bench_pair_sendto_sqlite`.
+
 ```
-alex@ubuntu2004:~/projects/rust/liner/target/release$ ./throughput_10k 
+alex@ubuntu2004:~/projects/rust/liner/target/release$ ./bench_pair_sendto_redis 
 send_to 8 ms
 receive_from 8 ms
 send_to 5 ms
@@ -182,6 +191,7 @@ LINER_TEST_REDIS_PORT=16379 LINER_TEST_REDIS_CONTAINER=liner-test-redis python3 
 
 ### Docs
 
+- [Using SQLite (`new_sqlite`, `receivers_json`, reference test walkthrough)](docs/using-sqlite.md)
 - [Crate API on docs.rs](https://docs.rs/liner_broker/1.2.2/liner_broker/)
 - [Developer notes (errors, backends, C API, lifecycle)](docs/README.md)
 - [C API compatibility and building (symbols, `cargo`, Linux/Windows)](docs/c-api-compatibility-and-build.md)

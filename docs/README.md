@@ -9,11 +9,12 @@ Supplements the [crate docs on docs.rs](https://docs.rs/liner_broker/) and the p
 | Document | Contents |
 |----------|----------|
 | [troubleshooting.md](troubleshooting.md) | Symptom → link to the right doc |
-| [bindings.md](bindings.md) | Python `ctypes` and C++ sample: build, link, lifecycle, SQLite gap in samples |
+| [bindings.md](bindings.md) | Python `ctypes` and C++ sample: build, link, lifecycle; SQLite: see [using-sqlite.md](using-sqlite.md) |
 | [behavior-topics-delivery-and-errors.md](behavior-topics-delivery-and-errors.md) | **Product behavior:** topics, routing, delivery, errors (no wire format) |
 | [store-startup-failure-semantics.md](store-startup-failure-semantics.md) | Client vs listener/sender store failures and fail-fast startup |
 | [errors-and-logging.md](errors-and-logging.md) | How errors surface (C `BOOL`, Rust `bool` / `Option`, stderr logging) |
 | [backends.md](backends.md) | Redis vs SQLite: URLs, files, locking, `unique_name` |
+| [using-sqlite.md](using-sqlite.md) | **SQLite how-to:** `new_sqlite`, `receivers_json`, C API, reference test walkthrough |
 | [using-the-api.md](using-the-api.md) | Lifecycle, threading, common pitfalls |
 | [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md) | Disconnects, store-backed queues, reconnect interval, `number_mess`, deduplication |
 | [routing-and-store-layout.md](routing-and-store-layout.md) | Topic → address routing, Redis keys, SQLite tables, operator troubleshooting |

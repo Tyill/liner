@@ -23,8 +23,8 @@ class Client:
         c_topic = topic.encode("utf-8")
         c_localhost = localhost.encode("utf-8")
         
-        pfun = lib_.lnr_new_client
-        pfun.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p)
+        pfun = lib_.lnr_new_client_redis
+        pfun.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p)
         pfun.restype = ctypes.c_void_p
         self.hClient_ = ctypes.c_void_p(pfun(c_uniqName, c_topic, c_localhost, c_redisPath))
     
