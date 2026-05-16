@@ -73,8 +73,8 @@
 | **`seq`** | Одна строка `id = 1`, колонка **`v`**: монотонный счётчик для новых значений **`connection_key`** (паттерн `UPDATE … RETURN` через `SELECT` после инкремента). |
 | **`topic_addr`** | Строки `(topic, addr, client_name)` — те же семантики, что Redis `lnr_topic:{topic}:addr`: **`addr`** — строка bind, **`client_name`** — `unique_name`. **Первичный ключ `(topic, addr)`**. |
 | **`topic_key`** | `(topic, k)` — целочисленный **ключ топика** на имя топика. |
-| **`conn_key_map`** | `(composite, connection_key)`, где **`composite`** = `"{unique}:{source_topic}:{listener_name}"`. |
-| **`conn_sender`** | `(connection_key, sender_topic)` — топик sender’а для этого канала. |
+| **`conn_key_map`** | `(composite, connection_key)`, где **`composite`** = `"{unique}:{source_topic}:{listener_name}"`. У **`connection_key`** ограничение **`UNIQUE`** (только один composite на данное целое). При изолированном seed всем пирам пишется ключ **1**; при **нескольких пирах в одном `receivers_json`** поздние строки могут вытеснить ранние composite или при отправке появятся динамические ключи — см. [using-sqlite.md](using-sqlite.md) (*Изолированные БД: только one-to-one*). |
+| **`conn_sender`** | `(connection_key, sender_topic)` — проволочный **`connection_key`** → топик sender’а для колбэка **`from`**. **Первичный ключ** по **`connection_key`** (один топик на ключ в этом процессе). |
 | **`conn_mess_number`** | `(connection_key, v)` — последний номер ack сообщения (та же роль, что Redis `mess_number`). |
 | **`sender_listener`** | `(sender_key, addr, listener_topic)`, где **`sender_key`** = `"{unique}:{source_topic}"`. То же, что Redis `lnr_sender:…:listener`. |
 | **`conn_messages`** | `(id, connection_key, payload)` с **`AUTOINCREMENT id`**, индекс **`(connection_key, id)`**. Очередь закодированных блобов; **FIFO** по возрастанию **`id`**. |

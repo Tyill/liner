@@ -73,8 +73,8 @@ Single file database; **WAL** and **`busy_timeout`** are set on open (see [backe
 | **`seq`** | Single row `id = 1`, column **`v`**: monotonic counter for new **`connection_key`** values (`UPDATE … RETURN` pattern via `SELECT` after increment). |
 | **`topic_addr`** | Rows `(topic, addr, client_name)` — same semantics as Redis `lnr_topic:{topic}:addr`: **`addr`** is the bind string, **`client_name`** is `unique_name`. **Primary key `(topic, addr)`**. |
 | **`topic_key`** | `(topic, k)` — integer **topic key** per topic name. |
-| **`conn_key_map`** | `(composite, connection_key)` where **`composite`** = `"{unique}:{source_topic}:{listener_name}"`. |
-| **`conn_sender`** | `(connection_key, sender_topic)` — sender’s topic for that channel. |
+| **`conn_key_map`** | `(composite, connection_key)` where **`composite`** = `"{unique}:{source_topic}:{listener_name}"`. **`connection_key` is UNIQUE** in this table (only one composite may reference a given integer). Isolated seeding tries to assign key **1** to every peer row; with **several peers in one `receivers_json`**, later rows can evict earlier composites or force dynamic keys on send — see [using-sqlite.md](using-sqlite.md) (*Isolated DBs: one-to-one only*). |
+| **`conn_sender`** | `(connection_key, sender_topic)` — maps wire **`connection_key`** to the sender’s topic for receive callback **`from`**. **Primary key** on **`connection_key`** (one topic per key on that process). |
 | **`conn_mess_number`** | `(connection_key, v)` — last ack message number (same role as Redis `mess_number`). |
 | **`sender_listener`** | `(sender_key, addr, listener_topic)` where **`sender_key`** = `"{unique}:{source_topic}"`. Same as Redis `lnr_sender:…:listener`. |
 | **`conn_messages`** | `(id, connection_key, payload)` with **`AUTOINCREMENT id`**, index **`(connection_key, id)`**. Queue of encoded blobs; **FIFO** by ascending **`id`**. |

@@ -20,6 +20,8 @@ In many deployments **each process has its own SQLite file**. The directory tabl
 
 Typical steps: (1) peer A **`run`** on its DB and topic; (2) read **`bound_listen_addr`** (or your known bind string) and **`unique_name`**; (3) write one JSON array entry (`topic`, `addr`, `client_name`) to a file or config; (4) peer B **`new_sqlite(..., receivers_json)`** with that JSON, then **`run`**; (5) B **`send_to`** A’s topic.
 
+- **Multi-peer on isolated files:** with **one `.sqlite` file per process**, reliable send/receive without store errors is limited to **one-to-one** (one peer entry per side in `receivers_json`). **One-to-many**, **many-to-one**, or several objects in one JSON array require a **shared** SQLite file, **Redis**, or **manual** `connection_key` / `conn_sender` / `conn_key_map` edits in each file. Symptoms and workarounds: [using-sqlite.md](using-sqlite.md) (*Isolated DBs: one-to-one only*).
+
 ## `unique_name`
 
 The `unique_name` string identifies this client instance in the store (together with topics and addresses). With **Redis**, peers that should share routing and offline queues use the **same Redis URL** and compatible topic/address data. With **SQLite**, processes that share **one database file** on a host see the same catalog; **separate files** do not—use **`receivers_json`** (or out-of-band SQL) to align `topic_key` and addresses (see *Isolated SQLite* above). Each **running client** still needs a **distinct** `unique_name` (and typically its own TCP `localhost` binding).

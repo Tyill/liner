@@ -62,7 +62,7 @@ def receive_server(to: str, from_: str, data: bytes):
 
  - delivery guarantee: at least once delivery (store-backed: Redis or SQLite)
 
- - SQLite backend: file per deployment / per process ([docs/using-sqlite.md](docs/using-sqlite.md))
+ - SQLite backend: file per deployment / per process; **isolated files = one-to-one only** unless you share one DB path or maintain `connection_key` manually ([docs/using-sqlite.md](docs/using-sqlite.md#isolated-dbs-one-to-one-only-multi-peer-limitation))
 
  - message size is not predetermined and is not limited
 

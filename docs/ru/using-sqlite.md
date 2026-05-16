@@ -20,6 +20,145 @@
 
 **Один общий файл SQLite** (один путь для согласующихся процессов): передавайте **`receivers_json` пустым** (`""` / `[]`); пиры регистрируются в одном хранилище, `conn_sender` и ключи остаются согласованными без JSON-каталога.
 
+### Изолированные БД: только one-to-one (ограничение на несколько пиров)
+
+Если **у каждого процесса свой файл `.sqlite`**, путь сидирования каталога рассчитан на **одного удалённого пира на процесс** в `receivers_json` — классическая схема **one-to-one** (A указывает только B, B — только A). Именно это покрывает эталонный тест **`isolated_sqlite_two_clients_via_receivers_json_catalog_file`**.
+
+**Из коробки не поддерживается** на изолированных пустых файлах (без ручной правки хранилища):
+
+- **Один sender, много listener’ов** — например `send_all` на топик с несколькими строками `(addr, client_name)` в `receivers_json` sender’а.
+- **Много sender’ов, один listener** — несколько серверов в `receivers_json` listener’а.
+- **Несколько пиров в одном массиве `receivers_json`** на одном процессе, когда нужны разные каналы по проводу.
+
+**Почему:** при сидировании всем строкам пиров пишется проволочный **`connection_key = 1`**, но в таблице **`conn_key_map`** действует **`UNIQUE(connection_key)`** (см. [routing-and-store-layout.md](routing-and-store-layout.md)). Только один composite может владеть ключом **1**; у остальных пиров строка в `conn_key_map` может пропасть или при отправке появятся динамические ключи **2**, **3**, …, тогда как в БД listener’ов после seed остаётся только **`conn_sender(1, …)`**. Файлы sender и receiver **не** согласуют эти id автоматически.
+
+**Типичные симптомы:** stderr `couldn't get_sender_topic, conn_key N, err Query returned no rows`; в колбэке пустой или неверный **`from`**, при нормальном **`to`**.
+
+**Что использовать вместо этого:**
+
+| Задача | Подход |
+|--------|--------|
+| Много ко многим, `send_all`, несколько sender’ов | **Один общий путь `.sqlite`** для всех процессов (как один URL Redis), **пустой** `receivers_json`, или **Redis**. |
+| Изолированные файлы, один логический пир | Только **one-to-one** в seed; **`at_least_once_delivery == false`**. |
+| Продвинутый / без гарантий | Ручная правка таблиц (ниже) в файле **каждого** процесса или скрипт **`python/set_sqlite_connection_key.py`**. |
+
+Сейчас библиотека **не** выдаёт при seed разные **`connection_key` 1, 2, …** по числу пиров в JSON; не полагайтесь на многострочный `receivers_json` для изолированного fan-out/fan-in без ручной настройки таблиц.
+
+#### Ручное выравнивание `connection_key` (оператор)
+
+Только если нужен **свой `.sqlite` на процесс** и **больше одного пира** (например один server, два listener). Для пары sender→listener все процессы должны использовать **одно и то же целое по проводу**.
+
+**Безопасность**
+
+- **Остановите** все клиенты liner с открытым файлом (без `run()` на этом пути). Правка под WAL при работающем клиенте может привести к падению; см. [test/sqlite/_support.py](../../test/sqlite/_support.py).
+- Для изолированных файлов — **`at_least_once_delivery == false`**.
+- После правок перезапустите пиры.
+
+**Имена**
+
+| Имя | Смысл |
+|-----|--------|
+| **`self` `unique_name` / `source_topic`** | Процесс-владелец этого `.sqlite` (аргументы `Client::new_sqlite`). |
+| **`unique_name` пира** | Удалённый `client_name` (`client1`, `server1`, …). |
+| **`topic` пира** | В файле **listener**: `source_topic` удалённого sender’а (колбэк **`from`**, напр. `topic_server1`). В файле **sender**: топик listener’а для `send_to` / `send_all` (напр. `topic_client`). |
+| **`connection_key`** | Число в заголовке сообщения; должно совпадать в `conn_key_map` (sender) и `conn_sender` (listener). |
+
+**Composite (только файл sender):** `{self_unique}:{self_source_topic}:{peer_unique_name}` — пример: `server1:topic_server1:client2`.
+
+---
+
+**1. БД sender’а** (вызывает `send_to` / `send_all`)
+
+| Таблица | Действие |
+|---------|----------|
+| **`conn_key_map`** | `INSERT OR REPLACE` `(composite, connection_key)` на каждого listener-пира. На одно значение **`connection_key`** — одна строка (**`UNIQUE`**); при назначении ключа `2` может понадобиться удалить другой composite с тем же `2`. |
+| **`conn_sender`** | По желанию до отправки; при send библиотека пишет `(connection_key, self_source_topic)`. |
+| **`seq`** | `UPDATE seq SET v = MAX(v, N) WHERE id = 1`, где **N** — максимальный используемый ключ. |
+
+Пример SQL (`server1.sqlite`, ключ **2** для `client2`):
+
+```sql
+INSERT OR REPLACE INTO conn_key_map (composite, connection_key)
+  VALUES ('server1:topic_server1:client2', 2);
+INSERT OR REPLACE INTO conn_sender (connection_key, sender_topic)
+  VALUES (2, 'topic_server1');
+UPDATE seq SET v = MAX(v, 2) WHERE id = 1;
+```
+
+---
+
+**2. БД listener’а** (принимает сообщения)
+
+| Таблица | Действие |
+|---------|----------|
+| **`conn_sender`** | `INSERT OR REPLACE (connection_key, sender_topic)` — **`sender_topic`** это **`source_topic` удалённого sender’а** (строка **`from`**), не ваш топик. **PK по `connection_key`**: два sender’а с одним ключом на одном файле — только если устраивает одна запись `from`. |
+| **`conn_key_map`** | Не нужна, если процесс только принимает. |
+| **`seq`** | Поднять `v`, как выше. |
+
+Пример SQL (`client2.sqlite`, с wire **2** от `topic_server1`):
+
+```sql
+INSERT OR REPLACE INTO conn_sender (connection_key, sender_topic)
+  VALUES (2, 'topic_server1');
+UPDATE seq SET v = MAX(v, 2) WHERE id = 1;
+```
+
+---
+
+**3. Согласование (один server, два listener)**
+
+| Пир | `conn_key_map` (server) | `conn_sender` (client) |
+|-----|-------------------------|-------------------------|
+| `client1` | `…:client1` → **1** | `(1, 'topic_server1')` |
+| `client2` | `…:client2` → **2** | `(2, 'topic_server1')` |
+
+Запускайте **один раз на файл**: `--side listener` на каждой client БД, `--side sender` на server (`--topic` только для listener; на sender для `conn_sender` — `--self-topic`).
+
+**Скрипт** (из корня репозитория):
+
+```bash
+python3 python/set_sqlite_connection_key.py client2.sqlite \
+  --side listener --conn-key 2 \
+  --topic topic_server1 --unique-name server1
+
+python3 python/set_sqlite_connection_key.py server1.sqlite \
+  --side sender --conn-key 2 \
+  --self-name server1 --self-topic topic_server1 \
+  --topic topic_client --unique-name client2
+```
+
+---
+
+**4. Ответ клиента server’у (обратное направление)**
+
+Если **клиент** должен вызвать **`send_to` на топик server’а** (например `topic_server1`) при изолированных файлах, роли меняются: **файл клиента — sender**, **файл server’а — listener**. Нужны те же правки в **обеих** БД для нового проволочного ключа **K** (это **не обязательно** тот же номер, что server→client для этого пира).
+
+| Процесс | Роль при ответе | Что задать |
+|---------|----------------|------------|
+| **`clientN.sqlite`** | sender | `conn_key_map`: `clientN:topic_client:server1` → **K**; поднять **`seq`** |
+| **`server1.sqlite`** | listener | `conn_sender`: **(K, `topic_client`)** — в колбэке **`from`** будет `source_topic` клиента; поднять **`seq`** |
+
+В запуске для **server (listener)** параметр **`--topic`** — это **`topic_client`**, не `topic_server1`.
+
+Пример: server→`client2` уже использует ключ **2** (п. 3); ответ client2→server задают другим ключом **K = 12** на обоих файлах, чтобы не перегружать **`conn_sender(2, …)`** на server (там ключ **2** уже может быть занят исходящим `conn_key_map` к `client2`, а в **`conn_sender`** только одна строка на `connection_key`).
+
+```bash
+# client2 шлёт server’у
+python3 python/set_sqlite_connection_key.py client2.sqlite \
+  --side sender --conn-key 12 \
+  --self-name client2 --self-topic topic_client \
+  --topic topic_server1 --unique-name server1
+
+# server принимает от client2
+python3 python/set_sqlite_connection_key.py server1.sqlite \
+  --side listener --conn-key 12 \
+  --topic topic_client --unique-name client2
+```
+
+Далее `client2` вызывает `send_to("topic_server1", payload, false)` (изолированные файлы → для ответа тоже **`at_least_once_delivery` false**, если нет общей БД).
+
+**One-to-one** (только A и B, каждый засидировал другого в `receivers_json`): для обоих направлений часто хватает ключа **1** на каждом файле (composite `A:topic_a:b` и `B:topic_b:a` разные, `conn_key_map` не конфликтует). **Один server, много clients** и ответы: закладывайте **разные ключи** для входящего и исходящего на **файле server’а**, если одно и то же число ломает **`conn_sender`**.
+
 ---
 
 ## Создание клиента
@@ -141,7 +280,7 @@ UTF-8 JSON: **один массив** объектов. У каждого объ
 | Модель | Как разделяется каталог |
 |--------|-------------------------|
 | **Один файл `.sqlite`**, открытый согласующимися процессами (один хост, дисциплина блокировок) | `regist_topic` / `run` обновляют общие `topic_addr` / `topic_key`; пиры видят друг друга без JSON, если разделяют файл. Предпочтительно **пустой** `receivers_json`. |
-| **Один файл на процесс** (изолированные пустые БД, один контрагент) | Используйте **`receivers_json`**, чтобы в каждой БД были **`topic`**, **`addr`**, **`client_name`** пира. Первый проволочный **`connection_key`** — **1**; засидированный **`topic_key.k`** — **1** для этих топиков; сидирование пишет **`conn_sender`** для колбэка **`from`**. Для **`send_to` / `send_all`** ставьте **`at_least_once_delivery == false`**, если только не используете **общий** путь SQLite (см. *Изолированные файлы и `at_least_once_delivery`* выше). |
+| **Один файл на процесс** (изолированные пустые БД) | **Только one-to-one:** в **`receivers_json`** каждой БД — **не больше одного** удалённого пира (см. *Изолированные БД: только one-to-one* выше). Проволочный **`connection_key`** — **1**; **`topic_key.k`** — **1**; seed пишет **`conn_sender`** для **`from`**. **`at_least_once_delivery == false`**. Для **one-to-many / many-to-one** — **общий** файл SQLite или Redis, а не несколько изолированных файлов с многострочным JSON. |
 
 **Не** смешивайте **Redis** и **SQLite** для одной логической сети, если не хотите двух изолированных систем ([backends.md](backends.md)).
 
