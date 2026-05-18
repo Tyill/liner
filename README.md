@@ -1,12 +1,5 @@
 # liner
 
-<p align="center">
-  <img src="https://shields.io" alt="Release">
-  <img src="https://shields.io" alt="License">
-  <img src="https://shields.io" alt="Build Status">
-  <img src="https://shields.io" alt="Stars">
-</p>
-
 **liner** is a lightweight, serverless, peer-to-peer message broker written in Rust. It provides a robust, decentralized messaging mesh backed by your choice of Redis, SQLite, or PostgreSQL, communicating over pure TCP transport.
 
 ---
@@ -19,7 +12,7 @@
 
 ---
 
-## Supported Backends
+### Supported Backends
 
 | Backend | Operational Mode | Best Used For |
 | :--- | :--- | :--- |
