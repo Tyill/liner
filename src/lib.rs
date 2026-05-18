@@ -30,7 +30,7 @@
 //! ```
 
 mod store;
-pub use store::ReceiverSeedEntry;
+pub use store::{open_store, open_store_mutex, ReceiverSeedEntry, Store, StoreBackend};
 pub use store::redis;
 
 mod client;
@@ -105,6 +105,29 @@ impl Liner {
                 localhost.as_ptr(),
                 path.as_ptr(),
                 recv.as_ptr(),
+            );
+            Self::from_raw_handle(hclient)
+        }
+    }
+
+    /// Creates a client backed by **PostgreSQL** (requires library built with feature **`postgres`**).
+    #[cfg(feature = "postgres")]
+    pub fn new_postgres(
+        unique_name: &str,
+        topic: &str,
+        localhost: &str,
+        postgres_url: &str,
+    ) -> Liner {
+        unsafe {
+            let unique = CString::new(unique_name).unwrap();
+            let url = CString::new(postgres_url).unwrap();
+            let localhost = CString::new(localhost).unwrap();
+            let topic_c = CString::new(topic).unwrap();
+            let hclient = lnr_new_client_postgres(
+                unique.as_ptr(),
+                topic_c.as_ptr(),
+                localhost.as_ptr(),
+                url.as_ptr(),
             );
             Self::from_raw_handle(hclient)
         }
@@ -288,6 +311,57 @@ pub unsafe extern "C" fn lnr_new_client_sqlite(
     new_client_inner(unique_name, topic, localhost, sqlite_path, receivers_json, true)
 }
 
+/// Build marker so Python can detect a postgres-enabled `cdylib` (kept by `lnr_new_client`).
+#[cfg(feature = "postgres")]
+#[no_mangle]
+pub extern "C" fn lnr_postgres_enabled() -> u8 {
+    1
+}
+
+/// Create new client backed by PostgreSQL (requires build with feature **`postgres`**).
+///
+/// # Safety
+#[cfg(feature = "postgres")]
+#[no_mangle]
+pub unsafe extern "C" fn lnr_new_client_postgres(
+    unique_name: *const i8,
+    topic: *const i8,
+    localhost: *const i8,
+    postgres_url: *const i8,
+) -> *mut Client {
+    if unique_name.is_null() || topic.is_null() || localhost.is_null() || postgres_url.is_null() {
+        print_error!("null pointer argument");
+        return std::ptr::null_mut();
+    }
+    let Ok(unique_name) = CStr::from_ptr(unique_name).to_str() else { return std::ptr::null_mut(); };
+    let Ok(topic) = CStr::from_ptr(topic).to_str() else { return std::ptr::null_mut(); };
+    let Ok(localhost) = CStr::from_ptr(localhost).to_str() else { return std::ptr::null_mut(); };
+    let Ok(postgres_url) = CStr::from_ptr(postgres_url).to_str() else { return std::ptr::null_mut(); };
+
+    if unique_name.is_empty() {
+        print_error!("unique_name empty");
+        return std::ptr::null_mut();
+    }
+    if topic.is_empty() {
+        print_error!("topic empty");
+        return std::ptr::null_mut();
+    }
+    if localhost.is_empty() {
+        print_error!("localhost empty");
+        return std::ptr::null_mut();
+    }
+    if postgres_url.is_empty() {
+        print_error!("postgres_url empty");
+        return std::ptr::null_mut();
+    }
+
+    if let Some(c) = Client::new_postgres(unique_name, topic, localhost, postgres_url) {
+        Box::into_raw(Box::new(c))
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
 /// Deprecated: use `lnr_new_client_redis`. Same behavior as `lnr_new_client_redis`.
 ///
 /// # Safety
@@ -298,6 +372,11 @@ pub unsafe extern "C" fn lnr_new_client(
     localhost: *const i8,
     redis_path: *const i8,
 ) -> *mut Client {
+    #[cfg(feature = "postgres")]
+    {
+        std::hint::black_box(lnr_new_client_postgres);
+        std::hint::black_box(lnr_postgres_enabled);
+    }
     lnr_new_client_redis(unique_name, topic, localhost, redis_path)
 }
 
@@ -495,6 +574,7 @@ mod tests {
             assert!(!lnr_send_to(ptr::null_mut(), ptr::null(), ptr::null(), 0, true));
         }
     }
+
 }
 
 

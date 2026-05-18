@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-Integration test: burst delivery (N messages) end-to-end.
+Integration test: at_most_once offline send should not be persisted/delivered later.
 
 Flow:
-- start listener subscribed to burst topic
-- start sender, send N messages quickly (at-least-once)
-- assert listener receives exactly N within timeout
+- start sender
+- register listener mapping in Redis but keep listener offline
+- sender refreshes routing and sends with at_least_once_delivery=False
+- assert redis pending queue length stays 0 (or key missing)
+- start listener and assert no delivery occurs
 
 Requires Redis. Auto-starts Redis via Docker if needed.
 """
@@ -23,7 +25,7 @@ import threading
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).resolve().parent
-PROJECT_ROOT = MODULE_PATH.parent
+PROJECT_ROOT = MODULE_PATH.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from python import liner  # noqa: E402
@@ -166,54 +168,58 @@ def main() -> int:
     _ensure_redis()
     redis_url = f"redis://{REDIS_HOST}:{REDIS_PORT}/"
 
-    N = int(os.environ.get("LINER_TEST_BURST_N", "1000"))
-
-    sender_name, sender_topic = "sender_it_burst", "topic_sender_it_burst"
-    listener_name, listener_topic = "listener_it_burst", "topic_listener_it_burst"
-    burst_topic = "topic_burst"
-
+    sender_name, sender_topic = "sender_it_amo", "topic_sender_it_amo"
+    listener_name, listener_topic = "listener_it_amo", "topic_listener_it_amo"
     sender_addr = f"localhost:{_free_port()}"
     listener_addr = f"localhost:{_free_port()}"
 
-    # Clean sender state best-effort.
     s = liner.Client(sender_name, sender_topic, sender_addr, redis_url)
     s.clear_stored_messages()
     s.clear_addresses_of_topic()
 
-    # Listener.
-    lock = threading.Lock()
-    seen = set()
-    done = threading.Event()
+    # Register listener mapping but don't start it.
+    _redis_cmd("DEL", f"lnr_topic:{listener_topic}:addr")
+    _redis_cmd("HSET", f"lnr_topic:{listener_topic}:addr", listener_addr, listener_name)
+
+    assert s.run(lambda _to, _from, _data: None), "sender failed to run"
+    s.refresh_address_topic(listener_topic)
+
+    payload = b"at_most_once"
+    _log("[sender] send while listener offline with at_least_once_delivery=False")
+    assert s.send_to(listener_topic, payload, False), "send_to failed"
+
+    # If a connection key exists, ensure its message list is empty.
+    conn_key_str = _redis_cmd(
+        "GET", f"lnr_connection:{sender_name}:{sender_topic}:{listener_name}:key"
+    )
+    if conn_key_str:
+        conn_key = int(conn_key_str)
+        list_key = f"lnr_connection:{conn_key}:messages"
+
+        def _empty():
+            try:
+                return int(_redis_cmd("LLEN", list_key)) == 0
+            except Exception:
+                return True
+
+        _wait_until(_empty, timeout_s=5.0, what="redis list empty for at_most_once")
+
+    # Start listener and ensure no delivery occurs.
+    got = threading.Event()
 
     l = liner.Client(listener_name, listener_topic, listener_addr, redis_url)
 
     def on_recv(_to: str, _from: str, data: bytes):
-        nonlocal seen
-        # payload is "i:<num>"
-        with lock:
-            seen.add(data)
-            if len(seen) >= N:
-                done.set()
+        _log(f"[listener] unexpected recv {data!r}")
+        got.set()
 
     assert l.run(on_recv), "listener failed to run"
-    assert l.subscribe(burst_topic), "subscribe failed"
-
-    assert s.run(lambda _to, _from, _data: None), "sender failed to run"
-    s.refresh_address_topic(burst_topic)
-
-    _log(f"[sender] burst send N={N}")
-    for i in range(N):
-        payload = f"i:{i}".encode("utf-8")
-        assert s.send_to(burst_topic, payload, True)
-
-    _wait_until(lambda: done.is_set(), timeout_s=25.0, what="receive burst")
-
-    with lock:
-        assert len(seen) == N, f"expected {N}, got {len(seen)}"
+    time.sleep(3.0)
+    assert not got.is_set(), "unexpected delivery for at_most_once offline send"
 
     l.close()
     s.close()
-    _log("OK integration_burst_1000")
+    _log("OK integration_at_most_once_offline_not_persisted")
     return 0
 
 

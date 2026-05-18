@@ -1,13 +1,14 @@
-# Store backends (Redis and SQLite)
+# Store backends (Redis, SQLite, and PostgreSQL)
 
-Both backends implement the same internal `Store` contract so clients, listeners, and senders behave the same at the messaging layer.
+All backends implement the same internal `Store` contract so clients, listeners, and senders behave the same at the messaging layer.
 
 ## Choosing a backend
 
-- **Redis** — shared in-memory/disk persistence, multiple hosts, good for distributed deployments. Pass a **Redis URL** (for example `redis://127.0.0.1/`).
+- **Redis** — shared in-memory/disk persistence, multiple hosts, good for distributed deployments. Pass a **Redis URL** (for example `redis://127.0.0.1/`). Always available in default builds.
 - **SQLite** — single file, no separate server process, good for embedded or single-machine tests. Pass a **filesystem path** to the database file.
+- **PostgreSQL** — shared SQL database (like Redis), durable tables, optional **`postgres`** Cargo feature. Pass a **libpq URL** (for example `postgresql://user:pass@127.0.0.1/liner`). Step-by-step: [using-postgres.md](using-postgres.md).
 
-Use **`lnr_new_client_redis` / `lnr_new_client_sqlite`** (C) or **`Client::new_redis` / `Client::new_sqlite`** (Rust) consistently for a given deployment.
+Use **`lnr_new_client_redis` / `lnr_new_client_sqlite` / `lnr_new_client_postgres`** (C) or **`Client::new_redis` / `Client::new_sqlite` / `Client::new_postgres`** (Rust) consistently for a given deployment. The PostgreSQL symbols exist only when built with **`--features postgres`**.
 
 ## Isolated SQLite (one file per process)
 
@@ -24,7 +25,7 @@ Typical steps: (1) peer A **`run`** on its DB and topic; (2) read **`bound_liste
 
 ## `unique_name`
 
-The `unique_name` string identifies this client instance in the store (together with topics and addresses). With **Redis**, peers that should share routing and offline queues use the **same Redis URL** and compatible topic/address data. With **SQLite**, processes that share **one database file** on a host see the same catalog; **separate files** do not—use **`receivers_json`** (or out-of-band SQL) to align `topic_key` and addresses (see *Isolated SQLite* above). Each **running client** still needs a **distinct** `unique_name` (and typically its own TCP `localhost` binding).
+The `unique_name` string identifies this client instance in the store (together with topics and addresses). With **Redis** or **PostgreSQL**, peers that should share routing and offline queues use the **same URL** and compatible topic/address data. With **SQLite**, processes that share **one database file** on a host see the same catalog; **separate files** do not—use **`receivers_json`** (or out-of-band SQL) to align `topic_key` and addresses (see *Isolated SQLite* above). Each **running client** still needs a **distinct** `unique_name` (and typically its own TCP `localhost` binding).
 
 ## Redis
 
@@ -43,14 +44,24 @@ The `unique_name` string identifies this client instance in the store (together 
 - **Operations (backup, WAL files, `clear_*` on SQLite):** see [operations-redis-sqlite.md](operations-redis-sqlite.md).
 - **Memory / message size limits, compression:** see [capacity-and-limits.md](capacity-and-limits.md).
 
+## PostgreSQL
+
+**Step-by-step usage (build with `--features postgres`, shared URL, tests):** [using-postgres.md](using-postgres.md).
+
+- Optional dependency; enable with **`cargo build --features postgres`**.
+- Connection via **`postgres`** crate and **`NoTls`** (plain TCP unless you extend the connector).
+- On open, the library creates the **same relational schema** as SQLite (`topic_addr`, `conn_messages`, …) and sets **`lock_timeout`** to **5s**.
+- **No `receivers_json`** on client construction — catalog comes from **`run`** / **`refresh_address_topic`**, like Redis.
+- **Operations (backup, `clear_*`):** [operations-redis-sqlite.md](operations-redis-sqlite.md) (*PostgreSQL*).
+
 ## Mixed deployments
 
-Do **not** point one client at Redis and another at SQLite for the same logical mesh unless you deliberately want two isolated systems. They do not share data.
+Do **not** point different clients at Redis, SQLite, and PostgreSQL for the same logical mesh unless you deliberately want isolated systems. They do not share data.
 
 **Security posture (no TLS, trust boundaries):** [security-defaults.md](security-defaults.md).
 
 ## Related
 
 - [store-startup-failure-semantics.md](store-startup-failure-semantics.md) — client vs listener/sender when opening the store at `run` time.
-- [routing-and-store-layout.md](routing-and-store-layout.md) — Redis key names and SQLite tables (for debugging and backups).
-- [operations-redis-sqlite.md](operations-redis-sqlite.md) — prefix policy, `clear_*`, Redis 6.2+, SQLite WAL backup.
+- [routing-and-store-layout.md](routing-and-store-layout.md) — Redis keys and SQL tables (SQLite / PostgreSQL).
+- [operations-redis-sqlite.md](operations-redis-sqlite.md) — prefix policy, `clear_*`, Redis 6.2+, SQLite WAL, PostgreSQL backup notes.

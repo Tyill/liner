@@ -22,7 +22,18 @@ cargo test
 
 ## Интеграционные тесты и обвязка на Python
 
-**Актуальные команды для копирования**, переменные окружения Redis, автозапуск Docker для Python-тестов и опции `test/run_integration.py` поддерживаются в разделе **Tests** [README проекта](../../README.md) (ищите «Run Rust unit tests» / `LINER_TEST_REDIS` / `run_integration.py`).
+**Актуальные команды** для Redis, SQLite и PostgreSQL — в разделе **Tests** [README проекта](../../README.md).
+
+### Интеграционные тесты на Redis (`test/redis/`)
+
+Сценарии на **общем Redis** (по умолчанию `redis://localhost/`). Из корня репозитория:
+
+```bash
+cargo build --release
+python3 test/redis/run_integration.py
+```
+
+Поддерживаются `--list`, `--only`, `--continue-on-fail`. Часть тестов поднимает Redis через Docker; переменные `LINER_TEST_REDIS_*` — в README.
 
 ### Интеграционные тесты на SQLite (`test/sqlite/`)
 
@@ -32,9 +43,22 @@ cargo test
 python3 test/sqlite/run_integration.py
 ```
 
-Список скриптов, фильтр по имени и продолжение после ошибки — как у `test/run_integration.py` (`--list`, `--only`, `--continue-on-fail`). Нужны собранный **`target/release/libliner_broker.so`** и модуль **`python/liner.py`** с **`Client.new_sqlite`**.
+Список скриптов, фильтр по имени и продолжение после ошибки — как у `test/redis/run_integration.py` (`--list`, `--only`, `--continue-on-fail`). Нужны собранный **`target/release/libliner_broker.so`** и модуль **`python/liner.py`** с **`Client.new_sqlite`**.
 
 Внутри тестов каталог для «слушатель офлайн» задаётся через **`receivers_json`** при создании клиента, а не через отдельный процесс `sqlite3` на том же файле, пока живы клиенты liner на этом пути (иначе возможен краш процесса).
+
+### Интеграционные тесты на PostgreSQL (`test/postgres/`)
+
+Те же сценарии, что у SQLite, на **общей БД PostgreSQL** (без `receivers_json`). Из корня репозитория:
+
+```bash
+export LINER_TEST_POSTGRES_URL='postgresql://user:pass@127.0.0.1/liner_test'
+cargo build --release --features postgres
+pip install psycopg2-binary
+python3 test/postgres/run_integration.py
+```
+
+Подробнее: [using-postgres.md](using-postgres.md).
 
 ## Участие в разработке
 

@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-Integration test: at_most_once offline send should not be persisted/delivered later.
+Integration test: concurrent subscribe/unsubscribe while messages are being sent.
+
+Goal: ensure no deadlocks/crashes, and delivery continues.
 
 Flow:
-- start sender
-- register listener mapping in Redis but keep listener offline
-- sender refreshes routing and sends with at_least_once_delivery=False
-- assert redis pending queue length stays 0 (or key missing)
-- start listener and assert no delivery occurs
+- start listener
+- in one thread: toggle subscribe/unsubscribe on a topic for a while
+- start sender and spam messages to that topic
+- assert test finishes and listener received at least some messages
 
 Requires Redis. Auto-starts Redis via Docker if needed.
 """
@@ -25,7 +26,7 @@ import threading
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).resolve().parent
-PROJECT_ROOT = MODULE_PATH.parent
+PROJECT_ROOT = MODULE_PATH.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from python import liner  # noqa: E402
@@ -168,58 +169,67 @@ def main() -> int:
     _ensure_redis()
     redis_url = f"redis://{REDIS_HOST}:{REDIS_PORT}/"
 
-    sender_name, sender_topic = "sender_it_amo", "topic_sender_it_amo"
-    listener_name, listener_topic = "listener_it_amo", "topic_listener_it_amo"
+    sender_name, sender_topic = "sender_it_toggle", "topic_sender_it_toggle"
+    listener_name, listener_topic = "listener_it_toggle", "topic_listener_it_toggle"
+    topic = "topic_toggle"
+
     sender_addr = f"localhost:{_free_port()}"
     listener_addr = f"localhost:{_free_port()}"
 
+    # Clean sender state best-effort.
     s = liner.Client(sender_name, sender_topic, sender_addr, redis_url)
     s.clear_stored_messages()
     s.clear_addresses_of_topic()
 
-    # Register listener mapping but don't start it.
-    _redis_cmd("DEL", f"lnr_topic:{listener_topic}:addr")
-    _redis_cmd("HSET", f"lnr_topic:{listener_topic}:addr", listener_addr, listener_name)
-
-    assert s.run(lambda _to, _from, _data: None), "sender failed to run"
-    s.refresh_address_topic(listener_topic)
-
-    payload = b"at_most_once"
-    _log("[sender] send while listener offline with at_least_once_delivery=False")
-    assert s.send_to(listener_topic, payload, False), "send_to failed"
-
-    # If a connection key exists, ensure its message list is empty.
-    conn_key_str = _redis_cmd(
-        "GET", f"lnr_connection:{sender_name}:{sender_topic}:{listener_name}:key"
-    )
-    if conn_key_str:
-        conn_key = int(conn_key_str)
-        list_key = f"lnr_connection:{conn_key}:messages"
-
-        def _empty():
-            try:
-                return int(_redis_cmd("LLEN", list_key)) == 0
-            except Exception:
-                return True
-
-        _wait_until(_empty, timeout_s=5.0, what="redis list empty for at_most_once")
-
-    # Start listener and ensure no delivery occurs.
-    got = threading.Event()
+    recv_lock = threading.Lock()
+    recv_count = 0
 
     l = liner.Client(listener_name, listener_topic, listener_addr, redis_url)
 
-    def on_recv(_to: str, _from: str, data: bytes):
-        _log(f"[listener] unexpected recv {data!r}")
-        got.set()
+    def on_recv(_to: str, _from: str, _data: bytes):
+        nonlocal recv_count
+        with recv_lock:
+            recv_count += 1
 
     assert l.run(on_recv), "listener failed to run"
-    time.sleep(3.0)
-    assert not got.is_set(), "unexpected delivery for at_most_once offline send"
+
+    stop = threading.Event()
+
+    def toggler():
+        # Toggle for ~3 seconds.
+        end = time.time() + 3.0
+        on = False
+        while time.time() < end:
+            if on:
+                l.unsubscribe(topic)
+            else:
+                l.subscribe(topic)
+            on = not on
+            time.sleep(0.03)
+        stop.set()
+
+    t = threading.Thread(target=toggler, daemon=True)
+    t.start()
+
+    assert s.run(lambda _to, _from, _data: None), "sender failed to run"
+    s.refresh_address_topic(topic)
+
+    sent = 0
+    while not stop.is_set():
+        s.send_to(topic, b"x", True)
+        sent += 1
+        if sent % 100 == 0:
+            s.refresh_address_topic(topic)
+
+    t.join(timeout=2.0)
+    time.sleep(0.6)
+
+    with recv_lock:
+        assert recv_count > 0, "expected to receive at least some messages"
 
     l.close()
     s.close()
-    _log("OK integration_at_most_once_offline_not_persisted")
+    _log(f"OK integration_concurrent_sub_unsub recv={recv_count} sent~={sent}")
     return 0
 
 

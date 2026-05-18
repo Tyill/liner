@@ -1,10 +1,12 @@
 # liner
 
-Redis- or SQLite-backed message broker (serverless style catalog + TCP between peers).  
+Redis-, SQLite-, or PostgreSQL-backed message broker (serverless style catalog + TCP between peers).  
 The library is written in Rust with a C interface.  
 Data transfer via TCP.
 
-SQLite: embedded single-file mode (no Redis process). See the guide [docs/using-sqlite.md](docs/using-sqlite.md).
+SQLite: embedded single-file mode (no Redis process). See [docs/using-sqlite.md](docs/using-sqlite.md).
+
+PostgreSQL: shared SQL store (optional `postgres` Cargo feature). See [docs/using-postgres.md](docs/using-postgres.md).
 
 Rust example:  
 ``` Rust
@@ -172,21 +174,21 @@ Run Rust integration test with Redis (ignored by default):
 LINER_TEST_REDIS=redis://localhost/ cargo test --test offline_delivery_redis -- --ignored
 
 cargo build --release
-python3 test/run_integration.py --list
+python3 test/redis/run_integration.py --list
 ```
 
-You can filter or keep running after failures:
+Redis-backed integration tests live under **`test/redis/`** (same scenarios as before the move). You can filter or keep running after failures:
 
 ```bash
-python3 test/run_integration.py --only offline,burst
-python3 test/run_integration.py --continue-on-fail
+python3 test/redis/run_integration.py --only offline,burst
+python3 test/redis/run_integration.py --continue-on-fail
 ```
 
 Python tests will auto-start Redis via Docker if it isn't reachable.
 You can customize the port/container name:
 
 ```bash
-LINER_TEST_REDIS_PORT=16379 LINER_TEST_REDIS_CONTAINER=liner-test-redis python3 test/offline_delivery_more.py
+LINER_TEST_REDIS_PORT=16379 LINER_TEST_REDIS_CONTAINER=liner-test-redis python3 test/redis/offline_delivery_more.py
 ```
 
 SQLite-backed Python integration tests (no Redis; shared temp DB per script):
@@ -196,9 +198,18 @@ cargo build --release
 python3 test/sqlite/run_integration.py
 ```
 
+PostgreSQL-backed Python integration tests (shared DB; build with `--features postgres`):
+
+```bash
+export LINER_TEST_POSTGRES_URL='postgresql://user:pass@127.0.0.1/liner_test'
+cargo build --release --features postgres
+python3 test/postgres/run_integration.py
+```
+
 ### Docs
 
 - [Using SQLite (`new_sqlite`, `receivers_json`, reference test walkthrough)](docs/using-sqlite.md)
+- [Using PostgreSQL (`--features postgres`, shared database, integration tests)](docs/using-postgres.md)
 - [Crate API on docs.rs](https://docs.rs/liner_broker/1.3.0/liner_broker/)
 - [Developer notes (errors, backends, C API, lifecycle)](docs/README.md)
 - [C API compatibility and building (symbols, `cargo`, Linux/Windows)](docs/c-api-compatibility-and-build.md)

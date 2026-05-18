@@ -1,21 +1,21 @@
 import os
+from pathlib import Path
 import sys
 import subprocess
 import asyncio
 import time
 
 module_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, module_path + "/..")
+sys.path.insert(0, str(Path(module_path).resolve().parent.parent.parent))
 
 from python import liner 
 
 module_path = os.path.dirname(os.path.abspath(__file__))
-liner.loadLib(module_path + "/../target/release/libliner_broker.so")
+liner.loadLib(str(Path(module_path).resolve().parent.parent.parent / "target/release/libliner_broker.so"))
     
 if __name__ == "__main__":
     
-    prPath = os.path.expanduser("~") + '/projects/rust/liner/'
-    binPath = prPath + 'test/client_process.py'
+    binPath = str(Path(__file__).resolve().parent / "client_process.py")
 
     subprocess.Popen([binPath,
                       '--client-name=client1',

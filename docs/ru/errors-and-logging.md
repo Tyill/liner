@@ -15,6 +15,7 @@
 | Неверный дескриптор клиента (`NULL`) в любой функции с `lnr_hClient` | `FALSE` / `0`; возможна запись `client was not created` |
 | `lnr_new_client_redis` / `lnr_new_client` | `NULL` при сбое: null/некорректные UTF-8 указатели, пустые `unique_name`, `topic`, `localhost` или строка хранилища, либо **хранилище не открылось** (Redis недоступен и т.д.) |
 | `lnr_new_client_sqlite` | `NULL` при тех же правилах для указателей/пустых строк, **ошибке открытия SQLite**, **некорректном непустом `receivers_json`** или ошибках **`seed_receivers`** / БД. **`NULL` или пустой `receivers_json`**, либо JSON **`[]`** — **не** ошибка (без сидирования). |
+| `lnr_new_client_postgres` | `NULL` при сбое (нужна сборка с фичей **`postgres`**): указатели, пустые строки, ошибка подключения к PostgreSQL |
 | `lnr_run` | `TRUE`, если клиент уже помечен как running; `FALSE`, если регистрация или bind не удались (см. ниже); **возможна паника**, если внутренний старт listener/sender по хранилищу падает (см. [store-startup-failure-semantics.md](store-startup-failure-semantics.md)) |
 | `lnr_send_to`, `lnr_send_all`, … | `FALSE` при логических или I/O ошибках; отдельные операции — в [using-the-api.md](using-the-api.md) |
 
@@ -26,6 +27,7 @@
 |-----|--------|---------|
 | `Client::new_redis` / `Client::new` | `Some(Client)` | `None`, если хранилище не открылось — **без** `print_error!` с этого пути; проверяйте `None` |
 | `Client::new_sqlite` | `Some(Client)` | `None`, если хранилище не открылось (тихо), **JSON `receivers_json` не разобрался** как массив записей сидирования (логи), **`seed_receivers`** упал (логи), либо (для Rust `&str`) некорректный UTF-8 |
+| `Client::new_postgres` | `Some(Client)` | `None`, если PostgreSQL не открылся (нужна фича **`postgres`** при сборке) |
 | `run` | `true`, если цикл событий может стартовать | `false`, если `regist_topic` не удался, `localhost` не резолвится или TCP bind не удался; причина в логах. `true`, если клиент **уже** был в running (идемпотентный успех) |
 | `send_to` / `send_all` | `true`, если путь отправки сообщил об успехе | `false`, если не running, свой топик, неизвестные адреса топика или сбой sender |
 | `subscribe` / `unsubscribe` | `true` | `false` при ошибках хранилища или неверном топике |
@@ -36,7 +38,7 @@
 
 ## Обёртка Rust `Liner` (`liner_broker::Liner`)
 
-`Liner::new` / `Liner::new_sqlite` используют C-конструкторы. Если вернулся null-дескриптор, обёртка делает **`panic!`** (`error create client`). Также используется `CString::new(...).unwrap()` — строки со **встроенным NUL** вызовут панику. Для неконструирующего создания предпочтительнее напрямую **`Client`**.
+`Liner::new` / `Liner::new_sqlite` / `Liner::new_postgres` используют C-конструкторы. Если вернулся null-дескриптор, обёртка делает **`panic!`** (`error create client`). Также используется `CString::new(...).unwrap()` — строки со **встроенным NUL** вызовут панику. Для неконструирующего создания предпочтительнее напрямую **`Client`**.
 
 ## Отравление Mutex
 

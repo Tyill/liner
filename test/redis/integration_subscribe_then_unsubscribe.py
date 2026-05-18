@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).resolve().parent
-PROJECT_ROOT = MODULE_PATH.parent
+PROJECT_ROOT = MODULE_PATH.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from python import liner  # noqa: E402

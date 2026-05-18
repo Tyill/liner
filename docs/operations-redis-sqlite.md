@@ -1,6 +1,6 @@
-# Operations: Redis and SQLite
+# Operations: Redis, SQLite, and PostgreSQL
 
-Companion to the key/table catalog in [routing-and-store-layout.md](routing-and-store-layout.md). Here: **prefix discipline**, what **`clear_*`** touches, **Redis server compatibility**, and **SQLite backup** with **WAL**.
+Companion to the key/table catalog in [routing-and-store-layout.md](routing-and-store-layout.md). Here: **prefix discipline**, what **`clear_*`** touches, **Redis server compatibility**, **SQLite backup** with **WAL**, and **PostgreSQL** maintenance notes.
 
 ---
 
@@ -25,7 +25,7 @@ Both APIs are only valid when the **client is not running** (see [using-the-api.
 | Backend | Effect |
 |---------|--------|
 | **Redis** | **`DEL lnr_topic:{source_topic}:addr`** — the whole hash for that topic string. |
-| **SQLite** | **`DELETE FROM topic_addr WHERE topic = ?`** with `topic = source_topic`. |
+| **SQLite / PostgreSQL** | **`DELETE FROM topic_addr WHERE topic = ?`** with `topic = source_topic`. |
 
 **Does not remove:** topic integer keys (`lnr_topic:{topic}:key` / `topic_key` table), `lnr_unique_key`, any `lnr_connection:*` keys, `lnr_sender:*:listener`, offline queues, or **other topics’** `…:addr` entries.
 
@@ -38,7 +38,7 @@ After this call, other clients may still have **cached** old addresses until the
 | Backend | Effect |
 |---------|--------|
 | **Redis** | Reads **`lnr_sender:{unique}:{source_topic}:listener`**. For each `(addr, listener_topic)`, resolves **`connection_key`**, then **`DEL lnr_connection:{id}:messages`** and **`DEL lnr_connection:{id}:mess_number`**. Finally **`DEL`** the **`lnr_sender:…:listener`** hash. |
-| **SQLite** | Same flow via **`sender_listener`** → **`connection_key`** → **`DELETE FROM conn_messages`** and **`DELETE FROM conn_mess_number`** for those keys, then **`DELETE FROM sender_listener`** for this **`sender_key`**. |
+| **SQLite / PostgreSQL** | Same flow via **`sender_listener`** → **`connection_key`** → **`DELETE FROM conn_messages`** and **`DELETE FROM conn_mess_number`** for those keys, then **`DELETE FROM sender_listener`** for this **`sender_key`**. |
 
 **Does not remove:**
 
@@ -86,8 +86,34 @@ Restore the **main** file (and matching **`-wal`/`-shm`** if you backed them up 
 
 ---
 
+## PostgreSQL: shared database, backup
+
+### Connection URL
+
+The store string is a **libpq URL** passed to **`Client::new_postgres`** / **`lnr_new_client_postgres`** (requires **`--features postgres`**). All cooperating liner processes for one mesh should use the **same URL** (dedicated database per deployment is recommended).
+
+Schema is created automatically on first open (`CREATE TABLE IF NOT EXISTS …`). There is no separate migration tool in the library.
+
+### Backup and restore
+
+Use standard PostgreSQL tools for your environment:
+
+- **Logical backup:** `pg_dump` / `pg_restore` of the database that holds liner tables.
+- **Physical backup:** follow your operator’s policy (WAL archiving, snapshots, managed-service backups).
+
+**Quiesce or stop liner clients** on that URL before a **consistent** logical dump if you need a point-in-time that matches in-flight offline queues. Running clients may hold rows in **`conn_messages`** and update **`topic_addr`** during the dump.
+
+After restore, ensure the **same schema version** (tables created by the liner version you run). Mixed liner versions against one database are untested.
+
+### `clear_*` on PostgreSQL
+
+Same SQL effects as SQLite (see tables above): **`clear_addresses_of_topic`** deletes **`topic_addr`** rows for this client’s **`source_topic`** only; **`clear_stored_messages`** clears queues and ack numbers for this sender’s saved listeners. Neither wipes the whole database.
+
+---
+
 ## Related
 
 - [routing-and-store-layout.md](routing-and-store-layout.md) — full key/table reference.  
-- [backends.md](backends.md) — choosing backend, `SQLITE_BUSY`, bundled SQLite.  
+- [backends.md](backends.md) — choosing backend, `SQLITE_BUSY`, bundled SQLite, optional PostgreSQL feature.
+- [using-postgres.md](using-postgres.md) — PostgreSQL client API and tests.  
 - [using-the-api.md](using-the-api.md) — when `clear_*` is allowed (`run` must be off).

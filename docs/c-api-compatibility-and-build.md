@@ -32,6 +32,7 @@ The sample **`cpp/Makefile`** assumes a Unix-like linker line (`-L ../target/rel
 
 - **Redis backend:** a reachable **Redis** server compatible with the versions described in [operations-redis-sqlite.md](operations-redis-sqlite.md).
 - **SQLite backend:** no server; the bundled SQLite inside the Rust binary is used.
+- **PostgreSQL backend:** optional; build with **`cargo build --features postgres`**. Requires a reachable **PostgreSQL** server and **`lnr_new_client_postgres`** in the linked artifact. See [using-postgres.md](using-postgres.md).
 - **Platform:** the Rust standard library and **libc** (on Unix) apply as for any other `cdylib`; Windows builds use the usual MSVC or GNU runtime for your Rust toolchain.
 
 ## Related

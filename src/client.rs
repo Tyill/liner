@@ -96,6 +96,40 @@ impl Client {
         })
     }
 
+    /// PostgreSQL-backed client (requires Cargo feature **`postgres`**).
+    ///
+    /// `postgres_url` is a libpq connection string (e.g. `postgresql://user:pass@127.0.0.1/liner`).
+    /// Peers share one database; the catalog comes from the store (like Redis), not JSON seeding.
+    #[cfg(feature = "postgres")]
+    pub fn new_postgres(
+        unique_name: &str,
+        topic: &str,
+        localhost: &str,
+        postgres_url: &str,
+    ) -> Option<Client> {
+        let store_backend = crate::store::StoreBackend::Postgres {
+            url: postgres_url.to_string(),
+        };
+        let mut db = crate::store::open_store(unique_name, store_backend.clone()).ok()?;
+        db.set_source_topic(topic);
+        db.set_source_localhost(localhost);
+        Some(Self {
+            unique_name: unique_name.to_string(),
+            source_topic: topic.to_string(),
+            localhost: localhost.to_string(),
+            store_backend,
+            db,
+            listener: None,
+            sender: None,
+            last_send_index: HashMap::new(),
+            is_run: false,
+            mtx: Mutex::new(()),
+            address_topic: HashMap::new(),
+            subscriptions: HashMap::new(),
+            bound_listen_addr: None,
+        })
+    }
+
     pub fn unique_name(&self) -> &str {
         &self.unique_name
     }
@@ -131,6 +165,22 @@ impl Client {
             }
         };
         self.bound_listen_addr = tcp_listener.local_addr().ok().map(|a| a.to_string());
+        if let Some(bound) = self.bound_listen_addr.clone() {
+            if bound != self.localhost {
+                let stale = self.localhost.clone();
+                self.db.set_source_localhost(&stale);
+                if let Err(err) = self.db.unregist_topic(&self.source_topic) {
+                    print_error!(&format!("{}", err));
+                    return false;
+                }
+                self.localhost = bound.clone();
+                self.db.set_source_localhost(&bound);
+                if let Err(err) = self.db.regist_topic(&self.source_topic) {
+                    print_error!(&format!("{}", err));
+                    return false;
+                }
+            }
+        }
         self.listener = Some(Listener::new(
             tcp_listener,
             &self.unique_name,
@@ -387,6 +437,73 @@ mod tests {
     #[test]
     fn new_sqlite_rejects_invalid_receivers_json() {
         assert!(Client::new_sqlite("u", "t", "127.0.0.1:0", ":memory:", "not-json").is_none());
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn shared_postgres_two_clients_send_to() {
+        let Some(url) = std::env::var("LINER_TEST_POSTGRES_URL").ok() else {
+            eprintln!("skip shared_postgres_two_clients_send_to: LINER_TEST_POSTGRES_URL unset");
+            return;
+        };
+        let _pg_lock = crate::store::postgres::test_db_lock();
+        crate::store::postgres::test_reset_tables_inner(&url);
+
+        let topic_a = format!("topic_pg_a_{}", std::process::id());
+        let topic_b = format!("topic_pg_b_{}", std::process::id());
+        let flag = Box::new(AtomicBool::new(false));
+        let raw_flag = Box::into_raw(flag);
+
+        let mut client_a = Client::new_postgres(
+            &format!("pg_a_{}", std::process::id()),
+            &topic_a,
+            "127.0.0.1:0",
+            &url,
+        )
+        .expect("client_a");
+        assert!(client_a.run(
+            recv_ping_flag,
+            UData(raw_flag as *mut libc::c_void),
+        ));
+        assert!(client_a.bound_listen_addr().is_some());
+
+        let mut client_b = Client::new_postgres(
+            &format!("pg_b_{}", std::process::id()),
+            &topic_b,
+            "127.0.0.1:0",
+            &url,
+        )
+        .expect("client_b");
+        assert!(client_b.run(recv_noop, UData::null()));
+        assert!(client_b.refresh_address_topic(&topic_a));
+
+        let mut sent = false;
+        for _ in 0..400 {
+            if client_b.send_to(&topic_a, b"ping", false) {
+                sent = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(sent, "send_to should succeed once routes connect");
+
+        for _ in 0..500 {
+            if unsafe { (*raw_flag).load(Ordering::SeqCst) } {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            unsafe { (*raw_flag).load(Ordering::SeqCst) },
+            "peer A should receive ping"
+        );
+
+        drop(client_b);
+        drop(client_a);
+        unsafe {
+            drop(Box::from_raw(raw_flag));
+        }
+        crate::store::postgres::test_reset_tables_inner(&url);
     }
 
     #[test]

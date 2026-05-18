@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-Integration test runner for test/integration_*.py scripts.
+Run Redis-backed integration scripts under ``test/redis/``.
 
 Usage:
-  python3 test/run_integration.py
-  python3 test/run_integration.py --list
-  python3 test/run_integration.py --only burst,offline
-  python3 test/run_integration.py --continue-on-fail
+  python3 test/redis/run_integration.py
+  python3 test/redis/run_integration.py --list
+  python3 test/redis/run_integration.py --only burst,offline
+  python3 test/redis/run_integration.py --continue-on-fail
 
 Notes:
   - Individual tests may require Redis. Some tests auto-start Redis via Docker.
@@ -26,13 +26,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
+REPO = ROOT.parent.parent
 
 
 def discover() -> list[Path]:
     scripts: list[Path] = []
     scripts.extend(sorted(ROOT.glob("integration_*.py")))
 
-    # Always include legacy offline delivery scripts (kept explicit).
     for name in [
         "offline_delivery.py",
         "offline_delivery_simple.py",
@@ -42,7 +42,6 @@ def discover() -> list[Path]:
         if p.exists():
             scripts.append(p)
 
-    # De-duplicate while preserving order.
     seen: set[Path] = set()
     out: list[Path] = []
     for p in scripts:
@@ -95,11 +94,11 @@ def main() -> int:
     start_all = time.time()
     for p in scripts:
         name = short_name(p)
-        print(f"\n=== RUN {name} ===", flush=True)
+        print(f"\n=== RUN {name} (redis) ===", flush=True)
         start = time.time()
         proc = subprocess.run(
             [sys.executable, str(p)],
-            cwd=str(ROOT.parent),
+            cwd=str(REPO),
             env=os.environ.copy(),
         )
         elapsed = time.time() - start
@@ -129,4 +128,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

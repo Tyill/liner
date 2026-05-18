@@ -66,6 +66,36 @@ class Client:
         if not inst.hClient_:
             raise Exception('error init sqlite client, check sqlite_path / receivers_json')
         return inst
+
+    @classmethod
+    def new_postgres(
+        cls,
+        uniqName: str,
+        topic: str,
+        localhost: str,
+        postgres_url: str,
+    ):
+        """PostgreSQL-backed client (``lnr_new_client_postgres``; library must be built with ``--features postgres``)."""
+        global lib_
+        if not lib_:
+            raise Exception('lib not load')
+        if not hasattr(lib_, 'lnr_new_client_postgres'):
+            raise Exception('lib built without postgres support (rebuild with --features postgres)')
+        inst = cls.__new__(cls)
+        pfun = lib_.lnr_new_client_postgres
+        pfun.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p)
+        pfun.restype = ctypes.c_void_p
+        inst.hClient_ = ctypes.c_void_p(
+            pfun(
+                uniqName.encode("utf-8"),
+                topic.encode("utf-8"),
+                localhost.encode("utf-8"),
+                postgres_url.encode("utf-8"),
+            )
+        )
+        if not inst.hClient_:
+            raise Exception('error init postgres client, check postgres_url')
+        return inst
                  
     def __enter__(self):
         return self
