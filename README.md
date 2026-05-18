@@ -1,8 +1,35 @@
 # liner
 
-Redis-, SQLite-, or PostgreSQL-backed message broker (serverless style catalog + TCP between peers).  
+<p align="center">
+  <img src="https://shields.io" alt="Release">
+  <img src="https://shields.io" alt="License">
+  <img src="https://shields.io" alt="Build Status">
+  <img src="https://shields.io" alt="Stars">
+</p>
+
+**liner** is a lightweight, serverless, peer-to-peer message broker written in Rust. It provides a robust, decentralized messaging mesh backed by your choice of Redis, SQLite, or PostgreSQL, communicating over pure TCP transport.
+
+---
+
+- **Decentralized Architecture:** True peer-to-peer mesh networking without a single point of failure.
+- **Flexible Storage Backends:** Choose between Redis, SQLite, or PostgreSQL based on your infrastructure needs.
+- **Delivery Guarantee:** Supports *At-least-once* message delivery mechanism.
+- **Cross-Language Support:** First-class clients available for **Rust**, **Python**, and **C++**.
+- **High Performance:** Designed for high message bandwidth and low latency via raw TCP.
+
+---
+
+## Supported Backends
+
+| Backend | Operational Mode | Best Used For |
+| :--- | :--- | :--- |
+| **SQLite** | Embedded (Single-file) | Zero-configuration, local development, edge/IoT devices |
+| **Redis** | In-memory key-value | Blazing-fast, ultra-low latency, ephemeral pub/sub |
+| **PostgreSQL**| Persistent relational DB | Heavy production workloads, strict persistence, cluster replication |
+
+---
+
 The library is written in Rust with a C interface.  
-Data transfer via TCP.
 
 SQLite: embedded single-file mode (no Redis process). See [docs/using-sqlite.md](docs/using-sqlite.md).
 
