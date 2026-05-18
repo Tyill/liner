@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+from pathlib import Path
 import sys
 import time
 import threading
@@ -10,7 +11,7 @@ import atexit
 import datetime
 
 module_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, module_path + "/..")
+sys.path.insert(0, str(Path(module_path).resolve().parent.parent.parent))
 
 from python import liner
 
@@ -90,7 +91,7 @@ def _log(msg: str):
 
 
 if __name__ == "__main__":
-    liner.loadLib(module_path + "/../target/release/libliner_broker.so")
+    liner.loadLib(str(Path(module_path).resolve().parent.parent.parent / "target/release/libliner_broker.so"))
 
     # Ensure Redis is available for the test. Prefer running an isolated instance via Docker.
     redis_container = os.environ.get("LINER_TEST_REDIS_CONTAINER", "liner-test-redis")

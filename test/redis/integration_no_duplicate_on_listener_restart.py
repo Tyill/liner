@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-Integration test: unsubscribe at runtime should stop receiving.
+Integration test: listener should not re-deliver already delivered messages after restart.
 
 Flow:
-- start listener, subscribe to "topic_sub_rt"
-- start sender, send => listener receives (count=1)
-- call listener.unsubscribe("topic_sub_rt")
-- sender sends again => listener should NOT receive (count stays 1)
+- start sender and listener
+- send exactly one message
+- wait listener receives it (count=1), then stop listener
+- start listener again with same identity
+- wait a bit and assert receive count did not increase (no duplicate delivery)
 
 Requires Redis. Auto-starts Redis via Docker if needed.
 """
@@ -24,7 +25,7 @@ import threading
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).resolve().parent
-PROJECT_ROOT = MODULE_PATH.parent
+PROJECT_ROOT = MODULE_PATH.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from python import liner  # noqa: E402
@@ -167,9 +168,8 @@ def main() -> int:
     _ensure_redis()
     redis_url = f"redis://{REDIS_HOST}:{REDIS_PORT}/"
 
-    sender_name, sender_topic = "sender_it_unsub", "topic_sender_it_unsub"
-    listener_name, listener_topic = "listener_it_unsub", "topic_listener_it_unsub"
-    sub_topic = "topic_sub_rt"
+    sender_name, sender_topic = "sender_it_dedup", "topic_sender_it_dedup"
+    listener_name, listener_topic = "listener_it_dedup", "topic_listener_it_dedup"
 
     sender_addr = f"localhost:{_free_port()}"
     listener_addr = f"localhost:{_free_port()}"
@@ -179,49 +179,53 @@ def main() -> int:
     s.clear_stored_messages()
     s.clear_addresses_of_topic()
 
-    # Listener.
+    # Ensure mapping exists.
+    _redis_cmd("DEL", f"lnr_topic:{listener_topic}:addr")
+    _redis_cmd("HSET", f"lnr_topic:{listener_topic}:addr", listener_addr, listener_name)
+
+    assert s.run(lambda _to, _from, _data: None), "sender failed to run"
+    s.refresh_address_topic(listener_topic)
+
     recv_lock = threading.Lock()
     recv_count = 0
-    got_first = threading.Event()
+    first = threading.Event()
 
-    l = liner.Client(listener_name, listener_topic, listener_addr, redis_url)
-
-    def on_recv(_to: str, _from: str, data: bytes):
+    def mk_listener():
         nonlocal recv_count
-        with recv_lock:
-            recv_count += 1
-        _log(f"[listener] recv {data!r} count={recv_count}")
-        got_first.set()
+        l = liner.Client(listener_name, listener_topic, listener_addr, redis_url)
 
-    assert l.run(on_recv), "listener failed to run"
-    assert l.subscribe(sub_topic), "subscribe failed"
+        def on_recv(_to: str, _from: str, data: bytes):
+            nonlocal recv_count
+            with recv_lock:
+                recv_count += 1
+            _log(f"[listener] recv {data!r} count={recv_count}")
+            first.set()
 
-    # Sender routing.
-    assert s.run(lambda _to, _from, _data: None), "sender failed to run"
-    s.refresh_address_topic(sub_topic)
+        assert l.run(on_recv), "listener failed to run"
+        return l
 
-    _log("[sender] send #1")
-    assert s.send_to(sub_topic, b"one", True), "send_to #1 failed"
-    _wait_until(lambda: got_first.is_set(), timeout_s=10.0, what="first receive")
+    l = mk_listener()
 
-    _log("[listener] unsubscribe runtime")
-    assert l.unsubscribe(sub_topic), "unsubscribe failed"
+    payload = b"dedup"
+    _log("[sender] send_to once")
+    assert s.send_to(listener_topic, payload, True), "send_to failed"
 
-    with recv_lock:
-        baseline = recv_count
-    got_first.clear()
+    _wait_until(lambda: first.is_set(), timeout_s=10.0, what="first receive")
 
-    # Send again; should not be received.
-    s.refresh_address_topic(sub_topic)
-    _log("[sender] send #2 after unsubscribe")
-    assert s.send_to(sub_topic, b"two", True), "send_to #2 failed"
-    time.sleep(2.5)
-    with recv_lock:
-        assert recv_count == baseline, f"unexpected receive after unsubscribe; delta={recv_count - baseline}"
-
+    # Stop listener and restart; should not re-deliver the same message.
     l.close()
+    time.sleep(0.8)
+    first.clear()
+    l2 = mk_listener()
+
+    # Wait a bit: no new messages expected.
+    time.sleep(3.0)
+    with recv_lock:
+        assert recv_count == 1, f"expected no duplicate delivery, got {recv_count}"
+
+    l2.close()
     s.close()
-    _log("OK integration_unsubscribe_runtime")
+    _log("OK integration_no_duplicate_on_listener_restart")
     return 0
 
 

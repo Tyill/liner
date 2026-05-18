@@ -2,7 +2,7 @@
 
 For **topic / delivery / error behavior** without store internals, see [behavior-topics-delivery-and-errors.md](behavior-topics-delivery-and-errors.md).
 
-This document is for **people debugging production**: what gets written to **Redis** or **SQLite**, how **topics** map to **TCP addresses**, and how **connection keys** relate to **offline queues**. The behavior is shared between backends unless noted.
+This document is for **people debugging production**: what gets written to **Redis**, **SQLite**, or **PostgreSQL**, how **topics** map to **TCP addresses**, and how **connection keys** relate to **offline queues**. The behavior is shared between backends unless noted.
 
 ## Concepts
 
@@ -64,9 +64,9 @@ All keys use the literal prefix **`lnr_`**. Placeholders:
 
 ---
 
-## SQLite schema (operator view)
+## SQL schema (SQLite and PostgreSQL)
 
-Single file database; **WAL** and **`busy_timeout`** are set on open (see [backends.md](backends.md)). Tables:
+**SQLite** uses a single file; **PostgreSQL** uses the **same table layout** on a shared server (see [using-postgres.md](using-postgres.md)). SQLite sets **WAL** and **`busy_timeout`** on open (see [backends.md](backends.md)). Tables:
 
 | Table | Role |
 |-------|------|
@@ -87,8 +87,8 @@ Single file database; **WAL** and **`busy_timeout`** are set on open (see [backe
 
 ## Quick “where do I look?”
 
-| Symptom | Redis | SQLite |
-|---------|-------|--------|
+| Symptom | Redis | SQLite / PostgreSQL |
+|---------|-------|---------------------|
 | No addresses for topic `T` | `HGETALL lnr_topic:T:addr` | `SELECT * FROM topic_addr WHERE topic = 'T';` |
 | Offline queue stuck | `LLEN lnr_connection:{id}:messages` | `SELECT COUNT(*) FROM conn_messages WHERE connection_key = ?;` |
 | Dedup / ack cursor | `GET lnr_connection:{id}:mess_number` | `SELECT v FROM conn_mess_number WHERE connection_key = ?;` |
@@ -99,6 +99,7 @@ Single file database; **WAL** and **`busy_timeout`** are set on open (see [backe
 ## Related
 
 - [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md) — `connection_key`, `number_mess`, reconnect timing.  
-- [backends.md](backends.md) — choosing Redis vs SQLite.  
+- [backends.md](backends.md) — choosing Redis vs SQLite vs PostgreSQL.
+- [using-postgres.md](using-postgres.md) — PostgreSQL URL and shared-DB workflow.  
 - [using-the-api.md](using-the-api.md) — `refresh_address_topic`, `clear_*` only when not running.
 - [operations-redis-sqlite.md](operations-redis-sqlite.md) — `clear_*` details, Redis version, SQLite backup.

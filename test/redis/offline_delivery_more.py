@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+from pathlib import Path
 import sys
 import time
 import socket
@@ -11,7 +12,7 @@ import datetime
 import threading
 
 module_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, module_path + "/..")
+sys.path.insert(0, str(Path(module_path).resolve().parent.parent.parent))
 
 from python import liner
 

@@ -1,34 +1,19 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
-"""
-Integration test: listener should not re-deliver already delivered messages after restart.
-
-Flow:
-- start sender and listener
-- send exactly one message
-- wait listener receives it (count=1), then stop listener
-- start listener again with same identity
-- wait a bit and assert receive count did not increase (no duplicate delivery)
-
-Requires Redis. Auto-starts Redis via Docker if needed.
-"""
-
 import os
+from pathlib import Path
 import sys
 import time
 import socket
 import atexit
 import subprocess
 import datetime
-import threading
-from pathlib import Path
 
-MODULE_PATH = Path(__file__).resolve().parent
-PROJECT_ROOT = MODULE_PATH.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+module_path = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, str(Path(module_path).resolve().parent.parent.parent))
 
-from python import liner  # noqa: E402
+from python import liner
 
 
 REDIS_HOST = "127.0.0.1"
@@ -51,6 +36,10 @@ def _wait_until(pred, timeout_s: float, sleep_s: float = 0.05, what: str = "cond
 
 
 def _redis_cmd(*args: str):
+    """
+    Minimal Redis client via RESP over TCP.
+    """
+
     def enc_bulk(s: bytes) -> bytes:
         return b"$" + str(len(s)).encode("ascii") + b"\r\n" + s + b"\r\n"
 
@@ -97,11 +86,7 @@ def _redis_cmd(*args: str):
 
 
 def _docker(*cmd: str) -> str:
-    return (
-        subprocess.check_output(["docker", *cmd], stderr=subprocess.STDOUT)
-        .decode("utf-8", errors="replace")
-        .strip()
-    )
+    return subprocess.check_output(["docker", *cmd], stderr=subprocess.STDOUT).decode("utf-8", errors="replace").strip()
 
 
 def _ensure_redis():
@@ -112,6 +97,7 @@ def _ensure_redis():
         pass
 
     redis_container = os.environ.get("LINER_TEST_REDIS_CONTAINER", "liner-test-redis")
+
     try:
         _docker("rm", "-f", redis_container)
     except Exception:
@@ -135,7 +121,6 @@ def _ensure_redis():
             pass
 
     atexit.register(_cleanup)
-
     def _ping_ok() -> bool:
         try:
             return _redis_cmd("PING") == "PONG"
@@ -153,82 +138,62 @@ def _free_port() -> int:
     return int(port)
 
 
-def _ensure_release_lib():
-    lib_path = PROJECT_ROOT / "target" / "release" / "libliner_broker.so"
-    if lib_path.exists():
-        return lib_path
-    subprocess.run(["cargo", "build", "--release"], cwd=str(PROJECT_ROOT), check=True)
-    if not lib_path.exists():
-        raise RuntimeError(f"release library not found at {lib_path}")
-    return lib_path
-
-
-def main() -> int:
-    liner.loadLib(str(_ensure_release_lib()))
+if __name__ == "__main__":
+    liner.loadLib(str(Path(module_path).resolve().parent.parent.parent / "target/release/libliner_broker.so"))
     _ensure_redis()
+
     redis_url = f"redis://{REDIS_HOST}:{REDIS_PORT}/"
 
-    sender_name, sender_topic = "sender_it_dedup", "topic_sender_it_dedup"
-    listener_name, listener_topic = "listener_it_dedup", "topic_listener_it_dedup"
+    sender_name, sender_topic = "sender_simple", "topic_sender_simple"
+    listener_name, listener_topic = "listener_simple", "topic_listener_simple"
 
     sender_addr = f"localhost:{_free_port()}"
     listener_addr = f"localhost:{_free_port()}"
 
-    # Clean sender state best-effort.
+    # Clean previous sender state (messages/listeners mapping).
     s = liner.Client(sender_name, sender_topic, sender_addr, redis_url)
     s.clear_stored_messages()
     s.clear_addresses_of_topic()
 
-    # Ensure mapping exists.
+    # Register listener mapping in redis but don't start listener process yet.
     _redis_cmd("DEL", f"lnr_topic:{listener_topic}:addr")
     _redis_cmd("HSET", f"lnr_topic:{listener_topic}:addr", listener_addr, listener_name)
 
-    assert s.run(lambda _to, _from, _data: None), "sender failed to run"
+    ok = s.run(lambda _to, _from, _data: None)
+    assert ok, "sender failed to run"
     s.refresh_address_topic(listener_topic)
 
-    recv_lock = threading.Lock()
-    recv_count = 0
-    first = threading.Event()
-
-    def mk_listener():
-        nonlocal recv_count
-        l = liner.Client(listener_name, listener_topic, listener_addr, redis_url)
-
-        def on_recv(_to: str, _from: str, data: bytes):
-            nonlocal recv_count
-            with recv_lock:
-                recv_count += 1
-            _log(f"[listener] recv {data!r} count={recv_count}")
-            first.set()
-
-        assert l.run(on_recv), "listener failed to run"
-        return l
-
-    l = mk_listener()
-
-    payload = b"dedup"
-    _log("[sender] send_to once")
+    payload = b"offline_simple"
+    _log(f"[sender] send_to {listener_topic} while offline payload={payload!r}")
     assert s.send_to(listener_topic, payload, True), "send_to failed"
 
-    _wait_until(lambda: first.is_set(), timeout_s=10.0, what="first receive")
+    # Connection key is deterministic.
+    conn_key_str = _redis_cmd("GET", f"lnr_connection:{sender_name}:{sender_topic}:{listener_name}:key")
+    assert conn_key_str, "missing connection key"
+    conn_key = int(conn_key_str)
+    list_key = f"lnr_connection:{conn_key}:messages"
 
-    # Stop listener and restart; should not re-deliver the same message.
+    _wait_until(lambda: int(_redis_cmd("LLEN", list_key)) > 0, timeout_s=8.0, what="redis persisted message")
+    pending = int(_redis_cmd("LLEN", list_key))
+    _log(f"[redis] conn_key={conn_key} pending={pending}")
+
+    # Start listener and expect delivery (sender retries connect every ~10s).
+    got = {"data": None}
+
+    def on_recv(_to: str, _from: str, data: bytes):
+        got["data"] = data
+        _log(f"[listener] recv from={_from} data={data!r}")
+
+    l = liner.Client(listener_name, listener_topic, listener_addr, redis_url)
+    ok = l.run(on_recv)
+    assert ok, "listener failed to run"
+
+    _wait_until(lambda: got["data"] is not None, timeout_s=25.0, what="listener receive after offline")
+    assert got["data"] == payload, f"unexpected payload: {got['data']!r}"
+
+    _wait_until(lambda: int(_redis_cmd("LLEN", list_key)) == 0, timeout_s=25.0, what="redis queue drain")
+    _log("OK offline_delivery_simple")
+
     l.close()
-    time.sleep(0.8)
-    first.clear()
-    l2 = mk_listener()
-
-    # Wait a bit: no new messages expected.
-    time.sleep(3.0)
-    with recv_lock:
-        assert recv_count == 1, f"expected no duplicate delivery, got {recv_count}"
-
-    l2.close()
     s.close()
-    _log("OK integration_no_duplicate_on_listener_restart")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
 

@@ -22,7 +22,18 @@ cargo test
 
 ## Integration tests and Python harness
 
-**Authoritative copy-paste commands**, Redis environment variables, Docker auto-start for Python tests, and `test/run_integration.py` options are maintained in the **Tests** part of the [project README](../README.md) (search for “Run Rust unit tests” / `LINER_TEST_REDIS` / `run_integration.py`).
+**Authoritative copy-paste commands** for Redis, SQLite, and PostgreSQL harnesses are in the **Tests** part of the [project README](../README.md).
+
+### Redis integration tests (`test/redis/`)
+
+Python integration scripts using a **shared Redis** URL (default `redis://localhost/`). From the repository root:
+
+```bash
+cargo build --release
+python3 test/redis/run_integration.py
+```
+
+`--list`, `--only`, and `--continue-on-fail` are supported. Some tests auto-start Redis via Docker; see README for `LINER_TEST_REDIS_*` variables. Integration scripts live under **`test/redis/`** (not the repo-root `test/` folder).
 
 ### SQLite integration tests (`test/sqlite/`)
 
@@ -32,9 +43,22 @@ A parallel set of scenarios using a **shared SQLite file** (no Redis). From the 
 python3 test/sqlite/run_integration.py
 ```
 
-`--list`, `--only`, and `--continue-on-fail` match `test/run_integration.py`. You need a built **`target/release/libliner_broker.so`** and **`python/liner.py`** with **`Client.new_sqlite`**.
+`--list`, `--only`, and `--continue-on-fail` match `test/redis/run_integration.py`. You need a built **`target/release/libliner_broker.so`** and **`python/liner.py`** with **`Client.new_sqlite`**.
 
 Tests seed the “listener offline” catalog via **`receivers_json`** at client construction; do not run ad-hoc `sqlite3` on the same file while liner clients on that path are still alive (risk of process crash).
+
+### PostgreSQL integration tests (`test/postgres/`)
+
+Same scenarios as `test/sqlite/`, using a **shared PostgreSQL database** (no `receivers_json`; catalog lives in the DB). From the repository root:
+
+```bash
+export LINER_TEST_POSTGRES_URL='postgresql://user:pass@127.0.0.1/liner_test'
+cargo build --release --features postgres
+pip install psycopg2-binary   # for catalog / queue inspection in tests
+python3 test/postgres/run_integration.py
+```
+
+`--list`, `--only`, and `--continue-on-fail` match `test/sqlite/run_integration.py`. Requires **`Client.new_postgres`** in `python/liner.py` and a library built with **`--features postgres`**. How-to: [using-postgres.md](using-postgres.md).
 
 ## Contributing
 

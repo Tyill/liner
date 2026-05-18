@@ -2,17 +2,18 @@
 # -*- coding: utf-8 -*-
 
 import os
+from pathlib import Path
 import argparse
 import sys
 import asyncio
 
 module_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, module_path + "/..")
+sys.path.insert(0, str(Path(module_path).resolve().parent.parent.parent))
 
 from python import liner 
 
 module_path = os.path.dirname(os.path.abspath(__file__))
-liner.loadLib(module_path + "/../target/release/libliner_broker.so")
+liner.loadLib(str(Path(module_path).resolve().parent.parent.parent / "target/release/libliner_broker.so"))
     
 if __name__ == "__main__":
     

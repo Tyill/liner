@@ -32,6 +32,11 @@ name = "bench_pair_sendto_sqlite"
 path = "benchmark/bench_pair_sendto_sqlite.rs"
 
 [[bin]]
+name = "bench_pair_sendto_postgres"
+path = "benchmark/bench_pair_sendto_postgres.rs"
+required-features = ["postgres"]
+
+[[bin]]
 name = "one_to_one"
 path = "rust/one_to_one.rs"
 
@@ -59,10 +64,12 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 rayon = "1.10"
 zstd = "0.13"
 libc = "0.2"
-mio = { version = "1", features = ["os-poll", "net"] } 
+mio = { version = "1", features = ["os-poll", "net"] }
+postgres = { version = "0.19", optional = true }
 
 [features]
 liner_debug = []
+postgres = ["dep:postgres"]
 
 [profile.release]
 panic = "abort"

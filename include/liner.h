@@ -58,6 +58,10 @@ LINER_API lnr_hClient lnr_new_client_redis(const char* unique_name, const char* 
 /// @return lnr_hClient
 LINER_API lnr_hClient lnr_new_client_sqlite(const char* unique_name, const char* topic, const char* localhost, const char* sqlite_path, const char* receivers_json);
 
+/// Create new client backed by PostgreSQL (libpq URL, e.g. postgresql://user:pass@127.0.0.1/liner).
+/// Available only when liner_broker was built with Cargo feature `postgres` (`--features postgres`).
+LINER_API lnr_hClient lnr_new_client_postgres(const char* unique_name, const char* topic, const char* localhost, const char* postgres_url);
+
 #if defined(__GNUC__) || defined(__clang__)
 #define LINER_DEPRECATED __attribute__((deprecated))
 #elif defined(_MSC_VER)
