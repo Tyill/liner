@@ -1,154 +1,157 @@
 # liner
 
-**liner** is a lightweight, serverless, peer-to-peer message broker written in Rust. It provides a robust, decentralized messaging mesh backed by your choice of Redis, SQLite, or PostgreSQL, communicating over pure TCP transport.
+**liner** is a lightweight, serverless, peer-to-peer message broker written in Rust. It provides a decentralized messaging mesh backed by Redis, SQLite, or PostgreSQL, with pure TCP between peers.
+
+- **Decentralized architecture** — peer-to-peer mesh, no central broker process.
+- **Flexible storage** — Redis, SQLite, or PostgreSQL ([backends](#supported-backends)).
+- **At-least-once delivery** — store-backed persistence and offline queues (per backend).
+- **Cross-language** — **Rust**, **Python**, and **C++** (C API).
+- **High message bandwidth** — raw TCP; see [benchmark](#benchmark).
+- **Messaging patterns** — one-to-one, one-to-many, many-to-many, topic subscription.
+- **Unlimited payload size** — not fixed by the wire format.
+- **Cross-platform** — Linux and Windows.
 
 ---
 
-- **Decentralized Architecture:** True peer-to-peer mesh networking without a single point of failure.
-- **Flexible Storage Backends:** Choose between Redis, SQLite, or PostgreSQL based on your infrastructure needs.
-- **Delivery Guarantee:** Supports *At-least-once* message delivery mechanism.
-- **Cross-Language Support:** First-class clients available for **Rust**, **Python**, and **C++**.
-- **High Performance:** Designed for high message bandwidth and low latency via raw TCP.
+### Supported backends
 
----
-
-### Supported Backends
-
-| Backend | Operational Mode | Best Used For |
+| Backend | Mode | Best for |
 | :--- | :--- | :--- |
-| **SQLite** | Embedded (Single-file) | Zero-configuration, local development, edge/IoT devices |
-| **Redis** | In-memory key-value | Blazing-fast, ultra-low latency, ephemeral pub/sub |
-| **PostgreSQL**| Persistent relational DB | Heavy production workloads, strict persistence, cluster replication |
+| **SQLite** | Embedded single-file | Local dev, edge/IoT, zero extra services |
+| **Redis** | In-memory key-value | Low latency, ephemeral catalog |
+| **PostgreSQL** | Shared relational DB | Production persistence, ops familiarity |
+
+- **SQLite** — per-process files; `receivers_json` seeds peers on isolated DBs. See [using-sqlite.md](docs/using-sqlite.md).
+- **PostgreSQL** — one shared database URL (Cargo feature `postgres`). See [using-postgres.md](docs/using-postgres.md).
 
 ---
 
-The library is written in Rust with a C interface.  
+### Quick example (Redis)
 
-SQLite: embedded single-file mode (no Redis process). See [docs/using-sqlite.md](docs/using-sqlite.md).
+Rust:
 
-PostgreSQL: shared SQL store (optional `postgres` Cargo feature). See [docs/using-postgres.md](docs/using-postgres.md).
-
-Rust example:  
-``` Rust
+```rust
 use liner_broker::Liner;
 
-fn  main() {
-
+fn main() {
     let mut client1 = Liner::new("client1", "topic_client1", "localhost:2255", "redis://localhost/");
     let mut client2 = Liner::new("client2", "topic_client2", "localhost:2256", "redis://localhost/");
-   
-    client1.run(Box::new(|_to: &str, _from: &str, _data: &[u8]|{
-        println!("receive_from {}", _from);
-    }));
-    client2.run(Box::new(|_to: &str, _from: &str, _data: &[u8]|{
-        println!("receive_from {}", _from);
-    }));
 
-    let array = [0; 100];
-    for _ in 0..10{
-        client1.send_to("topic_client2", array.as_slice(), true);
-        println!("send_to client2");       
+    client1.run(Box::new(|_to, from, _data| println!("receive_from {}", from)));
+    client2.run(Box::new(|_to, _from, _data| {}));
+
+    let payload = [0u8; 100];
+    for _ in 0..10 {
+        client1.send_to("topic_client2", &payload, true);
     }
 }
 ```
 
-Python example:  
-``` Python
-def foo():
-    client1 = liner.Client("client1", "topic_client", "localhost:2255", "redis://localhost/")
-    client2 = liner.Client("client2", "topic_client", "localhost:2256", "redis://localhost/")
-    server = liner.Client("server", "topic_server", "localhost:2257", "redis://localhost/")
-    
-    client1.run(receive_cback1)
-    client2.run(receive_cback2)
-    server.run(receive_server)
-    
-    b = bytearray(b'hello world')
-    server.send_all("topic_client", b)  # optional third arg: at_least_once (default True)
-    
+Python:
 
-def receive_cback1(to: str, from_: str, data: bytes):
+```python
+import liner
+
+liner.loadLib("./target/release/libliner_broker.so")
+
+def on_msg(_to: str, from_: str, data: bytes):
     print(f"receive_from {from_}, data: {data}")
 
-def receive_cback2(to: str, from_: str, data: bytes):
-    print(f"receive_from {from_}, data: {data}")
+client1 = liner.Client("client1", "topic_client", "localhost:2255", "redis://localhost/")
+client2 = liner.Client("client2", "topic_client", "localhost:2256", "redis://localhost/")
 
-def receive_server(to: str, from_: str, data: bytes):
-    print(f"receive_from {from_}, data: {data}")
-    
+client1.run(on_msg)
+client2.run(on_msg)
+
+client1.send_to("topic_client", b"hello", True)
 ```
 
-### Features
+SQLite / PostgreSQL constructors: `Liner::new_sqlite`, `Client.new_sqlite`, `Liner::new_postgres`, `Client.new_postgres` — see docs below.
 
- - high message bandwidth ([benchmark](#benchmark))
+---
 
- - delivery guarantee: at least once delivery (store-backed: Redis or SQLite)
-
- - SQLite backend: file per deployment / per process; **isolated files = one-to-one only** unless you share one DB path or maintain `connection_key` manually ([docs/using-sqlite.md](docs/using-sqlite.md#isolated-dbs-one-to-one-only-multi-peer-limitation))
-
- - message size is not predetermined and is not limited
-
- - easy api: run client and send data to 
-
- - interface for Python and CPP
-
- - crossplatform (linux, windows)
- 
- - various messaging options: one-to-one, one-to-many, many-to-many, and topic subscription 
- 
 ### Build
- - install [Rust and Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html)
- - execute: `cargo build --release`
- 
-### Architecture of library
 
-<p float="left">
- <img src="docs/img/arch.png" 
-  width="500" height="300" alt="lorem">
-</p>
+Install [Rust and Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html), then:
+
+```bash
+cargo build --release
+```
+
+PostgreSQL backend:
+
+```bash
+cargo build --release --features postgres
+```
+
+---
+
+### Architecture
+
+![Library architecture](docs/img/arch.png)
+
+---
 
 ### Examples of use
 
-One to one: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_one.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/one_to_one.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/one_to_one.rs)
+One to one: [Python](python/one_to_one.py) / [CPP](cpp/one_to_one.cpp) / [Rust](rust/one_to_one.rs)
 
 <p float="left">
- <img src="docs/img/one_to_one.gif" 
-  width="500" height="150" alt="lorem">
+  <img src="docs/img/one_to_one.gif" width="500" height="150" alt="One-to-one messaging demo">
 </p>
 
-One to one for many: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_one_for_many.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/one_to_one_for_many.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/one_to_one_for_many.rs)
+One to one for many: [Python](python/one_to_one_for_many.py) / [CPP](cpp/one_to_one_for_many.cpp) / [Rust](rust/one_to_one_for_many.rs)
+
 <p float="left">
- <img src="docs/img/one_to_one_for_many.gif" 
-  width="500" height="200" alt="lorem">
+  <img src="docs/img/one_to_one_for_many.gif" width="500" height="200" alt="One-to-one for many demo">
 </p>
 
-One to many: [Python](https://github.com/Tyill/liner/blob/main/python/one_to_many.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/one_to_many.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/one_to_many.rs)
+One to many: [Python](python/one_to_many.py) / [CPP](cpp/one_to_many.cpp) / [Rust](rust/one_to_many.rs)
+
 <p float="left">
- <img src="docs/img/one_to_many.gif" 
-  width="500" height="200" alt="lorem">
+  <img src="docs/img/one_to_many.gif" width="500" height="200" alt="One-to-many messaging demo">
 </p>
 
-Many to many: [Python](https://github.com/Tyill/liner/blob/main/python/many_to_many.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/many_to_many.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/many_to_many.rs)
+Many to many: [Python](python/many_to_many.py) / [CPP](cpp/many_to_many.cpp) / [Rust](rust/many_to_many.rs)
+
 <p float="left">
- <img src="docs/img/many_to_many.gif" 
-  width="500" height="200" alt="lorem">
+  <img src="docs/img/many_to_many.gif" width="500" height="200" alt="Many-to-many messaging demo">
 </p>
 
-Producer-consumer: [Python](https://github.com/Tyill/liner/blob/main/python/producer_consumer.py) / [CPP](https://github.com/Tyill/liner/blob/main/cpp/producer_consumer.cpp) / [Rust](https://github.com/Tyill/liner/blob/main/rust/producer_consumer.rs)
+Producer-consumer: [Python](python/producer_consumer.py) / [CPP](cpp/producer_consumer.cpp) / [Rust](rust/producer_consumer.rs)
+
 <p float="left">
- <img src="docs/img/producer_consumer.gif" 
-  width="500" height="200" alt="lorem">
+  <img src="docs/img/producer_consumer.gif" width="500" height="200" alt="Producer-consumer demo">
 </p>
 
-### [Benchmark](https://github.com/Tyill/liner/blob/main/benchmark)
+---
 
-Two binaries stress the same **pair of clients + `send_to`** workload; only the **store** differs:
+### Benchmark
 
-- **`bench_pair_sendto_redis`** — Redis catalog (`redis://localhost/`). `cargo build --release --bin bench_pair_sendto_redis` → `./bench_pair_sendto_redis`.
-- **`bench_pair_sendto_sqlite`** — **one** shared temp SQLite file for both clients (same idea as one Redis URL), so listener acks and sender reads hit the same `conn_mess_number`. Fixed bind addresses; each side’s `receivers_json` lists **only the peer** (topic / addr / `client_name`). `cargo build --release --bin bench_pair_sendto_sqlite` → `./bench_pair_sendto_sqlite`.
+Three binaries run the same workload: **two clients, `send_to` loop** (10k messages × 100 cycles). Only the store differs ([`benchmark/`](benchmark/)).
 
+| Binary | Store | Notes |
+| :--- | :--- | :--- |
+| `bench_pair_sendto_redis` | Redis | `redis://localhost/`, default build |
+| `bench_pair_sendto_sqlite` | SQLite | Two temp `.sqlite` files; fixed ports; each side seeds the peer via `receivers_json` |
+| `bench_pair_sendto_postgres` | PostgreSQL | One shared URL; `cargo build --release --features postgres` |
+
+```bash
+cargo build --release --bin bench_pair_sendto_redis
+./target/release/bench_pair_sendto_redis
+
+cargo build --release --bin bench_pair_sendto_sqlite
+./target/release/bench_pair_sendto_sqlite
+
+export LINER_BENCH_POSTGRES_URL='postgresql://user:pass@127.0.0.1/liner_test'
+cargo build --release --features postgres --bin bench_pair_sendto_postgres
+./target/release/bench_pair_sendto_postgres
 ```
-alex@ubuntu2004:~/projects/rust/liner/target/release$ ./bench_pair_sendto_redis 
+
+Sample output (liner + Redis, 10k messages per cycle):
+
+```text
+$ ./bench_pair_sendto_redis
 send_to 8 ms
 receive_from 8 ms
 send_to 5 ms
@@ -160,12 +163,15 @@ receive_from 3 ms
 send_to 6 ms
 receive_from 3 ms
 ```
-10ms on average for 10k messages
 
-```
-alex@ubuntu2004:~/projects/rust/liner/benchmark/compare_with_zeromq$ make
+About **10 ms** on average for 10k messages.
+
+Comparison with [ZeroMQ](benchmark/compare_with_zeromq/) on the same machine (`make` && `./compare_with_zmq`):
+
+```text
+$ make
 g++ -Wall -O2 -std=c++17 -g -Wno-write-strings -o compare_with_zmq compare_with_zmq.cpp -lzmq
-alex@ubuntu2004:~/projects/rust/liner/benchmark/compare_with_zeromq$ ./compare_with_zmq 
+$ ./compare_with_zmq
 Connecting to tcp://127.0.0.1:34079
 send_to 20.198 ms
 send_to 16.504 ms
@@ -178,47 +184,31 @@ send_to 11.119 ms
 send_to 11.348 ms
 send_to 10.826 ms
 ```
-For ZeroMQ it is similar
 
-### [Tests](https://github.com/Tyill/liner/blob/main/test)
+For ZeroMQ it is similar (on the order of ~10 ms per 10k messages).
 
-Run Rust unit tests:
+---
+
+### Tests
+
+Rust unit tests:
 
 ```bash
 cargo test
+# PostgreSQL store tests (optional):
+LINER_TEST_POSTGRES_URL='postgresql://user:pass@127.0.0.1/liner_test' \
+  cargo test --features postgres
 ```
 
-Run Rust integration test with Redis (ignored by default):
+Python integration suites (build release library first):
 
 ```bash
-LINER_TEST_REDIS=redis://localhost/ cargo test --test offline_delivery_redis -- --ignored
-
 cargo build --release
 python3 test/redis/run_integration.py --list
-```
-
-Redis-backed integration tests live under **`test/redis/`** (same scenarios as before the move). You can filter or keep running after failures:
-
-```bash
-python3 test/redis/run_integration.py --only offline,burst
-python3 test/redis/run_integration.py --continue-on-fail
-```
-
-Python tests will auto-start Redis via Docker if it isn't reachable.
-You can customize the port/container name:
-
-```bash
-LINER_TEST_REDIS_PORT=16379 LINER_TEST_REDIS_CONTAINER=liner-test-redis python3 test/redis/offline_delivery_more.py
-```
-
-SQLite-backed Python integration tests (no Redis; shared temp DB per script):
-
-```bash
-cargo build --release
 python3 test/sqlite/run_integration.py
 ```
 
-PostgreSQL-backed Python integration tests (shared DB; build with `--features postgres`):
+PostgreSQL (requires `postgres` feature and a running database):
 
 ```bash
 export LINER_TEST_POSTGRES_URL='postgresql://user:pass@127.0.0.1/liner_test'
@@ -226,14 +216,25 @@ cargo build --release --features postgres
 python3 test/postgres/run_integration.py
 ```
 
+Redis tests under **`test/redis/`** auto-start Redis via Docker when needed. Optional env:
+
+```bash
+LINER_TEST_REDIS_PORT=16379 LINER_TEST_REDIS_CONTAINER=liner-test-redis \
+  python3 test/redis/run_integration.py --only offline,burst
+```
+
+---
+
 ### Docs
 
-- [Using SQLite (`new_sqlite`, `receivers_json`, reference test walkthrough)](docs/using-sqlite.md)
-- [Using PostgreSQL (`--features postgres`, shared database, integration tests)](docs/using-postgres.md)
+- [Using SQLite](docs/using-sqlite.md) — `new_sqlite`, `receivers_json`, isolated DB limits
+- [Using PostgreSQL](docs/using-postgres.md) — `--features postgres`, shared database
 - [Crate API on docs.rs](https://docs.rs/liner_broker/1.3.0/liner_broker/)
-- [Developer notes (errors, backends, C API, lifecycle)](docs/README.md)
-- [C API compatibility and building (symbols, `cargo`, Linux/Windows)](docs/c-api-compatibility-and-build.md)
+- [Developer notes](docs/README.md) — errors, backends, C API, lifecycle
+- [C API compatibility and build](docs/c-api-compatibility-and-build.md)
+
+---
 
 ### License
-Licensed under an [MIT-2.0]-[license](LICENSE).
 
+Licensed under the [MIT License](LICENSE).
