@@ -2,14 +2,14 @@
 
 **liner** is a lightweight, serverless, peer-to-peer message broker written in Rust. It provides a decentralized messaging mesh backed by Redis, SQLite, or PostgreSQL, with pure TCP between peers.
 
-- **Decentralized architecture** — peer-to-peer mesh, no central broker process.
-- **Flexible storage** — Redis, SQLite, or PostgreSQL ([backends](#supported-backends)).
-- **At-least-once delivery** — store-backed persistence and offline queues (per backend).
-- **Cross-language** — **Rust**, **Python**, and **C++** (C API).
-- **High message bandwidth** — raw TCP; see [benchmark](#benchmark).
-- **Messaging patterns** — one-to-one, one-to-many, many-to-many, topic subscription.
-- **Unlimited payload size** — not fixed by the wire format.
-- **Cross-platform** — Linux and Windows.
+- Decentralized architecture — peer-to-peer mesh, no central broker process.
+- Flexible storage — Redis, SQLite, or PostgreSQL ([backends](#supported-backends)).
+- At-least-once delivery — store-backed persistence and offline queues (per backend).
+- Cross-language — Rust, Python, and C++ (C API).
+- High message bandwidth — raw TCP; see [benchmark](#benchmark).
+- Messaging patterns — one-to-one, one-to-many, many-to-many, topic subscription.
+- Unlimited payload size — not fixed by the wire format.
+- Cross-platform — Linux and Windows.
 
 ---
 
@@ -17,12 +17,12 @@
 
 | Backend | Mode | Best for |
 | :--- | :--- | :--- |
-| **SQLite** | Embedded single-file | Local dev, edge/IoT, zero extra services |
-| **Redis** | In-memory key-value | Low latency, ephemeral catalog |
-| **PostgreSQL** | Shared relational DB | Production persistence, ops familiarity |
+| SQLite | Embedded single-file | Local dev, edge/IoT, zero extra services |
+| Redis | In-memory key-value | Low latency, ephemeral catalog |
+| PostgreSQL | Shared relational DB | Production persistence, ops familiarity |
 
-- **SQLite** — per-process files; `receivers_json` seeds peers on isolated DBs. See [using-sqlite.md](docs/using-sqlite.md).
-- **PostgreSQL** — one shared database URL (Cargo feature `postgres`). See [using-postgres.md](docs/using-postgres.md).
+- SQLite — per-process files; `receivers_json` seeds peers on isolated DBs. See [using-sqlite.md](docs/using-sqlite.md).
+- PostgreSQL — one shared database URL (Cargo feature `postgres`). See [using-postgres.md](docs/using-postgres.md).
 
 ---
 
