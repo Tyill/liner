@@ -14,6 +14,7 @@ Supplements the [crate docs on docs.rs](https://docs.rs/liner_broker/) and the p
 | [store-startup-failure-semantics.md](store-startup-failure-semantics.md) | Client vs listener/sender store failures and fail-fast startup |
 | [errors-and-logging.md](errors-and-logging.md) | How errors surface (C `BOOL`, Rust `bool` / `Option`, stderr logging) |
 | [backends.md](backends.md) | Redis vs SQLite vs PostgreSQL: URLs, files, locking, `unique_name` |
+| [using-redis.md](using-redis.md) | **Redis how-to:** `new_redis`, shared URL, `lnr_*` keys, C/Rust/Python, `test/redis/` |
 | [using-sqlite.md](using-sqlite.md) | **SQLite how-to:** `new_sqlite`, `receivers_json`, C API, reference test walkthrough |
 | [using-postgres.md](using-postgres.md) | **PostgreSQL how-to:** `--features postgres`, shared URL, C/Rust/Python, tests |
 | [using-the-api.md](using-the-api.md) | Lifecycle, threading, common pitfalls |

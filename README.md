@@ -21,6 +21,7 @@
 | Redis | In-memory key-value | Low latency, ephemeral catalog |
 | PostgreSQL | Shared relational DB | Production persistence, ops familiarity |
 
+- Redis — shared URL, default build. See [using-redis.md](docs/using-redis.md).
 - SQLite — per-process files; `receivers_json` seeds peers on isolated DBs. See [using-sqlite.md](docs/using-sqlite.md).
 - PostgreSQL — one shared database URL (Cargo feature `postgres`). See [using-postgres.md](docs/using-postgres.md).
 
@@ -227,6 +228,7 @@ LINER_TEST_REDIS_PORT=16379 LINER_TEST_REDIS_CONTAINER=liner-test-redis \
 
 ### Docs
 
+- [Using Redis](docs/using-redis.md) — `new_redis`, shared URL, `test/redis/`
 - [Using SQLite](docs/using-sqlite.md) — `new_sqlite`, `receivers_json`, isolated DB limits
 - [Using PostgreSQL](docs/using-postgres.md) — `--features postgres`, shared database
 - [Crate API on docs.rs](https://docs.rs/liner_broker/1.3.1/liner_broker/)

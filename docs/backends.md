@@ -4,7 +4,7 @@ All backends implement the same internal `Store` contract so clients, listeners,
 
 ## Choosing a backend
 
-- **Redis** — shared in-memory/disk persistence, multiple hosts, good for distributed deployments. Pass a **Redis URL** (for example `redis://127.0.0.1/`). Always available in default builds.
+- **Redis** — shared in-memory/disk persistence, multiple hosts, good for distributed deployments. Pass a **Redis URL** (for example `redis://127.0.0.1/`). Always available in default builds. Step-by-step: [using-redis.md](using-redis.md).
 - **SQLite** — single file, no separate server process, good for embedded or single-machine tests. Pass a **filesystem path** to the database file.
 - **PostgreSQL** — shared SQL database (like Redis), durable tables, optional **`postgres`** Cargo feature. Pass a **libpq URL** (for example `postgresql://user:pass@127.0.0.1/liner`). Step-by-step: [using-postgres.md](using-postgres.md).
 
@@ -28,6 +28,8 @@ Typical steps: (1) peer A **`run`** on its DB and topic; (2) read **`bound_liste
 The `unique_name` string identifies this client instance in the store (together with topics and addresses). With **Redis** or **PostgreSQL**, peers that should share routing and offline queues use the **same URL** and compatible topic/address data. With **SQLite**, processes that share **one database file** on a host see the same catalog; **separate files** do not—use **`receivers_json`** (or out-of-band SQL) to align `topic_key` and addresses (see *Isolated SQLite* above). Each **running client** still needs a **distinct** `unique_name` (and typically its own TCP `localhost` binding).
 
 ## Redis
+
+**Step-by-step usage (shared URL, C/Rust/Python, `test/redis/`, benchmark):** [using-redis.md](using-redis.md).
 
 - Connection uses the official `redis` crate: **`Client::open`** then **`get_connection`** during `Redis::new`. If the server is down, **`Client::new_*` returns `None`** / C **`NULL`**.
 - Further operations may fail with **`DbError`** messages originating from Redis (timeouts, connection drops, etc.). Those surface as failed API calls and stderr logs, not necessarily as process exit.

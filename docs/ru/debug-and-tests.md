@@ -33,7 +33,7 @@ cargo build --release
 python3 test/redis/run_integration.py
 ```
 
-Поддерживаются `--list`, `--only`, `--continue-on-fail`. Часть тестов поднимает Redis через Docker; переменные `LINER_TEST_REDIS_*` — в README.
+Поддерживаются `--list`, `--only`, `--continue-on-fail`. Часть тестов поднимает Redis через Docker; переменные `LINER_TEST_REDIS_*` — в README. Пошагово: [using-redis.md](using-redis.md).
 
 ### Интеграционные тесты на SQLite (`test/sqlite/`)
 
@@ -58,7 +58,7 @@ pip install psycopg2-binary
 python3 test/postgres/run_integration.py
 ```
 
-Подробнее: [using-postgres.md](using-postgres.md).
+Подробнее: [using-redis.md](using-redis.md), [using-postgres.md](using-postgres.md).
 
 ## Участие в разработке
 

@@ -33,7 +33,7 @@ cargo build --release
 python3 test/redis/run_integration.py
 ```
 
-`--list`, `--only`, and `--continue-on-fail` are supported. Some tests auto-start Redis via Docker; see README for `LINER_TEST_REDIS_*` variables. Integration scripts live under **`test/redis/`** (not the repo-root `test/` folder).
+`--list`, `--only`, and `--continue-on-fail` are supported. Some tests auto-start Redis via Docker; see README for `LINER_TEST_REDIS_*` variables. Integration scripts live under **`test/redis/`** (not the repo-root `test/` folder). How-to: [using-redis.md](using-redis.md).
 
 ### SQLite integration tests (`test/sqlite/`)
 
