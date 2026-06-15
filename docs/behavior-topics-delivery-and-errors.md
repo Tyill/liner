@@ -21,7 +21,11 @@ That topic is the client’s **source topic**. The API **forbids** sending to it
 - If **no addresses** are registered, the send fails (“not found addr for topic …”).
 - If **several addresses** exist (multiple clients on the same topic name), **`send_to`** picks **one address per call** using **round-robin** over the cached list. **`send_all`** sends the same payload **once per registered address** (broadcast to every replica listed for that topic).
 
-The client **caches** addresses after the first successful lookup. If a peer moves to a **new port** or a new replica appears, call **`refresh_address_topic(topic)`** so the cache is refreshed from the store (see [using-the-api.md](using-the-api.md)).
+The client **caches** addresses after the first successful lookup. While peers are running, the **internal channel** (`__#internal_channel`) refreshes that cache on connect, disconnect, subscribe, and unsubscribe (see [using-the-api.md](using-the-api.md)). Call **`refresh_address_topic(topic)`** when you need to force a reload—for example after a port change without a clean disconnect, a subscribe-before-`run` race, or when the sender was offline while peers registered.
+
+### Internal channel (peer discovery)
+
+On **`run`**, each client auto-subscribes to **`__#internal_channel`**. The library exchanges JSON control events between peers and updates address caches **without** invoking the application receive callback. In the common case, senders do not need manual **`refresh_address_topic`** after peers **`run`** or **`subscribe`** at runtime. See [using-the-api.md](using-the-api.md) for edge cases (pre-`run` subscribe, races, stale cache).
 
 ### Subscriptions (receive side)
 

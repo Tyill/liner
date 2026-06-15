@@ -21,8 +21,33 @@
 ## Topics and addresses
 
 - You cannot **`send_to` / `send_all` / `subscribe` / `unsubscribe`** to your **own** source topic; those calls fail with an error message.
-- **`send_to` / `send_all`** need known addresses for the destination topic. The client caches addresses from the store; use **`refresh_address_topic`** when a new peer registers under the same topic name.
+- **`send_to` / `send_all`** need known addresses for the destination topic. The client caches addresses from the store (see **Internal channel** below).
 - If no addresses exist for a topic, send fails with “not found addr for topic …”.
+- You cannot **`subscribe` / `unsubscribe`** the reserved internal topic **`__#internal_channel`** via the public API; the library subscribes automatically on **`run`**.
+
+### Internal channel (`__#internal_channel`)
+
+Every running client is subscribed to the reserved topic **`__#internal_channel`**. The broker uses it for **control events only** (not delivered to your receive callback):
+
+| Event | When | Effect on other clients |
+|-------|------|-------------------------|
+| `client_connected` | after **`run`** | refresh address cache for the peer’s **source topic** and for the internal channel |
+| `client_disconnected` | on client teardown | same refresh from the store |
+| `subscribed` | after **`subscribe`** while running | refresh cache for the **subscribed topic** |
+| `unsubscribed` | after **`unsubscribe`** while running | refresh cache for that topic |
+
+Payloads are JSON, for example: `{"event":"subscribed","client":"peer_name","topic":"foo"}`.
+
+**Typical mesh (happy path):** a producer does **not** need **`refresh_address_topic`** before every **`send_to`** when peers **`run`** or **`subscribe`** while the producer is already running — peers pull each other’s routes via these events.
+
+**Nuances — when `refresh_address_topic` may still be needed:**
+
+1. **Subscribe before `run`** — `subscribe` queues locally and registers in the store, but no `subscribed` event is emitted until the client is running. Other peers learn the route on the first **`send_to`** if their cache is empty (lookup from the store), or after **`refresh_address_topic`**.
+2. **Race** — a peer just subscribed; the internal event has not arrived yet. The first **`send_to`** may fail; retry shortly or call **`refresh_address_topic`**.
+3. **Stale cache** — a peer re-registered on a **new port** without a clean disconnect/disconnect event sequence. Call **`refresh_address_topic(topic)`** to force a reload from the store.
+4. **Producer was not running** when the peer registered — no internal events were processed; refresh or send (empty cache loads from the store on first lookup).
+
+**`refresh_address_topic`** remains the explicit way to force a cache reload; it is optional in the common runtime connect/subscribe flow.
 
 ## Offline / persistence flags
 

@@ -27,7 +27,7 @@
    Sender сохраняет **`save_listener_for_sender(addr, listener_topic)`**, чтобы после рестарта можно было **`get_listeners_of_sender`** и снова подключиться к тем же пирам.
 
 4. **Устаревший кэш адресов**  
-   Клиент кэширует адреса по топику в памяти. Если пир перерегистрировался на **новом** порту, вызывающему коду может понадобиться **`refresh_address_topic`**, чтобы обновить кэш из хранилища (см. [using-the-api.md](using-the-api.md)).
+   Клиент кэширует адреса по топику в памяти. Пока пиры работают, **внутренний канал** (`__#internal_channel`) обновляет кэш при connect/disconnect/subscribe/unsubscribe. **`refresh_address_topic`** — принудительное чтение из store (смена порта, гонки, подписка до `run`) — см. [using-the-api.md](using-the-api.md).
 
 5. **Порядок в SQLite**  
    Адреса для топика читаются **`ORDER BY addr ASC`**, что влияет на порядок round-robin. В Redis используется порядок **`HGETALL`** (на порядок для операций не полагайтесь).

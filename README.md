@@ -1,5 +1,7 @@
 # liner
 
+[![CI](https://github.com/Tyill/liner/actions/workflows/ci.yml/badge.svg)](https://github.com/Tyill/liner/actions/workflows/ci.yml)
+
 **liner** is a lightweight, serverless, peer-to-peer message broker written in Rust. It provides a decentralized messaging mesh backed by Redis, SQLite, or PostgreSQL, with pure TCP between peers.
 
 - Decentralized architecture — peer-to-peer mesh, no central broker process.

@@ -14,7 +14,7 @@
 
 **Не подходит**, если нужен **один переносимый файл без сервера** — **SQLite**. Для **SQL и таблиц** — **PostgreSQL** ([using-postgres.md](using-postgres.md)).
 
-У Redis-клиентов **нет `receivers_json`**. Пиры видят друг друга после **`run`** или через **`refresh_address_topic`** (как у PostgreSQL).
+У Redis-клиентов **нет `receivers_json`**. Пиры видят друг друга после **`run`**; **внутренний канал** синхронизирует кэш адресов в рантайме (см. [using-the-api.md](using-the-api.md)).
 
 ---
 
@@ -54,7 +54,7 @@ redis://127.0.0.1:6379/3
 | Вопрос | Поведение |
 |--------|-----------|
 | **Каталог** | Хеш **`lnr_topic:{topic}:addr`** общий для всех клиентов с одним URL. |
-| **Старт сети** | A **`run`** → B **`run`** → B **`refresh_address_topic(topic_a)`** → **`send_to`**. |
+| **Старт сети** | A **`run`** → B **`run`** → **`send_to`**. Кэш адресов обновляется по внутреннему каналу; **`refresh_address_topic`** по желанию — см. [using-the-api.md](using-the-api.md). |
 | **`at_least_once_delivery`** | На **одном URL** ack в **`lnr_connection:{id}:mess_number`** виден отправителю. |
 | **Несколько пиров** | Fan-out / fan-in на **одном URL** без JSON (см. изолированный SQLite в [using-sqlite.md](using-sqlite.md)). |
 
