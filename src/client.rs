@@ -248,7 +248,12 @@ impl Client {
             print_error!("you can't send on your own topic");
             return false;
         }
-        let Some(address) = get_address_topic(topic, self.db.as_mut()) else {
+        let Some(address) = resolve_send_addresses(
+            topic,
+            at_least_once_delivery,
+            &self.address_topic,
+            self.db.as_mut(),
+        ) else {
             self.address_topic.remove(topic);
             return false;
         };
@@ -473,7 +478,7 @@ fn send_all_inner(
         print_error!("you can't send on your own topic");
         return false;
     }
-    let Some(address) = get_address_topic(topic, db) else {
+    let Some(address) = resolve_send_addresses(topic, at_least_once_delivery, address_topic, db) else {
         address_topic.remove(topic);
         return false;
     };
@@ -594,6 +599,28 @@ fn get_address_topic(topic: &str, db: &mut dyn Store) -> Option<Vec<String>> {
         },
         Err(err)=>{
             print_error!(&format!("{}", err));
+        }
+    }
+    None
+}
+
+/// Store catalog is authoritative when non-empty. With `at_least_once_delivery`, fall back to a
+/// previously resolved route so offline queueing still works after the listener drops from the
+/// catalog on `Drop` (distinct from `unsubscribe`, which clears routes via refresh/internal events).
+fn resolve_send_addresses(
+    topic: &str,
+    at_least_once_delivery: bool,
+    address_topic: &HashMap<String, Vec<String>>,
+    db: &mut dyn Store,
+) -> Option<Vec<String>> {
+    if let Some(addr) = get_address_topic(topic, db) {
+        return Some(addr);
+    }
+    if at_least_once_delivery {
+        if let Some(addr) = address_topic.get(topic) {
+            if !addr.is_empty() {
+                return Some(addr.clone());
+            }
         }
     }
     None
