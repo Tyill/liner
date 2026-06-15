@@ -549,7 +549,7 @@ extern "C" fn client_receive_wrapper(
     if client.is_null() {
         return;
     }
-    unsafe {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         if let Ok(to_str) = CStr::from_ptr(to).to_str() {
             if to_str == INTERNAL_CHANNEL_TOPIC {
                 let slice = std::slice::from_raw_parts(data, dsize);
@@ -562,6 +562,9 @@ extern "C" fn client_receive_wrapper(
         if let Some(user_cb) = (*client).user_receive_cb {
             user_cb(to, from, data, dsize, (*client).user_receive_udata.0);
         }
+    }));
+    if result.is_err() {
+        print_error!("client_receive_wrapper panicked");
     }
 }
 
@@ -575,6 +578,9 @@ fn apply_internal_channel_event(client: &mut Client, data: &[u8]) {
     if let Some(t) = value.get("topic").and_then(|v| v.as_str()) {
         if t != INTERNAL_CHANNEL_TOPIC {
             refresh_address_topic_cache(client, t);
+            if event == "unsubscribed" {
+                let _ = client.db.remove_sender_listeners_on_topic(t);
+            }
         }
     }
     if matches!(event, "client_connected" | "client_disconnected") {
@@ -620,6 +626,16 @@ fn resolve_send_addresses(
         if let Some(addr) = address_topic.get(topic) {
             if !addr.is_empty() {
                 return Some(addr.clone());
+            }
+        }
+        if let Ok(listeners) = db.get_listeners_of_sender() {
+            let addrs: Vec<String> = listeners
+                .into_iter()
+                .filter(|(_, listener_topic)| listener_topic == topic)
+                .map(|(addr, _)| addr)
+                .collect();
+            if !addrs.is_empty() {
+                return Some(addrs);
             }
         }
     }
@@ -677,7 +693,17 @@ mod tests {
     use super::*;
     use crate::UData;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
     use std::time::Duration;
+
+    /// Serializes tests that start listener/sender threads against a shared Redis/Postgres.
+    static CLIENT_RUN_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn client_run_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        CLIENT_RUN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     extern "C" fn recv_ping_flag(
         _to: *const i8,
@@ -726,6 +752,7 @@ mod tests {
     #[cfg(feature = "postgres")]
     #[test]
     fn shared_postgres_two_clients_send_to() {
+        let _run_lock = client_run_test_lock();
         let Some(url) = std::env::var("LINER_TEST_POSTGRES_URL").ok() else {
             eprintln!("skip shared_postgres_two_clients_send_to: LINER_TEST_POSTGRES_URL unset");
             return;
@@ -792,6 +819,7 @@ mod tests {
 
     #[test]
     fn isolated_sqlite_two_clients_via_receivers_json_catalog_file() {
+        let _run_lock = client_run_test_lock();
         let dir = std::env::temp_dir().join(format!(
             "liner_iso_{}_{}",
             std::process::id(),
@@ -893,6 +921,7 @@ mod tests {
 
     #[test]
     fn shared_sqlite_send_to_fails_after_runtime_unsubscribe() {
+        let _run_lock = client_run_test_lock();
         let dir = std::env::temp_dir().join(format!(
             "liner_unsub_{}_{}",
             std::process::id(),
@@ -944,6 +973,7 @@ mod tests {
 
     #[test]
     fn apply_internal_channel_event_ignores_invalid_json() {
+        let _run_lock = client_run_test_lock();
         let pid = std::process::id();
         let topic = format!("int_invalid_{pid}");
         let mut client = Client::new_sqlite(
@@ -976,6 +1006,7 @@ mod tests {
 
     #[test]
     fn client_receive_wrapper_routes_internal_channel_without_user_cb() {
+        let _run_lock = client_run_test_lock();
         let Some(url) = liner_test_redis_url() else {
             eprintln!("skip client_receive_wrapper_routes_internal_channel_without_user_cb: redis unavailable");
             return;
@@ -1042,6 +1073,7 @@ mod tests {
 
     #[test]
     fn internal_client_connected_not_delivered_to_self() {
+        let _run_lock = client_run_test_lock();
         let Some(url) = liner_test_redis_url() else {
             eprintln!("skip internal_client_connected_not_delivered_to_self: redis unavailable");
             return;
@@ -1082,6 +1114,7 @@ mod tests {
 
     #[test]
     fn redis_internal_channel_peer_address_without_manual_refresh() {
+        let _run_lock = client_run_test_lock();
         let Some(url) = liner_test_redis_url() else {
             eprintln!("skip redis_internal_channel_peer_address_without_manual_refresh: redis unavailable");
             return;

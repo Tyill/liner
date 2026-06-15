@@ -1,151 +1,27 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
-import os
-from pathlib import Path
 import sys
-import time
-import socket
-import atexit
-import subprocess
-import datetime
 import threading
+import time
+from pathlib import Path
 
-module_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, str(Path(module_path).resolve().parent.parent.parent))
+MODULE_PATH = Path(__file__).resolve().parent
+PROJECT_ROOT = MODULE_PATH.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(MODULE_PATH))
 
-from python import liner
+from python import liner  # noqa: E402
 
-
-REDIS_HOST = "127.0.0.1"
-REDIS_PORT = int(os.environ.get("LINER_TEST_REDIS_PORT", "16379"))
-
-
-def _log(msg: str):
-    now = datetime.datetime.now()
-    ts = now.strftime("%Y-%m-%d %H:%M:%S") + f".{int(now.microsecond / 1000):03d}"
-    print(f"[{ts}] {msg}", flush=True)
-
-
-def _wait_until(pred, timeout_s: float, sleep_s: float = 0.05, what: str = "condition"):
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        if pred():
-            return
-        time.sleep(sleep_s)
-    raise TimeoutError(f"timeout waiting for {what}")
-
-
-def _redis_cmd(*args: str):
-    def enc_bulk(s: bytes) -> bytes:
-        return b"$" + str(len(s)).encode("ascii") + b"\r\n" + s + b"\r\n"
-
-    payload = b"*" + str(len(args)).encode("ascii") + b"\r\n"
-    for a in args:
-        payload += enc_bulk(a.encode("utf-8"))
-
-    with socket.create_connection((REDIS_HOST, REDIS_PORT), timeout=2.0) as sock:
-        sock.sendall(payload)
-
-        def read_line() -> bytes:
-            buf = b""
-            while not buf.endswith(b"\r\n"):
-                chunk = sock.recv(1)
-                if not chunk:
-                    raise ConnectionError("unexpected EOF from redis")
-                buf += chunk
-            return buf[:-2]
-
-        def read_exact(n: int) -> bytes:
-            buf = b""
-            while len(buf) < n:
-                chunk = sock.recv(n - len(buf))
-                if not chunk:
-                    raise ConnectionError("unexpected EOF from redis")
-                buf += chunk
-            return buf
-
-        first = read_exact(1)
-        if first == b"+":
-            return read_line().decode("utf-8", errors="replace")
-        if first == b":":
-            return int(read_line())
-        if first == b"$":
-            n = int(read_line())
-            if n == -1:
-                return None
-            data = read_exact(n)
-            _ = read_exact(2)
-            return data.decode("utf-8", errors="replace")
-        if first == b"-":
-            raise RuntimeError("redis error: " + read_line().decode("utf-8", errors="replace"))
-        raise RuntimeError(f"unknown redis reply prefix: {first!r}")
-
-
-def _docker(*cmd: str) -> str:
-    return subprocess.check_output(["docker", *cmd], stderr=subprocess.STDOUT).decode("utf-8", errors="replace").strip()
-
-def _ensure_release_lib():
-    lib_path = os.path.join(module_path, "..", "target", "release", "libliner_broker.so")
-    if os.path.exists(lib_path):
-        return lib_path
-    subprocess.run(
-        ["cargo", "build", "--release"],
-        cwd=os.path.join(module_path, ".."),
-        check=True,
-    )
-    if not os.path.exists(lib_path):
-        raise RuntimeError(f"release library not found at {lib_path}")
-    return lib_path
-
-
-def _ensure_redis():
-    try:
-        if _redis_cmd("PING") == "PONG":
-            return
-    except Exception:
-        pass
-
-    redis_container = os.environ.get("LINER_TEST_REDIS_CONTAINER", "liner-test-redis")
-
-    try:
-        _docker("rm", "-f", redis_container)
-    except Exception:
-        pass
-
-    _docker(
-        "run",
-        "--rm",
-        "-d",
-        "--name",
-        redis_container,
-        "-p",
-        f"{REDIS_PORT}:6379",
-        "redis:7-alpine",
-    )
-
-    def _cleanup():
-        try:
-            _docker("rm", "-f", redis_container)
-        except Exception:
-            pass
-
-    atexit.register(_cleanup)
-    def _ping_ok() -> bool:
-        try:
-            return _redis_cmd("PING") == "PONG"
-        except Exception:
-            return False
-
-    _wait_until(_ping_ok, timeout_s=15.0, what="redis PING")
-
-
-def _free_port() -> int:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return int(port)
+from _support import (  # noqa: E402
+    REDIS_URL,
+    _ensure_redis,
+    _ensure_release_lib,
+    _free_port,
+    _log,
+    _redis_cmd,
+    _wait_until,
+)
 
 
 def _conn_key(sender_name: str, sender_topic: str, listener_name: str) -> int:
@@ -303,13 +179,11 @@ def test_send_all_two_listeners_offline(redis_url: str):
 
 
 if __name__ == "__main__":
-    liner.loadLib(_ensure_release_lib())
+    liner.loadLib(str(_ensure_release_lib()))
     _ensure_redis()
 
-    redis_url = f"redis://{REDIS_HOST}:{REDIS_PORT}/"
-
-    test_offline_batch_100(redis_url)
-    test_compressed_large_payload(redis_url)
-    test_send_all_two_listeners_offline(redis_url)
+    test_offline_batch_100(REDIS_URL)
+    test_compressed_large_payload(REDIS_URL)
+    test_send_all_two_listeners_offline(REDIS_URL)
     _log("OK offline_delivery_more")
 

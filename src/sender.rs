@@ -320,7 +320,7 @@ impl Sender {
         }else {
             print_error!("db.load_last_message_for_sender");
         }
-        if let Err(err) = db.save_listener_for_sender(addr_to, listener_topic){
+        if let Err(err) = db.save_listener_for_sender(addr_to, listener_topic, &listener_name){
             print_error!(&format!("db.save_listener_for_sender {}", err));
         }
         if let Err(err) = db.set_sender_topic_by_connection_key_from_sender(connection_key){

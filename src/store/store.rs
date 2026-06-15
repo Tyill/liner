@@ -54,7 +54,13 @@ pub trait Store: Send {
     fn clear_addresses_of_topic(&mut self) -> DbResult<()>;
     fn clear_stored_messages(&mut self) -> DbResult<()>;
 
-    fn save_listener_for_sender(&mut self, listener_addr: &str, listener_topic: &str) -> DbResult<()>;
+    fn save_listener_for_sender(
+        &mut self,
+        listener_addr: &str,
+        listener_topic: &str,
+        listener_name: &str,
+    ) -> DbResult<()>;
+    fn remove_sender_listeners_on_topic(&mut self, listener_topic: &str) -> DbResult<()>;
     fn get_listeners_of_sender(&mut self) -> DbResult<Vec<(String, String)>>;
     fn get_addresses_of_topic(&mut self, without_cache: bool, topic: &str) -> DbResult<Vec<String>>;
     fn get_listener_unique_name(&mut self, topic: &str, address: &str) -> DbResult<String>;

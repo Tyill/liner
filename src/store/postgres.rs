@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS sender_listener (
     sender_key TEXT NOT NULL,
     addr TEXT NOT NULL,
     listener_topic TEXT NOT NULL,
+    client_name TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (sender_key, addr)
 );
 
@@ -107,7 +108,11 @@ pub struct Postgres {
 
 #[cfg(test)]
 fn ensure_schema_inner(client: &mut Client) -> DbResult<()> {
-    map_pg(client.batch_execute(SCHEMA))
+    map_pg(client.batch_execute(SCHEMA))?;
+    let _ = client.batch_execute(
+        "ALTER TABLE sender_listener ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL DEFAULT ''",
+    );
+    Ok(())
 }
 
 impl Postgres {
@@ -117,6 +122,9 @@ impl Postgres {
         ensure_schema_inner(&mut client)?;
         #[cfg(not(test))]
         map_pg(client.batch_execute(SCHEMA))?;
+        let _ = client.batch_execute(
+            "ALTER TABLE sender_listener ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL DEFAULT ''",
+        );
         // SET does not accept bind parameters ($1) in PostgreSQL.
         map_pg(client.batch_execute(&format!("SET lock_timeout = '{LOCK_TIMEOUT}'")))?;
 
@@ -320,12 +328,28 @@ impl Store for Postgres {
         Ok(())
     }
 
-    fn save_listener_for_sender(&mut self, listener_addr: &str, listener_topic: &str) -> DbResult<()> {
+    fn save_listener_for_sender(
+        &mut self,
+        listener_addr: &str,
+        listener_topic: &str,
+        listener_name: &str,
+    ) -> DbResult<()> {
         let sk = sender_key(&self.unique_name, &self.source_topic);
         map_pg(self.client.execute(
-            "INSERT INTO sender_listener (sender_key, addr, listener_topic) VALUES ($1, $2, $3)
-             ON CONFLICT (sender_key, addr) DO UPDATE SET listener_topic = EXCLUDED.listener_topic",
-            &[&sk, &listener_addr, &listener_topic],
+            "INSERT INTO sender_listener (sender_key, addr, listener_topic, client_name) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (sender_key, addr) DO UPDATE SET
+                listener_topic = EXCLUDED.listener_topic,
+                client_name = EXCLUDED.client_name",
+            &[&sk, &listener_addr, &listener_topic, &listener_name],
+        ))?;
+        Ok(())
+    }
+
+    fn remove_sender_listeners_on_topic(&mut self, listener_topic: &str) -> DbResult<()> {
+        let sk = sender_key(&self.unique_name, &self.source_topic);
+        map_pg(self.client.execute(
+            "DELETE FROM sender_listener WHERE sender_key = $1 AND listener_topic = $2",
+            &[&sk, &listener_topic],
         ))?;
         Ok(())
     }
@@ -354,10 +378,21 @@ impl Store for Postgres {
         if !self.topic_addr_cache.contains_key(topic) {
             self.init_addresses_of_topic(topic)?;
         }
-        self.unique_name_cache
-            .get(address)
-            .cloned()
-            .ok_or_else(|| DbError::new("!unique_name_cache.contains_key"))
+        if let Some(name) = self.unique_name_cache.get(address) {
+            return Ok(name.clone());
+        }
+        let sk = sender_key(&self.unique_name, &self.source_topic);
+        if let Some(row) = map_pg(self.client.query_opt(
+            "SELECT client_name FROM sender_listener WHERE sender_key = $1 AND addr = $2 AND listener_topic = $3",
+            &[&sk, &address, &topic],
+        ))? {
+            let name: String = map_pg(row.try_get(0))?;
+            if !name.is_empty() {
+                self.unique_name_cache.insert(address.to_string(), name.clone());
+                return Ok(name);
+            }
+        }
+        Err(DbError::new("!unique_name_cache.contains_key"))
     }
 
     fn get_connection_key_for_sender(&mut self, listener_name: &str) -> DbResult<i32> {

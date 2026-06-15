@@ -98,17 +98,52 @@ impl Redis {
         Ok(())
     }
            
-    pub fn save_listener_for_sender(&mut self, listener_addr: &str, listener_topic: &str)->RedisResult<()>{
+    pub fn save_listener_for_sender(
+        &mut self,
+        listener_addr: &str,
+        listener_topic: &str,
+        listener_name: &str,
+    ) -> RedisResult<()> {
         let key = format!("{}:{}", self.unique_name, self.source_topic);
         let dbconn = self.get_dbconn()?;
-        let () = dbconn.hset(&format!("lnr_sender:{}:listener", key), listener_addr, listener_topic)?;
+        let value = format!("{listener_topic}\x1f{listener_name}");
+        let () = dbconn.hset(
+            &format!("lnr_sender:{}:listener", key),
+            listener_addr,
+            value,
+        )?;
         Ok(())
     }
-    pub fn get_listeners_of_sender(&mut self)->RedisResult<Vec<(String, String)>>{
+    pub fn get_listeners_of_sender(&mut self) -> RedisResult<Vec<(String, String)>> {
         let key = format!("{}:{}", self.unique_name, self.source_topic);
         let dbconn = self.get_dbconn()?;
-        let addr_topic: Vec<(String, String)> = dbconn.hgetall(&format!("lnr_sender:{}:listener", key))?;
+        let raw: Vec<(String, String)> =
+            dbconn.hgetall(&format!("lnr_sender:{}:listener", key))?;
+        let mut addr_topic = Vec::new();
+        for (addr, value) in raw {
+            let listener_topic = value
+                .split_once('\x1f')
+                .map(|(t, _)| t.to_string())
+                .unwrap_or(value);
+            addr_topic.push((addr, listener_topic));
+        }
         Ok(addr_topic)
+    }
+    pub fn remove_sender_listeners_on_topic(&mut self, listener_topic: &str) -> RedisResult<()> {
+        let key = format!("{}:{}", self.unique_name, self.source_topic);
+        let dbconn = self.get_dbconn()?;
+        let hash_key = format!("lnr_sender:{key}:listener");
+        let raw: Vec<(String, String)> = dbconn.hgetall(&hash_key)?;
+        for (addr, value) in raw {
+            let stored_topic = value
+                .split_once('\x1f')
+                .map(|(t, _)| t)
+                .unwrap_or(value.as_str());
+            if stored_topic == listener_topic {
+                let () = dbconn.hdel(&hash_key, addr)?;
+            }
+        }
+        Ok(())
     }
     pub fn get_addresses_of_topic(&mut self, without_cache: bool, topic: &str)->RedisResult<Vec<String>>{
         if !self.topic_addr_cache.contains_key(topic) || without_cache{
@@ -116,12 +151,29 @@ impl Redis {
         }
         Ok(self.topic_addr_cache[topic].to_vec())
     }
-    pub fn get_listener_unique_name(&mut self, topic: &str, address: &str)->RedisResult<String>{
-        if !self.topic_addr_cache.contains_key(topic){
+    pub fn get_listener_unique_name(&mut self, topic: &str, address: &str) -> RedisResult<String> {
+        if !self.topic_addr_cache.contains_key(topic) {
             self.init_addresses_of_topic(topic)?;
         }
-        if self.unique_name_cache.contains_key(address){
-            return Ok(self.unique_name_cache[address].to_string());
+        if let Some(name) = self.unique_name_cache.get(address) {
+            return Ok(name.clone());
+        }
+        let key = format!("{}:{}", self.unique_name, self.source_topic);
+        let dbconn = self.get_dbconn()?;
+        let value: Option<String> = dbconn.hget(
+            &format!("lnr_sender:{key}:listener"),
+            address,
+        )?;
+        if let Some(value) = value {
+            if let Some((stored_topic, listener_name)) = value.split_once('\x1f') {
+                if stored_topic == topic && !listener_name.is_empty() {
+                    self.unique_name_cache
+                        .insert(address.to_string(), listener_name.to_string());
+                    return Ok(listener_name.to_string());
+                }
+            } else if value == topic {
+                // Legacy value: topic only, no persisted listener name.
+            }
         }
         Err((ErrorKind::TypeError, "!unique_name_cache.contains_key").into())
     }
@@ -324,16 +376,26 @@ impl Store for Redis {
         map_db(Redis::clear_stored_messages(self))
     }
 
-    fn save_listener_for_sender(&mut self, listener_addr: &str, listener_topic: &str) -> DbResult<()> {
+    fn save_listener_for_sender(
+        &mut self,
+        listener_addr: &str,
+        listener_topic: &str,
+        listener_name: &str,
+    ) -> DbResult<()> {
         map_db(Redis::save_listener_for_sender(
             self,
             listener_addr,
             listener_topic,
+            listener_name,
         ))
     }
 
     fn get_listeners_of_sender(&mut self) -> DbResult<Vec<(String, String)>> {
         map_db(Redis::get_listeners_of_sender(self))
+    }
+
+    fn remove_sender_listeners_on_topic(&mut self, listener_topic: &str) -> DbResult<()> {
+        map_db(Redis::remove_sender_listeners_on_topic(self, listener_topic))
     }
 
     fn get_addresses_of_topic(&mut self, without_cache: bool, topic: &str) -> DbResult<Vec<String>> {

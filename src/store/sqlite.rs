@@ -76,6 +76,7 @@ impl Sqlite {
                 sender_key TEXT NOT NULL,
                 addr TEXT NOT NULL,
                 listener_topic TEXT NOT NULL,
+                client_name TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (sender_key, addr)
             );
 
@@ -109,6 +110,11 @@ impl Sqlite {
             ",
         )
         .map_err(|e| DbError::new(e.to_string()))?;
+
+        let _ = conn.execute(
+            "ALTER TABLE sender_listener ADD COLUMN client_name TEXT NOT NULL DEFAULT ''",
+            [],
+        );
 
         Ok(Sqlite {
             unique_name: unique_name.to_string(),
@@ -318,11 +324,25 @@ impl Store for Sqlite {
         Ok(())
     }
 
-    fn save_listener_for_sender(&mut self, listener_addr: &str, listener_topic: &str) -> DbResult<()> {
+    fn save_listener_for_sender(
+        &mut self,
+        listener_addr: &str,
+        listener_topic: &str,
+        listener_name: &str,
+    ) -> DbResult<()> {
         let sk = sender_key(&self.unique_name, &self.source_topic);
         map_sql(self.conn.execute(
-            "INSERT OR REPLACE INTO sender_listener (sender_key, addr, listener_topic) VALUES (?1, ?2, ?3)",
-            params![sk, listener_addr, listener_topic],
+            "INSERT OR REPLACE INTO sender_listener (sender_key, addr, listener_topic, client_name) VALUES (?1, ?2, ?3, ?4)",
+            params![sk, listener_addr, listener_topic, listener_name],
+        ))?;
+        Ok(())
+    }
+
+    fn remove_sender_listeners_on_topic(&mut self, listener_topic: &str) -> DbResult<()> {
+        let sk = sender_key(&self.unique_name, &self.source_topic);
+        map_sql(self.conn.execute(
+            "DELETE FROM sender_listener WHERE sender_key = ?1 AND listener_topic = ?2",
+            params![sk, listener_topic],
         ))?;
         Ok(())
     }
@@ -353,10 +373,23 @@ impl Store for Sqlite {
         if !self.topic_addr_cache.contains_key(topic) {
             self.init_addresses_of_topic(topic)?;
         }
-        self.unique_name_cache
-            .get(address)
-            .cloned()
-            .ok_or_else(|| DbError::new("!unique_name_cache.contains_key"))
+        if let Some(name) = self.unique_name_cache.get(address) {
+            return Ok(name.clone());
+        }
+        let sk = sender_key(&self.unique_name, &self.source_topic);
+        if let Ok(name) = map_sql(
+            self.conn.query_row(
+                "SELECT client_name FROM sender_listener WHERE sender_key = ?1 AND addr = ?2 AND listener_topic = ?3",
+                params![sk, address, topic],
+                |r| r.get::<_, String>(0),
+            ),
+        ) {
+            if !name.is_empty() {
+                self.unique_name_cache.insert(address.to_string(), name.clone());
+                return Ok(name);
+            }
+        }
+        Err(DbError::new("!unique_name_cache.contains_key"))
     }
 
     fn get_connection_key_for_sender(&mut self, listener_name: &str) -> DbResult<i32> {

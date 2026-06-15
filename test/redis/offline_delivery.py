@@ -1,157 +1,48 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
-import os
-from pathlib import Path
 import sys
-import time
 import threading
-import socket
-import atexit
-import datetime
+import time
+from pathlib import Path
 
-module_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, str(Path(module_path).resolve().parent.parent.parent))
+MODULE_PATH = Path(__file__).resolve().parent
+PROJECT_ROOT = MODULE_PATH.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(MODULE_PATH))
 
-from python import liner
+from python import liner  # noqa: E402
 
-
-REDIS_HOST = "127.0.0.1"
-REDIS_PORT = int(os.environ.get("LINER_TEST_REDIS_PORT", "16379"))
-
-
-def _redis_cmd(*args: str):
-    """
-    Minimal Redis client via RESP over TCP.
-    Assumes Redis listens on localhost:6379 (same as used by redis://localhost/).
-    """
-
-    def enc_bulk(s: bytes) -> bytes:
-        return b"$" + str(len(s)).encode("ascii") + b"\r\n" + s + b"\r\n"
-
-    payload = b"*" + str(len(args)).encode("ascii") + b"\r\n"
-    for a in args:
-        payload += enc_bulk(a.encode("utf-8"))
-
-    with socket.create_connection((REDIS_HOST, REDIS_PORT), timeout=2.0) as sock:
-        sock.sendall(payload)
-
-        def read_line() -> bytes:
-            buf = b""
-            while not buf.endswith(b"\r\n"):
-                chunk = sock.recv(1)
-                if not chunk:
-                    raise ConnectionError("unexpected EOF from redis")
-                buf += chunk
-            return buf[:-2]
-
-        def read_exact(n: int) -> bytes:
-            buf = b""
-            while len(buf) < n:
-                chunk = sock.recv(n - len(buf))
-                if not chunk:
-                    raise ConnectionError("unexpected EOF from redis")
-                buf += chunk
-            return buf
-
-        first = read_exact(1)
-        if first == b"+":
-            return read_line().decode("utf-8", errors="replace")
-        if first == b":":
-            return int(read_line())
-        if first == b"$":
-            n = int(read_line())
-            if n == -1:
-                return None
-            data = read_exact(n)
-            _ = read_exact(2)  # \r\n
-            return data.decode("utf-8", errors="replace")
-        if first == b"-":
-            raise RuntimeError("redis error: " + read_line().decode("utf-8", errors="replace"))
-        raise RuntimeError(f"unknown redis reply prefix: {first!r}")
-
-
-def _wait_until(pred, timeout_s: float, sleep_s: float = 0.02, what: str = "condition"):
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        if pred():
-            return
-        time.sleep(sleep_s)
-    raise TimeoutError(f"timeout waiting for {what}")
+from _support import (  # noqa: E402
+    REDIS_URL,
+    _ensure_redis,
+    _ensure_release_lib,
+    _free_port,
+    _log,
+    _redis_cmd,
+    _wait_until,
+)
 
 
 def _mk_msg(i: int) -> bytes:
     return f"msg-{i:06d}".encode("utf-8")
 
-def _log(msg: str):
-    # Local time with millisecond precision: YYYY-MM-DD HH:MM:SS.mmm
-    now = datetime.datetime.now()
-    ts = now.strftime("%Y-%m-%d %H:%M:%S") + f".{int(now.microsecond / 1000):03d}"
-    print(f"[{ts}] {msg}", flush=True)
-
 
 if __name__ == "__main__":
-    liner.loadLib(str(Path(module_path).resolve().parent.parent.parent / "target/release/libliner_broker.so"))
-
-    # Ensure Redis is available for the test. Prefer running an isolated instance via Docker.
-    redis_container = os.environ.get("LINER_TEST_REDIS_CONTAINER", "liner-test-redis")
-    redis_url = f"redis://{REDIS_HOST}:{REDIS_PORT}/"
-
-    def _docker(*cmd: str):
-        return subprocess.check_output(["docker", *cmd], stderr=subprocess.STDOUT).decode("utf-8", errors="replace").strip()
-
-    def _ensure_redis():
-        try:
-            _redis_cmd("PING")
-            return
-        except Exception:
-            pass
-
-        # Cleanup if container already exists.
-        try:
-            _docker("rm", "-f", redis_container)
-        except Exception:
-            pass
-
-        _docker(
-            "run",
-            "--rm",
-            "-d",
-            "--name",
-            redis_container,
-            "-p",
-            f"{REDIS_PORT}:6379",
-            "redis:7-alpine",
-        )
-
-        def _cleanup():
-            try:
-                _docker("rm", "-f", redis_container)
-            except Exception:
-                pass
-
-        atexit.register(_cleanup)
-        def _ping_ok() -> bool:
-            try:
-                return _redis_cmd("PING") == "PONG"
-            except Exception:
-                return False
-
-        _wait_until(_ping_ok, timeout_s=15.0, what="redis PING")
-
-    import subprocess  # kept local to avoid top-level import ordering surprises
-
+    liner.loadLib(str(_ensure_release_lib()))
     _ensure_redis()
 
-    c1_name, c1_topic, c1_addr = "client1", "topic1", "localhost:2255"
-    c2_name, c2_topic, c2_addr = "client2", "topic2", "localhost:2256"
+    c1_name, c1_topic = "client1", "topic1"
+    c2_name, c2_topic = "client2", "topic2"
+    c1_addr = f"localhost:{_free_port()}"
+    c2_addr = f"localhost:{_free_port()}"
 
     # Clean previous state for these clients/topics.
-    c1 = liner.Client(c1_name, c1_topic, c1_addr, redis_url)
+    c1 = liner.Client(c1_name, c1_topic, c1_addr, REDIS_URL)
     c1.clear_addresses_of_topic()
     c1.clear_stored_messages()
 
-    c2 = liner.Client(c2_name, c2_topic, c2_addr, redis_url)
+    c2 = liner.Client(c2_name, c2_topic, c2_addr, REDIS_URL)
     c2.clear_addresses_of_topic()
     c2.clear_stored_messages()
 
@@ -211,7 +102,7 @@ if __name__ == "__main__":
 
     # Phase 4: client1 reconnects (still with client2 offline) and sends a few more messages.
     time.sleep(0.5)
-    c1 = liner.Client(c1_name, c1_topic, c1_addr, redis_url)
+    c1 = liner.Client(c1_name, c1_topic, c1_addr, REDIS_URL)
     ok = c1.run(lambda _to, _from, _data: None)
     assert ok, "client1 failed to run after reconnect"
 
@@ -237,7 +128,7 @@ if __name__ == "__main__":
     _log(f"[redis] conn_key={conn_key} pending_before_reconnect={pending_len}")
 
     # Phase 5: reconnect client2, expect it to receive everything sent while it was offline.
-    c2 = liner.Client(c2_name, c2_topic, c2_addr, redis_url)
+    c2 = liner.Client(c2_name, c2_topic, c2_addr, REDIS_URL)
 
     def c2_cb_reconnected(_to: str, _from: str, data: bytes):
         with recv_lock:

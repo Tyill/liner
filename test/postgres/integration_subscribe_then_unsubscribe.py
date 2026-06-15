@@ -65,6 +65,21 @@ def main() -> int:
             assert h2.send_to("topic_sub", b"one", True)
             assert got.wait(timeout=3.0), "expected echo while subscribed"
         finally:
+            unsub_proc = spawn_client1(url, addr1, "--unsubscr-topic=topic_sub")
+            try:
+                time.sleep(1.0)
+            finally:
+                try:
+                    unsub_proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    unsub_proc.wait(timeout=2)
+                except Exception:
+                    try:
+                        unsub_proc.kill()
+                    except Exception:
+                        pass
             try:
                 c1.kill()
             except Exception:

@@ -99,7 +99,12 @@ def main() -> int:
         proc = subprocess.run(
             [sys.executable, str(p)],
             cwd=str(REPO),
-            env=os.environ.copy(),
+            env={
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join(
+                    [str(ROOT), str(REPO), os.environ.get("PYTHONPATH", "")]
+                ).rstrip(os.pathsep),
+            },
         )
         elapsed = time.time() - start
         if proc.returncode == 0:

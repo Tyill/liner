@@ -4,6 +4,7 @@
 import argparse
 import asyncio
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -13,6 +14,15 @@ sys.path.insert(0, str(ROOT))
 from python import liner  # noqa: E402
 
 DEFAULT_REDIS_URL = os.environ.get("LINER_TEST_REDIS_URL", "redis://127.0.0.1:6379/")
+
+
+def release_lib() -> Path:
+    target_base = Path(os.environ["CARGO_TARGET_DIR"]) if os.environ.get("CARGO_TARGET_DIR") else ROOT / "target"
+    lib_path = target_base / "release" / "libliner_broker.so"
+    deps_lib = target_base / "release" / "deps" / "libliner_broker.so"
+    if not lib_path.exists() and deps_lib.exists():
+        shutil.copy2(deps_lib, lib_path)
+    return lib_path
 
 
 if __name__ == "__main__":
@@ -26,14 +36,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    target_base = Path(os.environ["CARGO_TARGET_DIR"]) if os.environ.get("CARGO_TARGET_DIR") else ROOT / "target"
-    lib = target_base / "release" / "libliner_broker.so"
-    deps_lib = target_base / "release" / "deps" / "libliner_broker.so"
-    if not lib.exists() and deps_lib.exists():
-        import shutil
-
-        shutil.copy2(deps_lib, lib)
-    liner.loadLib(str(lib))
+    liner.loadLib(str(release_lib()))
 
     h = liner.Client(args.client_name, args.client_topic, args.client_addr, args.redis_url)
     h.clear_addresses_of_topic()
@@ -45,11 +48,12 @@ if __name__ == "__main__":
 
     if args.subscr_topic:
         h.subscribe(args.subscr_topic)
-    if args.unsubscr_topic:
-        h.unsubscribe(args.unsubscr_topic)
 
     if not h.run(receive_cback1):
         raise SystemExit("liner run() failed")
+
+    if args.unsubscr_topic:
+        h.unsubscribe(args.unsubscr_topic)
 
     loop = asyncio.new_event_loop()
     loop.run_forever()
