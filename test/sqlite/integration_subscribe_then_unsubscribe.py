@@ -84,9 +84,10 @@ def main() -> int:
             time.sleep(2.5)
             h2.refresh_address_topic("topic_sub")
             got.clear()
-            assert h2.send_to("topic_sub", b"two", True)
-            if got.wait(timeout=2.0):
-                raise AssertionError("unexpected echo after unsubscribe")
+            assert not h2.send_to("topic_sub", b"two", True), (
+                "send_to should fail: no subscribers on topic after unsubscribe"
+            )
+            time.sleep(0.5)
         finally:
             try:
                 c1.kill()

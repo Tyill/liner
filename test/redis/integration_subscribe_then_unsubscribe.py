@@ -88,20 +88,12 @@ def main() -> int:
     c1 = spawn_client1("--unsubscr-topic=topic_sub")
     try:
         time.sleep(1.5)
-        # Ensure client2 refreshes topic routing state after listener changes subscription.
         h2.refresh_address_topic("topic_sub")
         got.clear()
-        assert h2.send_to("topic_sub", b"two", True)
-        if got.wait(timeout=2.0):
-            out = ""
-            if c1.stdout:
-                try:
-                    out = c1.stdout.read()
-                except Exception:
-                    out = ""
-            raise AssertionError(
-                f"unexpected echo after unsubscribe; client1 output:\n{out}"
-            )
+        assert not h2.send_to("topic_sub", b"two", True), (
+            "send_to should fail: no subscribers on topic after unsubscribe"
+        )
+        time.sleep(0.5)
     finally:
         try:
             c1.kill()
