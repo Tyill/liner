@@ -1,46 +1,55 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
-import os
-from pathlib import Path
 import argparse
-import sys
 import asyncio
+import os
+import sys
+from pathlib import Path
 
-module_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, str(Path(module_path).resolve().parent.parent.parent))
+ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT))
 
-from python import liner 
+from python import liner  # noqa: E402
 
-module_path = os.path.dirname(os.path.abspath(__file__))
-liner.loadLib(str(Path(module_path).resolve().parent.parent.parent / "target/release/libliner_broker.so"))
-    
+DEFAULT_REDIS_URL = os.environ.get("LINER_TEST_REDIS_URL", "redis://127.0.0.1:6379/")
+
+
 if __name__ == "__main__":
-    
     parser = argparse.ArgumentParser()
-    parser.add_argument('--client-name', help='name of client')
-    parser.add_argument('--client-topic', help='topic of client')
-    parser.add_argument('--client-addr', help='addr of client')
-    parser.add_argument('--subscr-topic', help='topic for subscr', default='')
-    parser.add_argument('--unsubscr-topic', help='topic for unsubscr', default='')
+    parser.add_argument("--client-name", required=True)
+    parser.add_argument("--client-topic", required=True)
+    parser.add_argument("--client-addr", required=True)
+    parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL)
+    parser.add_argument("--subscr-topic", default="")
+    parser.add_argument("--unsubscr-topic", default="")
 
     args = parser.parse_args()
 
-    hClient1 = liner.Client(args.client_name, args.client_topic, args.client_addr, "redis://localhost/")
-    hClient1.clear_addresses_of_topic()
-    hClient1.clear_stored_messages()
+    target_base = Path(os.environ["CARGO_TARGET_DIR"]) if os.environ.get("CARGO_TARGET_DIR") else ROOT / "target"
+    lib = target_base / "release" / "libliner_broker.so"
+    deps_lib = target_base / "release" / "deps" / "libliner_broker.so"
+    if not lib.exists() and deps_lib.exists():
+        import shutil
 
-    def receive_cback1(to: str, from_: str, data_):
+        shutil.copy2(deps_lib, lib)
+    liner.loadLib(str(lib))
+
+    h = liner.Client(args.client_name, args.client_topic, args.client_addr, args.redis_url)
+    h.clear_addresses_of_topic()
+    h.clear_stored_messages()
+
+    def receive_cback1(to: str, from_: str, data_: bytes):
         print(f"{args.client_name} receive_from {from_}, data: {data_}")
-        hClient1.send_to(from_, data_)
+        h.send_to(from_, bytearray(data_), True)
 
-    if len(args.subscr_topic):
-        hClient1.subscribe(args.subscr_topic)
-    
-    if len(args.unsubscr_topic):
-        hClient1.unsubscribe(args.unsubscr_topic)
+    if args.subscr_topic:
+        h.subscribe(args.subscr_topic)
+    if args.unsubscr_topic:
+        h.unsubscribe(args.unsubscr_topic)
 
-    hClient1.run(receive_cback1)
-    
+    if not h.run(receive_cback1):
+        raise SystemExit("liner run() failed")
+
     loop = asyncio.new_event_loop()
     loop.run_forever()
