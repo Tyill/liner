@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Test
+        run: cargo test
+
+  rust-postgres:
+    name: Rust unit tests (postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: liner
+          POSTGRES_PASSWORD: liner
+          POSTGRES_DB: liner_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U liner -d liner_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LINER_TEST_POSTGRES_URL: postgresql://liner:liner@localhost:5432/liner_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --features postgres
+
+  integration-sqlite:
+    name: SQLite integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release library
+        run: cargo build --release
+
+      - name: Run integration tests
+        run: python3 test/sqlite/run_integration.py
+
+  integration-redis:
+    name: Redis integration
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LINER_TEST_REDIS_PORT: "6379"
+      LINER_TEST_REDIS_URL: redis://127.0.0.1:6379/
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release library
+        run: cargo build --release
+
+      - name: Run integration tests
+        run: python3 test/redis/run_integration.py
+
+  integration-postgres:
+    name: PostgreSQL integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: liner
+          POSTGRES_PASSWORD: liner
+          POSTGRES_DB: liner_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U liner -d liner_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LINER_TEST_POSTGRES_URL: postgresql://liner:liner@localhost:5432/liner_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install psycopg2-binary
+
+      - name: Build release library
+        run: cargo build --release --features postgres
+
+      - name: Run integration tests
+        run: python3 test/postgres/run_integration.py

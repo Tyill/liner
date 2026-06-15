@@ -14,7 +14,7 @@ This guide is for integrators who run the broker with **PostgreSQL** instead of 
 
 **Not a fit** when you want **zero server process** and a single portable file — use **SQLite**. When you already standardize on **Redis** and only need an in-memory-style shared store, **Redis** remains the default build (no extra feature).
 
-There is **no `receivers_json`** on `new_postgres` / `lnr_new_client_postgres`. Peers discover each other after **`run`** registers `topic_addr`, or via **`refresh_address_topic`** on senders (same model as Redis).
+There is **no `receivers_json`** on `new_postgres` / `lnr_new_client_postgres`. Peers discover each other after **`run`** registers `topic_addr`; the **internal channel** keeps address caches in sync at runtime (see [using-the-api.md](using-the-api.md)).
 
 ---
 
@@ -51,7 +51,7 @@ On first connect, the store runs **`CREATE TABLE IF NOT EXISTS …`** for the li
 | Topic | PostgreSQL behavior |
 |--------|---------------------|
 | **Catalog** | Rows in **`topic_addr`** (topic → bind address → `unique_name`) are visible to **all** clients on the same URL. |
-| **Starting a mesh** | Typical order: peer A **`run`** (registers its topic); peer B **`run`**; B **`refresh_address_topic(A's topic)`** then **`send_to`**. |
+| **Starting a mesh** | Typical order: peer A **`run`**, peer B **`run`**; then **`send_to`** (internal channel updates caches). **`refresh_address_topic`** optional—see [using-the-api.md](using-the-api.md). |
 | **`at_least_once_delivery`** | With **one shared URL**, listener acks in **`conn_mess_number`** are visible to the sender on the same DB — same as Redis / **shared SQLite file**. |
 | **Multi-peer** | **One-to-many** / **many-to-many** on a **single URL** is supported without JSON seed files (contrast with **isolated SQLite files** in [using-sqlite.md](using-sqlite.md)). |
 

@@ -14,7 +14,7 @@
 
 **Не подходит**, если нужен **файл без сервера** — используйте **SQLite**. Если уже есть **Redis**, он остаётся бэкендом по умолчанию (без дополнительной фичи).
 
-У **`new_postgres` / `lnr_new_client_postgres` нет `receivers_json`**. Пиры видят друг друга после **`run`** (`regist_topic`) или через **`refresh_address_topic`** у отправителя (как у Redis).
+У **`new_postgres` / `lnr_new_client_postgres` нет `receivers_json`**. Пиры видят друг друга после **`run`**; **внутренний канал** синхронизирует кэш адресов в рантайме (см. [using-the-api.md](using-the-api.md)).
 
 ---
 
@@ -51,7 +51,7 @@ postgresql://user:password@127.0.0.1:5432/liner
 | Вопрос | Поведение |
 |--------|-----------|
 | **Каталог** | **`topic_addr`** общая для всех клиентов с одним URL. |
-| **Старт сети** | A **`run`** → B **`run`** → B **`refresh_address_topic(topic_a)`** → **`send_to`**. |
+| **Старт сети** | A **`run`** → B **`run`** → **`send_to`**. Кэш обновляется по внутреннему каналу; **`refresh_address_topic`** по желанию — см. [using-the-api.md](using-the-api.md). |
 | **`at_least_once_delivery`** | На **одном URL** ack в **`conn_mess_number`** виден отправителю — как Redis / **общий файл SQLite**. |
 | **Несколько пиров** | Fan-out / fan-in на **одном URL** без JSON-каталога (см. ограничения изолированного SQLite в [using-sqlite.md](using-sqlite.md)). |
 

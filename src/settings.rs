@@ -1,3 +1,6 @@
+/// Reserved topic for broker-internal events (client connect/disconnect, subscribe/unsubscribe).
+pub const INTERNAL_CHANNEL_TOPIC: &str = "__#internal_channel";
+
 pub const WRITE_BUFFER_CAPASITY: usize = 64 * 1024;
 pub const READ_BUFFER_CAPASITY: usize = 64 * 1024;
 pub const BYTESTREAM_READ_BUFFER_SIZE: usize = 8 * 1024;

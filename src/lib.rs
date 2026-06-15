@@ -218,7 +218,9 @@ impl Liner {
 
 impl Drop for Liner {
     fn drop(&mut self) {
-        lnr_delete_client(self.hclient);
+        unsafe {
+            lnr_delete_client(self.hclient);
+        }
     }
 }
 
@@ -609,14 +611,15 @@ pub unsafe extern "C" fn lnr_clear_addresses_of_topic(client: *mut Client)->bool
 }
 
 /// Deleting a client.
+///
+/// # Safety
+/// `client` must be a valid pointer returned from `lnr_new_client_*`, or null.
 #[no_mangle]
-pub extern "C" fn lnr_delete_client(client: *mut Client)->bool{
+pub unsafe extern "C" fn lnr_delete_client(client: *mut Client)->bool{
     if !has_client(client){
         return false;
     }
-    unsafe{
-        drop(Box::from_raw(client));
-    }
+    drop(Box::from_raw(client));
     true
 }
 

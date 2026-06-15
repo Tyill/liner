@@ -27,7 +27,7 @@ This document is for **people debugging production**: what gets written to **Red
    The sender persists **`save_listener_for_sender(addr, listener_topic)`** so that after restart it can **`get_listeners_of_sender`** and reconnect to the same peers.
 
 4. **Stale address cache**  
-   The client caches addresses per topic in memory. If a peer re-registers on a **new** port, callers may need **`refresh_address_topic`** so the cache is refreshed from the store (see [using-the-api.md](using-the-api.md)).
+   The client caches addresses per topic in memory. While peers are running, the **internal channel** (`__#internal_channel`) refreshes the cache on connect/disconnect/subscribe/unsubscribe. Call **`refresh_address_topic`** to force a reload from the store when needed (port change, races, subscribe-before-`run`) — see [using-the-api.md](using-the-api.md).
 
 5. **SQLite ordering**  
    Addresses for a topic are read **`ORDER BY addr ASC`**, which affects round-robin order. Redis uses **`HGETALL`** order (do not rely on a specific order for operations).

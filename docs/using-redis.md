@@ -14,7 +14,7 @@ This guide is for integrators who run the broker with **Redis** as the shared st
 
 **Not a fit** when you need a **single portable file** with no server process — use **SQLite**. When you want **durable SQL** and ops tooling on tables — consider **PostgreSQL** ([using-postgres.md](using-postgres.md)).
 
-There is **no `receivers_json`** on Redis clients. Peers discover each other after **`run`** registers `lnr_topic:{topic}:addr`, or via **`refresh_address_topic`** on senders (same model as PostgreSQL).
+There is **no `receivers_json`** on Redis clients. Peers discover each other after **`run`** registers `lnr_topic:{topic}:addr`; the **internal channel** keeps address caches in sync at runtime (see [using-the-api.md](using-the-api.md)).
 
 ---
 
@@ -54,7 +54,7 @@ Rules match other backends: non-empty **`unique_name`**, **`topic`**, and **`loc
 | Topic | Redis behavior |
 |--------|----------------|
 | **Catalog** | Hash **`lnr_topic:{topic}:addr`** (address → `unique_name`) is visible to **all** clients on the same URL. |
-| **Starting a mesh** | Typical order: peer A **`run`** (registers its topic); peer B **`run`**; B **`refresh_address_topic(A's topic)`** then **`send_to`**. |
+| **Starting a mesh** | Typical order: peer A **`run`**, peer B **`run`**; then **`send_to`** (address cache updates via the internal channel). **`refresh_address_topic`** is optional—see [using-the-api.md](using-the-api.md). |
 | **`at_least_once_delivery`** | With **one shared URL**, listener acks in **`lnr_connection:{id}:mess_number`** are visible to the sender on the same Redis — use **`true`** when you need offline persistence. |
 | **Multi-peer** | **One-to-many** / **many-to-many** on a **single URL** work without JSON seed files (contrast with **isolated SQLite files** in [using-sqlite.md](using-sqlite.md)). |
 

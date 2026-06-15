@@ -3,8 +3,10 @@ use crate::{UCbackIntern, UData};
 use crate::listener::Listener;
 use crate::sender::Sender;
 use crate::print_error;
+use crate::settings::INTERNAL_CHANNEL_TOPIC;
 
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::ffi::CStr;
 use mio::net::TcpListener;
 use std::sync::Mutex;
 use std::collections::HashMap;
@@ -24,6 +26,8 @@ pub struct Client{
     subscriptions: HashMap<i32, String>,
     /// Actual `SocketAddr` after `run` binds `localhost` (e.g. when port is `0`).
     bound_listen_addr: Option<String>,
+    user_receive_cb: Option<UCbackIntern>,
+    user_receive_udata: UData,
 }
 
 impl Client {
@@ -48,6 +52,8 @@ impl Client {
             address_topic: HashMap::new(),
             subscriptions: HashMap::new(),
             bound_listen_addr: None,
+            user_receive_cb: None,
+            user_receive_udata: UData::null(),
         })
     }
 
@@ -93,6 +99,8 @@ impl Client {
             address_topic: HashMap::new(),
             subscriptions: HashMap::new(),
             bound_listen_addr: None,
+            user_receive_cb: None,
+            user_receive_udata: UData::null(),
         })
     }
 
@@ -127,6 +135,8 @@ impl Client {
             address_topic: HashMap::new(),
             subscriptions: HashMap::new(),
             bound_listen_addr: None,
+            user_receive_cb: None,
+            user_receive_udata: UData::null(),
         })
     }
 
@@ -144,6 +154,7 @@ impl Client {
         Self::new_redis(unique_name, topic, localhost, redis_path)
     }
     pub fn run(&mut self, receive_cb: UCbackIntern, udata: UData) -> bool {
+        let client_ptr = std::ptr::from_mut(self);
         let _lock = self.mtx.lock();
         if self.is_run{
             print_error!("client already is running");
@@ -181,14 +192,16 @@ impl Client {
                 }
             }
         }
+        self.user_receive_cb = Some(receive_cb);
+        self.user_receive_udata = udata;
         self.listener = Some(Listener::new(
             tcp_listener,
             &self.unique_name,
             self.store_backend.clone(),
             &self.source_topic,
             &self.subscriptions,
-            receive_cb,
-            udata,
+            client_receive_wrapper,
+            UData(client_ptr as *mut libc::c_void),
         ));
         self.sender = Some(Sender::new(
             &self.unique_name,
@@ -199,6 +212,28 @@ impl Client {
             sender.load_prev_connects(self.db.as_mut());
         }
         self.is_run = true;
+        if !subscribe_inner(
+            INTERNAL_CHANNEL_TOPIC,
+            &self.source_topic,
+            &mut self.db,
+            self.is_run,
+            &mut self.listener,
+            &mut self.subscriptions,
+        ) {
+            return false;
+        }
+        emit_internal_event(
+            self.is_run,
+            &self.unique_name,
+            &self.source_topic,
+            self.bound_listen_addr.as_deref(),
+            &self.localhost,
+            &mut self.address_topic,
+            self.db.as_mut(),
+            self.sender.as_mut().unwrap(),
+            "client_connected",
+            None,
+        );
 
         true
     }
@@ -236,30 +271,18 @@ impl Client {
 
     pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
         let _lock = self.mtx.lock().unwrap();
-        if !self.is_run{
-            print_error!("you can't send_all because client not is running");
-            return false;
-        }
-        if topic == self.source_topic{
-            print_error!("you can't send on your own topic");
-            return false;
-        }
-        if !self.address_topic.contains_key(topic){ 
-            if let Some(addr) = get_address_topic(topic, self.db.as_mut()){
-                self.address_topic.insert(topic.to_string(), addr);
-            }
-        }
-        if let Some(address) = self.address_topic.get(topic){       
-            let mut ok = true;
-            for addr in address{
-                ok &= self.sender.as_mut().unwrap().send_to(self.db.as_mut(), addr, 
-                                        topic, data, at_least_once_delivery);
-            }
-            ok
-        }else{
-            print_error!(&format!("not found addr for topic {}", topic));
-            false
-        }
+        send_all_inner(
+            self.is_run,
+            &self.source_topic,
+            &self.localhost,
+            &mut self.address_topic,
+            self.db.as_mut(),
+            self.sender.as_mut().unwrap(),
+            topic,
+            data,
+            at_least_once_delivery,
+            false,
+        )
     }
 
     pub fn subscribe(&mut self, topic: &str) -> bool {
@@ -268,23 +291,34 @@ impl Client {
             print_error!("you can't subscribe on your own topic");
             return false;
         }
-        if let Err(err) = self.db.regist_topic(topic){
-            print_error!(&format!("{}", err));
+        if topic == INTERNAL_CHANNEL_TOPIC {
+            print_error!("you can't subscribe on internal channel topic");
             return false;
         }
-        match self.db.get_topic_key(topic) {
-            Ok(topic_key)=>{
-                if self.is_run{ 
-                    self.listener.as_mut().unwrap().subscribe(topic, topic_key);
-                }else{
-                    self.subscriptions.insert(topic_key, topic.to_owned());
-                }
-            },
-            Err(err)=>{
-                print_error!(&format!("{}", err));
-                return false;
-            }
-        } 
+        if !subscribe_inner(
+            topic,
+            &self.source_topic,
+            &mut self.db,
+            self.is_run,
+            &mut self.listener,
+            &mut self.subscriptions,
+        ) {
+            return false;
+        }
+        if self.is_run {
+            emit_internal_event(
+                self.is_run,
+                &self.unique_name,
+                &self.source_topic,
+                self.bound_listen_addr.as_deref(),
+                &self.localhost,
+                &mut self.address_topic,
+                self.db.as_mut(),
+                self.sender.as_mut().unwrap(),
+                "subscribed",
+                Some(topic),
+            );
+        }
         true
     }
 
@@ -294,24 +328,32 @@ impl Client {
             print_error!("you can't unsubscribe on your own topic");
             return false;
         }
-        if let Err(err) = self.db.unregist_topic(topic){
-            print_error!(&format!("{}", err));
+        if topic == INTERNAL_CHANNEL_TOPIC {
+            print_error!("you can't unsubscribe on internal channel topic");
             return false;
-        } 
-        match self.db.get_topic_key(topic) {
-            Ok(topic_key)=>{
-                if self.is_run{                   
-                    self.listener.as_mut().unwrap().unsubscribe(topic_key);
-                }else{
-                    self.subscriptions.remove(&topic_key);
-                }
-            },
-            Err(err)=>{
-                print_error!(&format!("{}", err));
-                return false;
-            }
-        } 
-        true
+        }
+        if self.is_run {
+            emit_internal_event(
+                self.is_run,
+                &self.unique_name,
+                &self.source_topic,
+                self.bound_listen_addr.as_deref(),
+                &self.localhost,
+                &mut self.address_topic,
+                self.db.as_mut(),
+                self.sender.as_mut().unwrap(),
+                "unsubscribed",
+                Some(topic),
+            );
+        }
+        unsubscribe_inner(
+            topic,
+            &self.source_topic,
+            &mut self.db,
+            self.is_run,
+            &mut self.listener,
+            &mut self.subscriptions,
+        )
     }
 
     pub fn refresh_address_topic(&mut self, topic: &str) -> bool {
@@ -351,6 +393,205 @@ impl Client {
     }
 }
 
+fn subscribe_inner(
+    topic: &str,
+    source_topic: &str,
+    db: &mut Box<dyn Store>,
+    is_run: bool,
+    listener: &mut Option<Listener>,
+    subscriptions: &mut HashMap<i32, String>,
+) -> bool {
+    if topic == source_topic {
+        print_error!("you can't subscribe on your own topic");
+        return false;
+    }
+    if let Err(err) = db.regist_topic(topic) {
+        print_error!(&format!("{}", err));
+        return false;
+    }
+    match db.get_topic_key(topic) {
+        Ok(topic_key) => {
+            if is_run {
+                listener.as_mut().unwrap().subscribe(topic, topic_key);
+            }
+            subscriptions.insert(topic_key, topic.to_owned());
+        }
+        Err(err) => {
+            print_error!(&format!("{}", err));
+            return false;
+        }
+    }
+    true
+}
+
+fn unsubscribe_inner(
+    topic: &str,
+    source_topic: &str,
+    db: &mut Box<dyn Store>,
+    is_run: bool,
+    listener: &mut Option<Listener>,
+    subscriptions: &mut HashMap<i32, String>,
+) -> bool {
+    if topic == source_topic {
+        print_error!("you can't unsubscribe on your own topic");
+        return false;
+    }
+    if let Err(err) = db.unregist_topic(topic) {
+        print_error!(&format!("{}", err));
+        return false;
+    }
+    match db.get_topic_key(topic) {
+        Ok(topic_key) => {
+            if is_run {
+                listener.as_mut().unwrap().unsubscribe(topic_key);
+            }
+            subscriptions.remove(&topic_key);
+        }
+        Err(err) => {
+            print_error!(&format!("{}", err));
+            return false;
+        }
+    }
+    true
+}
+
+fn send_all_inner(
+    is_run: bool,
+    source_topic: &str,
+    localhost: &str,
+    address_topic: &mut HashMap<String, Vec<String>>,
+    db: &mut dyn Store,
+    sender: &mut Sender,
+    topic: &str,
+    data: &[u8],
+    at_least_once_delivery: bool,
+    exclude_self: bool,
+) -> bool {
+    if !is_run {
+        print_error!("you can't send_all because client not is running");
+        return false;
+    }
+    if topic == source_topic {
+        print_error!("you can't send on your own topic");
+        return false;
+    }
+    if !address_topic.contains_key(topic) {
+        if let Some(addr) = get_address_topic(topic, db) {
+            address_topic.insert(topic.to_string(), addr);
+        }
+    }
+    if let Some(address) = address_topic.get(topic) {
+        let mut ok = true;
+        for addr in address {
+            if exclude_self && addr == localhost {
+                continue;
+            }
+            ok &= sender.send_to(db, addr, topic, data, at_least_once_delivery);
+        }
+        ok
+    } else {
+        print_error!(&format!("not found addr for topic {}", topic));
+        false
+    }
+}
+
+fn emit_internal_event(
+    is_run: bool,
+    unique_name: &str,
+    source_topic: &str,
+    bound_listen_addr: Option<&str>,
+    localhost: &str,
+    address_topic: &mut HashMap<String, Vec<String>>,
+    db: &mut dyn Store,
+    sender: &mut Sender,
+    event: &str,
+    subscription_topic: Option<&str>,
+) {
+    if !is_run {
+        return;
+    }
+    let topic_field = subscription_topic.unwrap_or(source_topic);
+    let mut value = serde_json::json!({
+        "event": event,
+        "client": unique_name,
+        "topic": topic_field,
+    });
+    if event == "client_connected" {
+        let addr = bound_listen_addr.unwrap_or(localhost);
+        value["addr"] = serde_json::Value::String(addr.to_string());
+    }
+    let Ok(bytes) = serde_json::to_vec(&value) else {
+        return;
+    };
+    if let Some(addr) = get_address_topic(INTERNAL_CHANNEL_TOPIC, db) {
+        address_topic.insert(INTERNAL_CHANNEL_TOPIC.to_string(), addr);
+    }
+    let _ = send_all_inner(
+        is_run,
+        source_topic,
+        localhost,
+        address_topic,
+        db,
+        sender,
+        INTERNAL_CHANNEL_TOPIC,
+        &bytes,
+        false,
+        true,
+    );
+}
+
+extern "C" fn client_receive_wrapper(
+    to: *const i8,
+    from: *const i8,
+    data: *const u8,
+    dsize: usize,
+    udata: *mut libc::c_void,
+) {
+    let client = udata as *mut Client;
+    if client.is_null() {
+        return;
+    }
+    unsafe {
+        if let Ok(to_str) = CStr::from_ptr(to).to_str() {
+            if to_str == INTERNAL_CHANNEL_TOPIC {
+                let slice = std::slice::from_raw_parts(data, dsize);
+                if let Ok(_lock) = (*client).mtx.lock() {
+                    apply_internal_channel_event(&mut *client, slice);
+                }
+                return;
+            }
+        }
+        if let Some(user_cb) = (*client).user_receive_cb {
+            user_cb(to, from, data, dsize, (*client).user_receive_udata.0);
+        }
+    }
+}
+
+fn apply_internal_channel_event(client: &mut Client, data: &[u8]) {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) else {
+        return;
+    };
+    let Some(event) = value.get("event").and_then(|v| v.as_str()) else {
+        return;
+    };
+    if let Some(t) = value.get("topic").and_then(|v| v.as_str()) {
+        if t != INTERNAL_CHANNEL_TOPIC {
+            refresh_address_topic_cache(client, t);
+        }
+    }
+    if matches!(event, "client_connected" | "client_disconnected") {
+        refresh_address_topic_cache(client, INTERNAL_CHANNEL_TOPIC);
+    }
+}
+
+fn refresh_address_topic_cache(client: &mut Client, topic: &str) {
+    if let Some(addr) = get_address_topic(topic, client.db.as_mut()) {
+        client.address_topic.insert(topic.to_string(), addr);
+    } else {
+        client.address_topic.remove(topic);
+    }
+}
+
 fn get_address_topic(topic: &str, db: &mut dyn Store) -> Option<Vec<String>> {
     match db.get_addresses_of_topic(true, topic){
         Ok(addresses)=>{
@@ -383,8 +624,31 @@ impl Drop for Client {
         if !self.is_run{
             return;
         }
-        drop(self.sender.take());
+        emit_internal_event(
+            self.is_run,
+            &self.unique_name,
+            &self.source_topic,
+            self.bound_listen_addr.as_deref(),
+            &self.localhost,
+            &mut self.address_topic,
+            self.db.as_mut(),
+            self.sender.as_mut().unwrap(),
+            "client_disconnected",
+            None,
+        );
+        if let Err(err) = self.db.unregist_topic(&self.source_topic) {
+            print_error!(&format!("{}", err));
+        }
+        let _ = unsubscribe_inner(
+            INTERNAL_CHANNEL_TOPIC,
+            &self.source_topic,
+            &mut self.db,
+            self.is_run,
+            &mut self.listener,
+            &mut self.subscriptions,
+        );
         drop(self.listener.take());
+        drop(self.sender.take());
     }
 }
 
@@ -587,5 +851,225 @@ mod tests {
             drop(Box::from_raw(raw_flag));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn liner_test_redis_url() -> Option<String> {
+        let url = std::env::var("LINER_TEST_REDIS_URL")
+            .unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
+        let pid = std::process::id();
+        let topic = format!("__redis_probe_{pid}");
+        let mut client = Client::new_redis(
+            &format!("__redis_probe_{pid}"),
+            &topic,
+            "127.0.0.1:0",
+            &url,
+        )?;
+        if !client.run(recv_noop, UData::null()) {
+            return None;
+        }
+        drop(client);
+        Some(url)
+    }
+
+    #[test]
+    fn apply_internal_channel_event_ignores_invalid_json() {
+        let pid = std::process::id();
+        let topic = format!("int_invalid_{pid}");
+        let mut client = Client::new_sqlite(
+            &format!("int_invalid_{pid}"),
+            &topic,
+            "127.0.0.1:0",
+            ":memory:",
+            "",
+        )
+        .expect("client");
+        assert!(client.run(recv_noop, UData::null()));
+        apply_internal_channel_event(&mut client, b"not-json");
+        apply_internal_channel_event(&mut client, br#"{"topic":"x"}"#);
+        drop(client);
+    }
+
+    extern "C" fn recv_track_user_cb(
+        _to: *const i8,
+        _from: *const i8,
+        _data: *const u8,
+        _dsize: usize,
+        udata: *mut libc::c_void,
+    ) {
+        unsafe {
+            if !udata.is_null() {
+                (*(udata as *const AtomicBool)).store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    #[test]
+    fn client_receive_wrapper_routes_internal_channel_without_user_cb() {
+        let Some(url) = liner_test_redis_url() else {
+            eprintln!("skip client_receive_wrapper_routes_internal_channel_without_user_cb: redis unavailable");
+            return;
+        };
+        let pid = std::process::id();
+        let topic = format!("int_wrap_{pid}");
+        let mut client = Client::new_redis(
+            &format!("int_wrap_{pid}"),
+            &topic,
+            "127.0.0.1:0",
+            &url,
+        )
+        .expect("client");
+        let called = Box::new(AtomicBool::new(false));
+        let raw_called = Box::into_raw(called);
+        assert!(client.run(
+            recv_track_user_cb,
+            UData(raw_called as *mut libc::c_void),
+        ));
+
+        let client_ptr = &mut client as *mut Client as *mut libc::c_void;
+        let internal_to = std::ffi::CString::new(INTERNAL_CHANNEL_TOPIC).unwrap();
+        let app_to = std::ffi::CString::new(topic.as_str()).unwrap();
+        let from = std::ffi::CString::new("peer").unwrap();
+        let internal_data =
+            br#"{"event":"subscribed","client":"peer","topic":"some_topic"}"#;
+
+        unsafe {
+            (*raw_called).store(false, Ordering::SeqCst);
+        }
+        client_receive_wrapper(
+            internal_to.as_ptr(),
+            from.as_ptr(),
+            internal_data.as_ptr(),
+            internal_data.len(),
+            client_ptr,
+        );
+        assert!(
+            !unsafe { (*raw_called).load(Ordering::SeqCst) },
+            "internal channel must not invoke user callback"
+        );
+
+        unsafe {
+            (*raw_called).store(false, Ordering::SeqCst);
+        }
+        let app_data = b"hi";
+        client_receive_wrapper(
+            app_to.as_ptr(),
+            from.as_ptr(),
+            app_data.as_ptr(),
+            app_data.len(),
+            client_ptr,
+        );
+        assert!(
+            unsafe { (*raw_called).load(Ordering::SeqCst) },
+            "regular messages must still invoke user callback"
+        );
+
+        drop(client);
+        unsafe {
+            drop(Box::from_raw(raw_called));
+        }
+    }
+
+    #[test]
+    fn internal_client_connected_not_delivered_to_self() {
+        let Some(url) = liner_test_redis_url() else {
+            eprintln!("skip internal_client_connected_not_delivered_to_self: redis unavailable");
+            return;
+        };
+        let pid = std::process::id();
+        let topic = format!("int_solo_{pid}");
+        let called = Box::new(AtomicBool::new(false));
+        let raw_called = Box::into_raw(called);
+
+        let mut client = Client::new_redis(
+            &format!("int_solo_{pid}"),
+            &topic,
+            "127.0.0.1:0",
+            &url,
+        )
+        .expect("client");
+        assert!(client.run(
+            recv_track_user_cb,
+            UData(raw_called as *mut libc::c_void),
+        ));
+
+        for _ in 0..50 {
+            if unsafe { (*raw_called).load(Ordering::SeqCst) } {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !unsafe { (*raw_called).load(Ordering::SeqCst) },
+            "client_connected on run must not reach own user callback"
+        );
+
+        drop(client);
+        unsafe {
+            drop(Box::from_raw(raw_called));
+        }
+    }
+
+    #[test]
+    fn redis_internal_channel_peer_address_without_manual_refresh() {
+        let Some(url) = liner_test_redis_url() else {
+            eprintln!("skip redis_internal_channel_peer_address_without_manual_refresh: redis unavailable");
+            return;
+        };
+        let pid = std::process::id();
+        let topic_a = format!("int_peer_a_{pid}");
+        let topic_b = format!("int_peer_b_{pid}");
+        let flag = Box::new(AtomicBool::new(false));
+        let raw_flag = Box::into_raw(flag);
+
+        let mut client_a = Client::new_redis(
+            &format!("int_peer_a_{pid}"),
+            &topic_a,
+            "127.0.0.1:0",
+            &url,
+        )
+        .expect("client_a");
+        assert!(client_a.run(recv_noop, UData::null()));
+
+        let mut client_b = Client::new_redis(
+            &format!("int_peer_b_{pid}"),
+            &topic_b,
+            "127.0.0.1:0",
+            &url,
+        )
+        .expect("client_b");
+        assert!(client_b.run(
+            recv_ping_flag,
+            UData(raw_flag as *mut libc::c_void),
+        ));
+
+        let mut sent = false;
+        for _ in 0..400 {
+            if client_a.send_to(&topic_b, b"ping", false) {
+                sent = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            sent,
+            "client_a should reach client_b via address cache updated from internal channel"
+        );
+
+        for _ in 0..500 {
+            if unsafe { (*raw_flag).load(Ordering::SeqCst) } {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            unsafe { (*raw_flag).load(Ordering::SeqCst) },
+            "client_b should receive ping"
+        );
+
+        drop(client_b);
+        drop(client_a);
+        unsafe {
+            drop(Box::from_raw(raw_flag));
+        }
     }
 }
