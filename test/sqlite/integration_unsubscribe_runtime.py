@@ -64,8 +64,8 @@ def main() -> int:
 
         s.refresh_address_topic(sub_topic)
         log("[sender] send #2 after unsubscribe")
-        assert s.send_to(sub_topic, b"two", True), "send_to #2 failed"
-        time.sleep(2.5)
+        assert not s.send_to(sub_topic, b"two", True), "send_to should fail: no subscribers on topic"
+        time.sleep(0.5)
         with recv_lock:
             assert recv_count == baseline, f"unexpected receive after unsubscribe; delta={recv_count - baseline}"
 

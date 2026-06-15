@@ -248,25 +248,21 @@ impl Client {
             print_error!("you can't send on your own topic");
             return false;
         }
-        if !self.address_topic.contains_key(topic){ 
-            if let Some(addr) = get_address_topic(topic, self.db.as_mut()){
-                self.address_topic.insert(topic.to_string(), addr);
-            }
-        }
-        if let Some(address) = self.address_topic.get(topic){       
-            let index = self.last_send_index.entry(topic.to_string()).or_insert(0);
-            if *index >= address.len(){
-                *index = 0;
-            }
-            let addr = &address[*index];
-            let ok = self.sender.as_mut().unwrap().send_to(self.db.as_mut(), addr, 
-                                    topic, data, at_least_once_delivery);
-            *index += 1;
-            ok
-        }else{
+        let Some(address) = get_address_topic(topic, self.db.as_mut()) else {
+            self.address_topic.remove(topic);
             print_error!(&format!("not found addr for topic {}", topic));
-            false
+            return false;
+        };
+        self.address_topic.insert(topic.to_string(), address.clone());
+        let index = self.last_send_index.entry(topic.to_string()).or_insert(0);
+        if *index >= address.len(){
+            *index = 0;
         }
+        let addr = &address[*index];
+        let ok = self.sender.as_mut().unwrap().send_to(self.db.as_mut(), addr, 
+                                topic, data, at_least_once_delivery);
+        *index += 1;
+        ok
     }
 
     pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
@@ -332,6 +328,16 @@ impl Client {
             print_error!("you can't unsubscribe on internal channel topic");
             return false;
         }
+        if !unsubscribe_inner(
+            topic,
+            &self.source_topic,
+            &mut self.db,
+            self.is_run,
+            &mut self.listener,
+            &mut self.subscriptions,
+        ) {
+            return false;
+        }
         if self.is_run {
             emit_internal_event(
                 self.is_run,
@@ -346,23 +352,16 @@ impl Client {
                 Some(topic),
             );
         }
-        unsubscribe_inner(
-            topic,
-            &self.source_topic,
-            &mut self.db,
-            self.is_run,
-            &mut self.listener,
-            &mut self.subscriptions,
-        )
+        true
     }
 
     pub fn refresh_address_topic(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        
-        if let Some(addr) = get_address_topic(topic, self.db.as_mut()){
+        if let Some(addr) = get_address_topic(topic, self.db.as_mut()) {
             self.address_topic.insert(topic.to_string(), addr);
             true
         } else {
+            self.address_topic.remove(topic);
             false
         }
     }
@@ -475,24 +474,20 @@ fn send_all_inner(
         print_error!("you can't send on your own topic");
         return false;
     }
-    if !address_topic.contains_key(topic) {
-        if let Some(addr) = get_address_topic(topic, db) {
-            address_topic.insert(topic.to_string(), addr);
-        }
-    }
-    if let Some(address) = address_topic.get(topic) {
-        let mut ok = true;
-        for addr in address {
-            if exclude_self && addr == localhost {
-                continue;
-            }
-            ok &= sender.send_to(db, addr, topic, data, at_least_once_delivery);
-        }
-        ok
-    } else {
+    let Some(address) = get_address_topic(topic, db) else {
+        address_topic.remove(topic);
         print_error!(&format!("not found addr for topic {}", topic));
-        false
+        return false;
+    };
+    address_topic.insert(topic.to_string(), address.clone());
+    let mut ok = true;
+    for addr in &address {
+        if exclude_self && addr == localhost {
+            continue;
+        }
+        ok &= sender.send_to(db, addr, topic, data, at_least_once_delivery);
     }
+    ok
 }
 
 fn emit_internal_event(
@@ -869,6 +864,57 @@ mod tests {
         }
         drop(client);
         Some(url)
+    }
+
+    #[test]
+    fn shared_sqlite_send_to_fails_after_runtime_unsubscribe() {
+        let dir = std::env::temp_dir().join(format!(
+            "liner_unsub_{}_{}",
+            std::process::id(),
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("shared.sqlite");
+        let db = db_path.to_str().unwrap();
+        let sub_topic = format!("topic_sub_rt_{}", std::process::id());
+
+        let mut listener = Client::new_sqlite(
+            &format!("listener_{}", std::process::id()),
+            &format!("topic_l_{}", std::process::id()),
+            "127.0.0.1:0",
+            db,
+            "",
+        )
+        .expect("listener");
+        assert!(listener.run(recv_noop, UData::null()));
+        assert!(listener.subscribe(&sub_topic));
+
+        let mut sender = Client::new_sqlite(
+            &format!("sender_{}", std::process::id()),
+            &format!("topic_s_{}", std::process::id()),
+            "127.0.0.1:0",
+            db,
+            "",
+        )
+        .expect("sender");
+        assert!(sender.run(recv_noop, UData::null()));
+        assert!(sender.refresh_address_topic(&sub_topic));
+        assert!(sender.send_to(&sub_topic, b"one", true));
+
+        assert!(listener.unsubscribe(&sub_topic));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !sender.refresh_address_topic(&sub_topic),
+            "store should have no subscribers after unsubscribe"
+        );
+        assert!(
+            !sender.send_to(&sub_topic, b"two", true),
+            "send_to should fail when topic has no subscribers"
+        );
+
+        drop(listener);
+        drop(sender);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

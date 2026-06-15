@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime
 import os
 import subprocess
+import shutil
 import sys
 import time
 from contextlib import contextmanager
@@ -174,7 +175,11 @@ def free_port() -> int:
 
 
 def ensure_release_lib() -> Path:
-    lib_path = PROJECT_ROOT / "target" / "release" / "libliner_broker.so"
+    target_base = Path(os.environ["CARGO_TARGET_DIR"]) if os.environ.get("CARGO_TARGET_DIR") else PROJECT_ROOT / "target"
+    lib_path = target_base / "release" / "libliner_broker.so"
+    deps_lib = target_base / "release" / "deps" / "libliner_broker.so"
+    if not lib_path.exists() and deps_lib.exists():
+        shutil.copy2(deps_lib, lib_path)
     if lib_path.exists():
         return lib_path
     subprocess.run(
@@ -182,6 +187,8 @@ def ensure_release_lib() -> Path:
         cwd=str(PROJECT_ROOT),
         check=True,
     )
+    if deps_lib.exists() and not lib_path.exists():
+        shutil.copy2(deps_lib, lib_path)
     if not lib_path.exists():
         raise RuntimeError(f"release library not found at {lib_path}")
     return lib_path

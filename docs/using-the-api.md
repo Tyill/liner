@@ -34,7 +34,7 @@ Every running client is subscribed to the reserved topic **`__#internal_channel`
 | `client_connected` | after **`run`** | refresh address cache for the peer’s **source topic** and for the internal channel |
 | `client_disconnected` | on client teardown | same refresh from the store |
 | `subscribed` | after **`subscribe`** while running | refresh cache for the **subscribed topic** |
-| `unsubscribed` | after **`unsubscribe`** while running | refresh cache for that topic |
+| `unsubscribed` | after **`unsubscribe`** while running | refresh cache for that topic (no subscribers left ⇒ **`send_to`** fails after refresh) |
 
 Payloads are JSON, for example: `{"event":"subscribed","client":"peer_name","topic":"foo"}`.
 
@@ -47,7 +47,7 @@ Payloads are JSON, for example: `{"event":"subscribed","client":"peer_name","top
 3. **Stale cache** — a peer re-registered on a **new port** without a clean disconnect/disconnect event sequence. Call **`refresh_address_topic(topic)`** to force a reload from the store.
 4. **Producer was not running** when the peer registered — no internal events were processed; refresh or send (empty cache loads from the store on first lookup).
 
-**`refresh_address_topic`** remains the explicit way to force a cache reload; it is optional in the common runtime connect/subscribe flow.
+**`refresh_address_topic`** remains the explicit way to force a cache reload; it **removes** a cached topic when the store has no addresses.
 
 ## Offline / persistence flags
 
