@@ -42,6 +42,8 @@ def main() -> int:
                 recv_count += 1
 
         assert l.run(on_recv), "listener failed to run"
+        assert s.run(lambda _to, _from, _data: None), "sender failed to run"
+        s.refresh_address_topic(topic)
 
         stop = threading.Event()
 
@@ -59,9 +61,6 @@ def main() -> int:
 
         t = threading.Thread(target=toggler, daemon=True)
         t.start()
-
-        assert s.run(lambda _to, _from, _data: None), "sender failed to run"
-        s.refresh_address_topic(topic)
 
         sent = 0
         while not stop.is_set():

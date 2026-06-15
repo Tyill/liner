@@ -250,7 +250,6 @@ impl Client {
         }
         let Some(address) = get_address_topic(topic, self.db.as_mut()) else {
             self.address_topic.remove(topic);
-            print_error!(&format!("not found addr for topic {}", topic));
             return false;
         };
         self.address_topic.insert(topic.to_string(), address.clone());
@@ -476,7 +475,6 @@ fn send_all_inner(
     }
     let Some(address) = get_address_topic(topic, db) else {
         address_topic.remove(topic);
-        print_error!(&format!("not found addr for topic {}", topic));
         return false;
     };
     address_topic.insert(topic.to_string(), address.clone());
