@@ -271,14 +271,8 @@ impl Client {
             return false;
         }
         let index = if let Some(slot) = self.last_send_index.get_mut(topic) {
-            if *slot >= addr_len {
-                *slot = 0;
-            }
-            let i = *slot;
-            *slot = i + 1;
-            if *slot >= addr_len {
-                *slot = 0;
-            }
+            let i = *slot % addr_len;
+            *slot = (i + 1) % addr_len;
             i
         } else {
             self.last_send_index.insert(topic.to_owned(), if addr_len > 1 { 1 } else { 0 });
@@ -543,7 +537,9 @@ fn emit_internal_event(
     };
     let address = {
         let mut db = db.lock().unwrap();
-        if let Some(addr) = get_address_topic(INTERNAL_CHANNEL_TOPIC, &mut *db, false) {
+        // Always reload peers from the store — a fresh process may emit
+        // subscribe/unsubscribe before its in-memory route cache is warm.
+        if let Some(addr) = get_address_topic(INTERNAL_CHANNEL_TOPIC, &mut *db, true) {
             address_topic.insert(INTERNAL_CHANNEL_TOPIC.to_string(), addr);
         }
         let Some(address) = resolve_send_addresses(
@@ -569,7 +565,11 @@ fn emit_internal_event(
                 continue;
             }
         }
-        let _ = sender.send_to(&addr, INTERNAL_CHANNEL_TOPIC, &bytes, false);
+        // Durable for subscribe/unsubscribe: a fresh process may emit before TCP is up,
+        // and peers must clear sender_listener from "unsubscribed". Connect/disconnect
+        // stay best-effort to avoid filling the offline queue on teardown races.
+        let durable = matches!(event, "subscribed" | "unsubscribed");
+        let _ = sender.send_to(&addr, INTERNAL_CHANNEL_TOPIC, &bytes, durable);
     }
 }
 
@@ -735,6 +735,26 @@ impl Drop for Client {
             let _lock = self.mtx.lock();
             if !self.is_run {
                 return;
+            }
+            // Drop extra catalog registrations (subscribe topics). Do not emit
+            // "unsubscribed" here — crash/teardown must keep sender_listener so
+            // at-least-once offline delivery still works; only explicit
+            // `unsubscribe` clears those routes via the internal event.
+            let extra: Vec<String> = self
+                .subscriptions
+                .values()
+                .filter(|t| t.as_str() != INTERNAL_CHANNEL_TOPIC)
+                .cloned()
+                .collect();
+            for topic in extra {
+                let _ = unsubscribe_inner(
+                    &topic,
+                    &self.source_topic,
+                    &mut *self.db.lock().unwrap(),
+                    self.is_run,
+                    &mut self.listener,
+                    &mut self.subscriptions,
+                );
             }
             // Unregister before announcing disconnect so peers refresh a catalog without us.
             if let Err(err) = self.db.lock().unwrap().unregist_topic(&self.source_topic) {
