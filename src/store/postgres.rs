@@ -33,6 +33,10 @@ fn connection_composite(unique_name: &str, source_topic: &str, listener_name: &s
     format!("{}:{}:{}", unique_name, source_topic, listener_name)
 }
 
+fn cache_name_key(topic: &str, address: &str) -> String {
+    format!("{topic}\x1f{address}")
+}
+
 fn encode_and_free_messages(mempool: &Arc<Mutex<Mempool>>, mess: Vec<Message>) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::with_capacity(mess.len());
     for m in mess {
@@ -158,7 +162,7 @@ impl Postgres {
         for row in rows {
             let addr: String = map_pg(row.try_get(0))?;
             let name: String = map_pg(row.try_get(1))?;
-            self.unique_name_cache.insert(addr.clone(), name);
+            self.unique_name_cache.insert(cache_name_key(topic, &addr), name);
             addrs.push(addr);
         }
         self.topic_addr_cache.insert(topic.to_string(), addrs);
@@ -378,7 +382,8 @@ impl Store for Postgres {
         if !self.topic_addr_cache.contains_key(topic) {
             self.init_addresses_of_topic(topic)?;
         }
-        if let Some(name) = self.unique_name_cache.get(address) {
+        let ck = cache_name_key(topic, address);
+        if let Some(name) = self.unique_name_cache.get(&ck) {
             return Ok(name.clone());
         }
         let sk = sender_key(&self.unique_name, &self.source_topic);
@@ -388,7 +393,7 @@ impl Store for Postgres {
         ))? {
             let name: String = map_pg(row.try_get(0))?;
             if !name.is_empty() {
-                self.unique_name_cache.insert(address.to_string(), name.clone());
+                self.unique_name_cache.insert(ck, name.clone());
                 return Ok(name);
             }
         }
@@ -736,8 +741,8 @@ mod tests {
         db.set_source_topic("st");
         let ck = 42i32;
         let pool = Arc::new(Mutex::new(Mempool::new()));
-        let m1 = Message::new(&pool, ck, 10, 1, b"a", true);
-        let m2 = Message::new(&pool, ck, 10, 2, b"b", true);
+        let m1 = Message::new(pool.clone(), ck, 10, 1, b"a", true).unwrap();
+        let m2 = Message::new(pool.clone(), ck, 10, 2, b"b", true).unwrap();
         db.save_messages_from_sender(&pool, ck, vec![m1, m2]).unwrap();
 
         let peek = db

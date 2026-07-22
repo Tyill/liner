@@ -1,11 +1,15 @@
 use crate::{bytestream, print_error};
 use crate::mempool::Mempool;
 use crate::settings;
+use std::cell::Cell;
 use std::io::{Write, Read};
 use std::sync::{Arc, Mutex};
 
 const COMPRESS: u8 = 0x01;
 const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
+
+/// Wire header: u64 number + i32 connection_key + i32 topic_key + u8 flags.
+const HEADER_LEN: usize = 8 + 4 + 4 + 1;
 
 pub struct Message{
     pub number_mess: u64,
@@ -13,11 +17,21 @@ pub struct Message{
     flags: u8,
     mem_alloc_pos: usize,
     mem_alloc_length: usize,
+    mempool: Arc<Mutex<Mempool>>,
+    freed: Cell<bool>,
+}
+
+impl Drop for Message {
+    fn drop(&mut self) {
+        self.free_inner();
+    }
 }
 
 impl Message{ 
-    pub fn new(mempool: &Arc<Mutex<Mempool>>, connection_key: i32, listener_topic_key: i32,
-               number_mess: u64, data: &[u8], at_least_once_delivery: bool) -> Message {
+    /// Encode `data` into the mempool. Returns `None` if the mempool lock fails (no number
+    /// should be committed by the caller in that case).
+    pub fn new(mempool: Arc<Mutex<Mempool>>, connection_key: i32, listener_topic_key: i32,
+               number_mess: u64, data: &[u8], at_least_once_delivery: bool) -> Option<Message> {
         let mut flags = 0;
         if at_least_once_delivery{
             flags |= AT_LEAST_ONCE_DELIVERY;
@@ -28,7 +42,9 @@ impl Message{
         let flags_len = std::mem::size_of::<u8>();
         let mut cdata: Option<Vec<u8>> = None;
         if data.len() > settings::MIN_SIZE_DATA_FOR_COMPRESS_BYTE{
-            cdata = Some(compress(data)); 
+            if let Some(compressed) = compress(data) {
+                cdata = Some(compressed);
+            }
         }
         let mut data_len = data.len() + std::mem::size_of::<u32>();
         if let Some(cdata) = &cdata{
@@ -40,36 +56,58 @@ impl Message{
                                listener_topic_key_len +              
                                flags_len +
                                data_len;
-        let mut mem_alloc_pos = 0;
-        let mut mem_alloc_length = 0;
-        if let Ok(mut mempool) = mempool.lock(){
-            (mem_alloc_pos, mem_alloc_length) = mempool.alloc(mess_size);
-            let number_mess_pos = mem_alloc_pos; 
-            let connection_key_pos = number_mess_pos + number_mess_len;
-            let listener_topic_key_pos = connection_key_pos + connection_key_len;        
-            let flags_pos = listener_topic_key_pos + listener_topic_key_len;
-            let data_pos = flags_pos + flags_len;
-                        
-            mempool.write_num(number_mess_pos, number_mess);
-            mempool.write_num(connection_key_pos, connection_key);
-            mempool.write_num(listener_topic_key_pos, listener_topic_key);
-            mempool.write_num(flags_pos, flags);
-            match cdata{
-                Some(cdata)=>{
-                    mempool.write_array(data_pos, &cdata);
-                },
-                None=>{
-                    mempool.write_array(data_pos, data);
-                }
+        let Ok(mut mp) = mempool.lock() else {
+            print_error!("Message::new: mempool lock poisoned");
+            return None;
+        };
+        let (mem_alloc_pos, mem_alloc_length) = mp.alloc(mess_size);
+        let number_mess_pos = mem_alloc_pos; 
+        let connection_key_pos = number_mess_pos + number_mess_len;
+        let listener_topic_key_pos = connection_key_pos + connection_key_len;        
+        let flags_pos = listener_topic_key_pos + listener_topic_key_len;
+        let data_pos = flags_pos + flags_len;
+                    
+        mp.write_num(number_mess_pos, number_mess);
+        mp.write_num(connection_key_pos, connection_key);
+        mp.write_num(listener_topic_key_pos, listener_topic_key);
+        mp.write_num(flags_pos, flags);
+        match cdata{
+            Some(cdata)=>{
+                mp.write_array(data_pos, &cdata);
+            },
+            None=>{
+                mp.write_array(data_pos, data);
             }
         }
-        Message{number_mess, listener_topic_key, flags, mem_alloc_pos, mem_alloc_length}
+        drop(mp);
+        Some(Message{
+            number_mess,
+            listener_topic_key,
+            flags,
+            mem_alloc_pos,
+            mem_alloc_length,
+            mempool,
+            freed: Cell::new(false),
+        })
     }   
 
-    pub fn free(&self, mempool: &Arc<Mutex<Mempool>>){
-        if let Ok(mut mempool) = mempool.lock(){
-            mempool.free(self.mem_alloc_pos, self.mem_alloc_length);
+    pub fn free(&self, _mempool: &Arc<Mutex<Mempool>>){
+        self.free_inner();
+    }
+
+    fn free_inner(&self) {
+        if self.freed.get() {
+            return;
         }
+        if self.mem_alloc_length == 0 {
+            self.freed.set(true);
+            return;
+        }
+        if let Ok(mut mp) = self.mempool.lock() {
+            mp.free(self.mem_alloc_pos, self.mem_alloc_length);
+            self.freed.set(true);
+        }
+        // If the lock is poisoned, leave `freed == false` so Drop/retry can try again.
     }
     
     pub fn from_stream<T>(mempool: &Arc<Mutex<Mempool>>, stream: &mut T, is_shutdown: &mut bool) -> Option<Message>
@@ -79,21 +117,62 @@ impl Message{
             *is_shutdown = is_shutdown_;
             return None;
         }
-        if let Ok(mempool) = mempool.lock(){
+        if mem_alloc_length < HEADER_LEN + std::mem::size_of::<u32>() {
+            print_error!(&format!(
+                "message too short: {} (min {})",
+                mem_alloc_length,
+                HEADER_LEN + std::mem::size_of::<u32>()
+            ));
+            if let Ok(mut mp) = mempool.lock() {
+                mp.free(mem_alloc_pos, mem_alloc_length);
+            }
+            *is_shutdown = true;
+            return None;
+        }
+        if let Ok(mp) = mempool.lock(){
             let number_mess_pos = mem_alloc_pos; 
             let number_mess_len = std::mem::size_of::<u64>();
-            let number_mess = mempool.read_u64(number_mess_pos);
+            let number_mess = mp.read_u64(number_mess_pos);
             
             let connection_key_pos = number_mess_pos + number_mess_len;
             let connection_key_len = std::mem::size_of::<i32>();
 
             let listener_topic_key_pos = connection_key_pos + connection_key_len;
             let listener_topic_key_len = std::mem::size_of::<i32>();
-            let listener_topic_key = mempool.read_u32(listener_topic_key_pos) as i32;
+            let listener_topic_key = mp.read_u32(listener_topic_key_pos) as i32;
 
             let flags_pos = listener_topic_key_pos + listener_topic_key_len;        
-            let flags = mempool.read_u8(flags_pos);
-            return Some(Message{number_mess, listener_topic_key, flags, mem_alloc_pos, mem_alloc_length});
+            let flags = mp.read_u8(flags_pos);
+
+            let data_pos = data_pos();
+            let payload_len = mp.read_u32(mem_alloc_pos + data_pos) as usize;
+            let need = data_pos + std::mem::size_of::<u32>() + payload_len;
+            if need > mem_alloc_length {
+                print_error!(&format!(
+                    "message payload overruns alloc: need {}, have {}",
+                    need, mem_alloc_length
+                ));
+                drop(mp);
+                if let Ok(mut mp) = mempool.lock() {
+                    mp.free(mem_alloc_pos, mem_alloc_length);
+                }
+                *is_shutdown = true;
+                return None;
+            }
+
+            return Some(Message{
+                number_mess,
+                listener_topic_key,
+                flags,
+                mem_alloc_pos,
+                mem_alloc_length,
+                mempool: mempool.clone(),
+                freed: Cell::new(false),
+            });
+        }
+        // Lock failed after alloc — free to avoid leak.
+        if let Ok(mut mp) = mempool.lock() {
+            mp.free(mem_alloc_pos, mem_alloc_length);
         }
         None        
     }
@@ -103,18 +182,36 @@ impl Message{
     }
 
     pub fn get_data(&self, mempool: &Arc<Mutex<Mempool>>, out: &mut Vec<u8>)->usize{ 
-        let mut data_len = 0;
-        if let Ok(mempool) = mempool.lock(){
-            let data_pos =  data_pos();
-            let size_u32 = std::mem::size_of::<u32>() as usize;
-            data_len = mempool.read_u32(self.mem_alloc_pos + data_pos) as usize;
-            if out.len() < data_len{
-                out.resize(data_len, 0);
+        let data_pos = data_pos();
+        let size_u32 = std::mem::size_of::<u32>() as usize;
+        if self.mem_alloc_length < data_pos + size_u32 {
+            print_error!("get_data: alloc shorter than header+len");
+            return 0;
+        }
+        let data_len = {
+            let Ok(mp) = mempool.lock() else {
+                return 0;
+            };
+            let data_len = mp.read_u32(self.mem_alloc_pos + data_pos) as usize;
+            if data_pos + size_u32 + data_len > self.mem_alloc_length {
+                print_error!("get_data: payload overruns alloc");
+                return 0;
             }
-            mempool.read_data(self.mem_alloc_pos + data_pos + size_u32, &mut out[..data_len]);
+            data_len
+        };
+        if out.len() < data_len {
+            out.resize(data_len, 0);
+        }
+        {
+            let Ok(mp) = mempool.lock() else {
+                return 0;
+            };
+            mp.read_data(self.mem_alloc_pos + data_pos + size_u32, &mut out[..data_len]);
         }
         if self.is_compressed(){            
-            let decomp_data = decompress(&out[..data_len]);
+            let Some(decomp_data) = decompress(&out[..data_len]) else {
+                return 0;
+            };
             if out.len() < decomp_data.len(){
                 out.resize(decomp_data.len(), 0);
             } 
@@ -150,29 +247,27 @@ fn data_pos()->usize{
     data_pos
 }
 
-fn compress(data: &[u8])->Vec<u8>{
-    let mut cdata: Vec<u8> = Vec::new(); 
+fn compress(data: &[u8])->Option<Vec<u8>>{
     match zstd::stream::encode_all(data, settings::DATA_COMPRESS_LEVEL){
         Ok(data)=>{
-            cdata = data;
+            Some(data)
         },
         Err(err)=>{
             print_error!(format!("compress error, dsz {}, err {}", data.len(), err));
+            None
         }
     }
-    cdata
 }
-fn decompress(cdata: &[u8])->Vec<u8>{
-    let mut data: Vec<u8> = Vec::new(); 
+fn decompress(cdata: &[u8])->Option<Vec<u8>>{
     match zstd::stream::decode_all(cdata){
         Ok(data_)=>{
-            data = data_;
+            Some(data_)
         },
         Err(err)=>{
             print_error!(format!("decompress error, dsz {}, err {}", cdata.len(), err));
+            None
         }
     }
-    data
 }
 
 #[cfg(test)]
@@ -188,13 +283,13 @@ mod tests {
     ) -> (Message, Vec<u8>) {
         let mempool = Arc::new(Mutex::new(Mempool::new()));
         let msg = Message::new(
-            &mempool,
+            mempool.clone(),
             connection_key,
             listener_topic_key,
             number_mess,
             payload,
             at_least_once,
-        );
+        ).unwrap();
 
         let mut wire: Vec<u8> = Vec::new();
         assert!(msg.to_stream(&mempool, &mut wire));
@@ -216,7 +311,7 @@ mod tests {
 
         let mempool = Arc::new(Mutex::new(Mempool::new()));
         // Rebuild the same wire but decode with a fresh mempool.
-        let original = Message::new(&mempool, 123, 7, 42, payload, false);
+        let original = Message::new(mempool.clone(), 123, 7, 42, payload, false).unwrap();
         let mut wire = Vec::new();
         assert!(original.to_stream(&mempool, &mut wire));
 
@@ -234,7 +329,7 @@ mod tests {
     fn at_least_once_flag_roundtrips() {
         let payload = b"x";
         let mempool = Arc::new(Mutex::new(Mempool::new()));
-        let msg = Message::new(&mempool, 1, 1, 1, payload, true);
+        let msg = Message::new(mempool.clone(), 1, 1, 1, payload, true).unwrap();
         assert!(msg.at_least_once_delivery());
 
         let mut wire = Vec::new();
@@ -247,7 +342,7 @@ mod tests {
     #[test]
     fn connection_key_supports_negative_values() {
         let mempool = Arc::new(Mutex::new(Mempool::new()));
-        let msg = Message::new(&mempool, -123, 1, 1, b"abc", false);
+        let msg = Message::new(mempool.clone(), -123, 1, 1, b"abc", false).unwrap();
         let mut wire = Vec::new();
         assert!(msg.to_stream(&mempool, &mut wire));
         let mut shutdown = false;
@@ -259,7 +354,7 @@ mod tests {
     fn get_data_resizes_output_buffer() {
         let payload = b"this is a longer payload";
         let mempool = Arc::new(Mutex::new(Mempool::new()));
-        let msg = Message::new(&mempool, 1, 1, 1, payload, false);
+        let msg = Message::new(mempool.clone(), 1, 1, 1, payload, false).unwrap();
         let mut out = vec![0u8; 1];
         let len = msg.get_data(&mempool, &mut out);
         assert_eq!(len, payload.len());
@@ -271,7 +366,7 @@ mod tests {
         // MIN_SIZE_DATA_FOR_COMPRESS_BYTE is 1MB; use slightly above.
         let payload = vec![0u8; settings::MIN_SIZE_DATA_FOR_COMPRESS_BYTE + 123];
         let mempool = Arc::new(Mutex::new(Mempool::new()));
-        let msg = Message::new(&mempool, 55, 9, 77, &payload, true);
+        let msg = Message::new(mempool.clone(), 55, 9, 77, &payload, true).unwrap();
         let mut wire = Vec::new();
         assert!(msg.to_stream(&mempool, &mut wire));
 
@@ -286,5 +381,24 @@ mod tests {
         let len = decoded.get_data(&mempool, &mut out);
         assert_eq!(len, payload.len());
         assert_eq!(&out[..len], payload.as_slice());
+    }
+
+    #[test]
+    fn from_stream_rejects_truncated_payload() {
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        // length header claims 8 bytes but only header fragment — invalid short body.
+        let mut wire: Vec<u8> = Vec::new();
+        wire.extend_from_slice(&8u32.to_be_bytes());
+        wire.extend_from_slice(&[0u8; 8]);
+        let mut shutdown = false;
+        assert!(Message::from_stream(&mempool, &mut &wire[..], &mut shutdown).is_none());
+    }
+
+    #[test]
+    fn free_is_idempotent_via_drop() {
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let msg = Message::new(mempool.clone(), 1, 1, 1, b"abc", false).unwrap();
+        msg.free(&mempool);
+        // Drop must not double-free.
     }
 }

@@ -43,6 +43,10 @@ def main() -> int:
         log("[sender] send while listener offline with at_least_once_delivery=False")
         assert s.send_to(listener_topic, payload, False), "send_to failed"
 
+        # Stop sender before listener comes online so nothing is in flight
+        # (same as Redis/Postgres at_most_once offline tests).
+        s.close()
+
         got = threading.Event()
 
         l = liner.Client.new_sqlite(listener_name, listener_topic, listener_addr, db_path, "")
@@ -56,7 +60,6 @@ def main() -> int:
         assert not got.is_set(), "unexpected delivery for at_most_once offline send"
 
         l.close()
-        s.close()
         log("OK integration_at_most_once_offline_not_persisted (sqlite)")
         return 0
     finally:

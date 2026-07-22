@@ -6,6 +6,7 @@ import asyncio
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -56,6 +57,8 @@ if __name__ == "__main__":
         raise SystemExit("liner run() failed")
 
     if args.unsubscr_topic:
+        # Brief pause so peer discovery / TCP can come up before the event is emitted.
+        time.sleep(0.3)
         h.unsubscribe(args.unsubscr_topic)
 
     loop = asyncio.new_event_loop()

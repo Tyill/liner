@@ -2,8 +2,13 @@ use crate::{print_error, settings};
 use crate::mempool::Mempool;
 
 use std::io::{Read, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
+use std::thread;
+
+fn would_block_timeout() -> Duration {
+    Duration::from_millis(settings::BYTESTREAM_WOULD_BLOCK_TIMEOUT_MS)
+}
 
 // return: mem_pos, mem_alloc_length, is_shutdown
 pub fn read_stream<T>(stream: &mut T, mempool: &Arc<Mutex<Mempool>>) -> (usize, usize, bool)
@@ -17,6 +22,7 @@ where
     let mem_pos: usize;
     let mem_alloc_length: usize;
     let mut mem_fill_length: usize = 0;
+    let mut wait_start: Option<Instant> = None;
 
     // Phase 1: read 4-byte big-endian length header (u32).
     while hdr_offs < len_hdr.len() {
@@ -26,6 +32,8 @@ where
             }
             Ok(n) => {
                 hdr_offs += n;
+                // Progress resets stall clock (timeout is idle stall, not total transfer time).
+                wait_start = None;
             }
             Err(e) => {
                 let k = e.kind();
@@ -36,8 +44,12 @@ where
                     if hdr_offs == 0 {
                         return (0, 0, false);
                     }
-                    // Busy-spin by request; yield to scheduler.
-                    std::thread::sleep(Duration::from_millis(0));
+                    let started = wait_start.get_or_insert_with(Instant::now);
+                    if started.elapsed() > would_block_timeout() {
+                        print_error!("bytestream header WouldBlock timeout");
+                        return (0, 0, true);
+                    }
+                    thread::yield_now();
                     continue;
                 }
                 print_error!(&format!("{}", k));
@@ -64,6 +76,7 @@ where
     }
 
     // Phase 2: read payload.
+    let mut payload_wait_start: Option<Instant> = None;
     while mem_fill_length < msg_len {
         let want = std::cmp::min(msg_len - mem_fill_length, buff.len());
         match stream.read(&mut buff[..want]) {
@@ -75,6 +88,7 @@ where
             Ok(n) => {
                 mempool.lock().unwrap().write_data(mem_pos + mem_fill_length, &buff[..n]);
                 mem_fill_length += n;
+                payload_wait_start = None;
             }
             Err(e) => {
                 let k = e.kind();
@@ -82,8 +96,13 @@ where
                     continue;
                 }
                 if k == std::io::ErrorKind::WouldBlock {
-                    // Busy-spin by request; yield to scheduler.
-                    std::thread::sleep(Duration::from_millis(0));
+                    let started = payload_wait_start.get_or_insert_with(Instant::now);
+                    if started.elapsed() > would_block_timeout() {
+                        print_error!("bytestream payload WouldBlock timeout");
+                        mempool.lock().unwrap().free(mem_pos, mem_alloc_length);
+                        return (0, 0, true);
+                    }
+                    thread::yield_now();
                     continue;
                 }
                 print_error!(&format!("{}", k));
@@ -110,9 +129,11 @@ where
     while wsz < mess_size{
         let endlen = std::cmp::min(mess_size - wsz + offs, BUFF_LEN);
         if !is_continue{
-            if let Ok(mempool) = mempool.lock(){
-                mempool.read_data(mem_alloc_pos + wsz, &mut buff[offs..endlen]);
-            }           
+            let Ok(mp) = mempool.lock() else {
+                print_error!("write_stream: mempool lock poisoned");
+                return false;
+            };
+            mp.read_data(mem_alloc_pos + wsz, &mut buff[offs..endlen]);
         }
         match stream.write_all(&buff[..endlen]){
             Ok(_) => {

@@ -66,6 +66,22 @@ def main() -> int:
         assert h2.send_to("topic_sub", b"one", True)
         assert got.wait(timeout=3.0), "expected echo while subscribed"
     finally:
+        # Free the port before the unsub helper binds the same address.
+        try:
+            c1.terminate()
+        except Exception:
+            pass
+        try:
+            c1.wait(timeout=2)
+        except Exception:
+            try:
+                c1.kill()
+            except Exception:
+                pass
+            try:
+                c1.wait(timeout=1)
+            except Exception:
+                pass
         unsub_proc = spawn_client1(addr1, "--unsubscr-topic=topic_sub")
         try:
             time.sleep(1.0)
@@ -81,14 +97,6 @@ def main() -> int:
                     unsub_proc.kill()
                 except Exception:
                     pass
-        try:
-            c1.kill()
-        except Exception:
-            pass
-        try:
-            c1.wait(timeout=2)
-        except Exception:
-            pass
 
     time.sleep(0.8)
     with lock:

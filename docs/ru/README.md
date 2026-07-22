@@ -18,7 +18,7 @@
 | [using-sqlite.md](using-sqlite.md) | **SQLite:** `new_sqlite`, `receivers_json`, C API, разбор эталонного теста |
 | [using-postgres.md](using-postgres.md) | **PostgreSQL:** фича `postgres`, общий URL, C/Rust/Python, тесты |
 | [using-the-api.md](using-the-api.md) | Жизненный цикл, потоки, типичные ловушки |
-| [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md) | Отключения, очереди в хранилище, интервал переподключения, `number_mess`, дедупликация |
+| [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md) | Отключения, очереди в хранилище, интервал переподключения, `number_mess`, дедупликация, привязка индекса слота accept на listener |
 | [routing-and-store-layout.md](routing-and-store-layout.md) | Маршрутизация топик → адрес, ключи Redis, таблицы SQLite, разбор для операторов |
 | [operations-redis-sqlite.md](operations-redis-sqlite.md) | Префикс `lnr_*`, область `clear_*`, Redis ≥ 6.2, WAL и резервное копирование SQLite |
 | [capacity-and-limits.md](capacity-and-limits.md) | Лимиты mempool / bytestream, порог zstd, чеклист по размерам |

@@ -36,6 +36,8 @@ Compression is **best-effort**: if encoding fails, the code logs and may still m
 
 The mempool is a bump-style arena backed by **`Vec<Vec<u8>>`** in chunks of **`MEMPOOL_CHUNK_SIZE_BYTE`** (default **256 KiB**). Allocations grow the backing store by whole chunks as needed.
 
+**Listener:** there is **one mempool per accept slot** (`mempools[ix]`), tied to the peer’s sticky `SocketAddr → ix` (see [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md#listener-accept-slots-index-affinity)). Do not reassign that slot’s mempool to another address.
+
 | Constant | Default | Role |
 |----------|---------|------|
 | **`MEMPOOL_CHUNK_SIZE_BYTE`** | 256 KiB | Growth / alignment unit for backing storage. |

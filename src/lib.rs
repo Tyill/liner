@@ -43,10 +43,40 @@ mod sender;
 mod settings;
 mod common;
 
+use std::collections::HashSet;
 use std::ffi::CStr;
 use std::ffi::CString;
+use std::sync::{Mutex, OnceLock};
 
 type UCback = Box<dyn FnMut(&str, &str, &[u8])>;
+
+fn live_clients() -> &'static Mutex<HashSet<usize>> {
+    static LIVE_CLIENTS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+    LIVE_CLIENTS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn register_live_client(ptr: *mut Client) {
+    if ptr.is_null() {
+        return;
+    }
+    if let Ok(mut live) = live_clients().lock() {
+        live.insert(ptr as usize);
+    }
+}
+
+fn take_live_client(ptr: *mut Client) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    live_clients()
+        .lock()
+        .map(|mut live| live.remove(&(ptr as usize)))
+        .unwrap_or(false)
+}
+
+fn cstring_or_empty(s: &str) -> CString {
+    CString::new(s).unwrap_or_else(|_| CString::new("").unwrap_or_default())
+}
 
 extern "C" fn cb_(to: *const i8, from: *const i8,  data: *const u8, dsize: usize, udata: *mut libc::c_void){
     unsafe {    
@@ -69,10 +99,10 @@ impl Liner {
     /// Creates a client backed by **Redis** (`redis_path` is a Redis URL, e.g. `redis://127.0.0.1/`).
     pub fn new(unique_name: &str, topic: &str, localhost: &str, redis_path: &str) -> Liner {
         unsafe {
-            let unique = CString::new(unique_name).unwrap();
-            let dbpath = CString::new(redis_path).unwrap();
-            let localhost = CString::new(localhost).unwrap();
-            let topic_client = CString::new(topic).unwrap();
+            let unique = cstring_or_empty(unique_name);
+            let dbpath = cstring_or_empty(redis_path);
+            let localhost = cstring_or_empty(localhost);
+            let topic_client = cstring_or_empty(topic);
             let hclient = lnr_new_client_redis(
                 unique.as_ptr(),
                 topic_client.as_ptr(),
@@ -94,11 +124,11 @@ impl Liner {
         receivers_json: &str,
     ) -> Liner {
         unsafe {
-            let unique = CString::new(unique_name).unwrap();
-            let path = CString::new(sqlite_path).unwrap();
-            let localhost = CString::new(localhost).unwrap();
-            let topic_c = CString::new(topic).unwrap();
-            let recv = CString::new(receivers_json).unwrap();
+            let unique = cstring_or_empty(unique_name);
+            let path = cstring_or_empty(sqlite_path);
+            let localhost = cstring_or_empty(localhost);
+            let topic_c = cstring_or_empty(topic);
+            let recv = cstring_or_empty(receivers_json);
             let hclient = lnr_new_client_sqlite(
                 unique.as_ptr(),
                 topic_c.as_ptr(),
@@ -119,10 +149,10 @@ impl Liner {
         postgres_url: &str,
     ) -> Liner {
         unsafe {
-            let unique = CString::new(unique_name).unwrap();
-            let url = CString::new(postgres_url).unwrap();
-            let localhost = CString::new(localhost).unwrap();
-            let topic_c = CString::new(topic).unwrap();
+            let unique = cstring_or_empty(unique_name);
+            let url = cstring_or_empty(postgres_url);
+            let localhost = cstring_or_empty(localhost);
+            let topic_c = cstring_or_empty(topic);
             let hclient = lnr_new_client_postgres(
                 unique.as_ptr(),
                 topic_c.as_ptr(),
@@ -154,7 +184,7 @@ impl Liner {
     /// (persist / retry semantics; use `false` when peers use different SQLite files — see `docs/using-sqlite.md`).
     pub fn send_to(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
         unsafe {
-            let topic = CString::new(topic).unwrap();
+            let topic = cstring_or_empty(topic);
             lnr_send_to(
                 self.hclient,
                 topic.as_ptr(),
@@ -167,7 +197,7 @@ impl Liner {
     /// Broadcast to all peers on `topic`. Same `at_least_once_delivery` semantics as [`Liner::send_to`].
     pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
         unsafe {
-            let topic = CString::new(topic).unwrap();
+            let topic = cstring_or_empty(topic);
             lnr_send_all(
                 self.hclient,
                 topic.as_ptr(),
@@ -179,19 +209,19 @@ impl Liner {
     }
     pub fn subscribe(&mut self, topic: &str)->bool{
         unsafe{
-            let topic = CString::new(topic).unwrap();
+            let topic = cstring_or_empty(topic);
             lnr_subscribe(self.hclient, topic.as_ptr())
         }
     }
     pub fn unsubscribe(&mut self, topic: &str)->bool{
         unsafe{
-            let topic = CString::new(topic).unwrap();
+            let topic = cstring_or_empty(topic);
             lnr_unsubscribe(self.hclient, topic.as_ptr())
         }
     }
     pub fn refresh_address_topic(&mut self, topic: &str)->bool{
         unsafe{
-            let topic = CString::new(topic).unwrap();
+            let topic = cstring_or_empty(topic);
             lnr_refresh_address_topic(self.hclient, topic.as_ptr())
         }
     }
@@ -279,8 +309,9 @@ unsafe fn new_client_inner(
         Client::new_redis(unique_name, topic, localhost, store_path)
     };
     if let Some(c) = client_opt {
-        let bx = Box::new(c);
-        Box::into_raw(bx)
+        let ptr = Box::into_raw(Box::new(c));
+        register_live_client(ptr);
+        ptr
     } else {
         std::ptr::null_mut()
     }
@@ -358,7 +389,9 @@ pub unsafe extern "C" fn lnr_new_client_postgres(
     }
 
     if let Some(c) = Client::new_postgres(unique_name, topic, localhost, postgres_url) {
-        Box::into_raw(Box::new(c))
+        let ptr = Box::into_raw(Box::new(c));
+        register_live_client(ptr);
+        ptr
     } else {
         std::ptr::null_mut()
     }
@@ -616,7 +649,12 @@ pub unsafe extern "C" fn lnr_clear_addresses_of_topic(client: *mut Client)->bool
 /// `client` must be a valid pointer returned from `lnr_new_client_*`, or null.
 #[no_mangle]
 pub unsafe extern "C" fn lnr_delete_client(client: *mut Client)->bool{
-    if !has_client(client){
+    if client.is_null() {
+        print_error!("client was not created");
+        return false;
+    }
+    if !take_live_client(client) {
+        print_error!("client already deleted or unknown");
         return false;
     }
     drop(Box::from_raw(client));
@@ -624,12 +662,14 @@ pub unsafe extern "C" fn lnr_delete_client(client: *mut Client)->bool{
 }
 
 fn has_client(client: *mut Client)->bool{
-    if !client.is_null(){
-        true
-    }else{
+    if client.is_null() {
         print_error!("client was not created");
-        false
+        return false;
     }
+    live_clients()
+        .lock()
+        .map(|live| live.contains(&(client as usize)))
+        .unwrap_or(false)
 }
 
 #[macro_export]
