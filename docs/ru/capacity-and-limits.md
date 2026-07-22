@@ -36,6 +36,8 @@
 
 Mempool — арена в стиле bump на базе **`Vec<Vec<u8>>`** чанками по **`MEMPOOL_CHUNK_SIZE_BYTE`** (по умолчанию **256 КиБ**). Выделения наращивают хранилище целыми чанками по мере необходимости.
 
+**Listener:** **один mempool на слот accept** (`mempools[ix]`), привязан к sticky `SocketAddr → ix` (см. [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md#слоты-accept-на-listener-привязка-индекса)). Не отдавайте mempool этого слота другому адресу.
+
 | Константа | По умолчанию | Роль |
 |-----------|---------------|------|
 | **`MEMPOOL_CHUNK_SIZE_BYTE`** | 256 КиБ | Единица роста / выравнивания бэкинга. |

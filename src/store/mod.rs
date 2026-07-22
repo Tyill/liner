@@ -47,7 +47,7 @@ pub fn open_store(unique_name: &str, backend: StoreBackend) -> DbResult<Box<dyn 
     }
 }
 
-/// Same backends as [`open_store`], wrapped for listener/sender threads.
+/// Same backends as [`open_store`], shared across Client / Listener / Sender threads.
 pub fn open_store_mutex(
     unique_name: &str,
     backend: StoreBackend,

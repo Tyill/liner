@@ -39,6 +39,19 @@ On the **listener**, when reading from the wire (`read_stream`):
 
 Therefore **retries or duplicates with the same or an older number cannot be delivered to the application twice**. New work only appears when the sender uses a **strictly larger** `number_mess`.
 
+## Listener accept slots (index affinity)
+
+On the **listener**, each accepted peer is tracked by a single slot index `ix` shared across parallel vectors in `src/listener.rs`:
+
+- `streams[ix]` — TCP read stream  
+- `senders[ix]` — `connection_key`, `last_mess_num*`  
+- `mempools[ix]` — that peer’s mempool  
+- `messages[ix]` — queued messages for the receive callback  
+
+The accept map keeps **`SocketAddr → ix` for the lifetime of that peer identity**. Closing the TCP socket only deregisters the fd; it must **not** free `ix` into a pool for a **different** address. A later accept from the **same** `SocketAddr` reuses that `ix` and keeps mempool / message-number state. Handing a “free” index to another peer would mix mempools and ACK state across connections.
+
+New addresses always **append** a new slot (`push`); growth under ephemeral-port churn is accepted. Do not “optimize” with a cross-peer free-list.
+
 ## How sender and listener stay in sync with the store
 
 - The **listener** periodically persists the highest **`last_mess_num`** it has accepted to the store (**`set_last_mess_number_from_listener`**), gated by **`UPDATE_LAST_MESS_NUMBER_TIMEOUT_MS`** (currently **1000 ms**) in the receive path—so acknowledgements are flushed to the DB about once per second under normal timing, not on every single message.
@@ -58,6 +71,7 @@ Together, **`number_mess`** plus the stored **last acknowledged number per `conn
 | Listener offline / TCP down (at-least-once) | Unacknowledged messages can be **saved in Redis/SQLite**; sender **retries TCP ~every 10 s**; on success, **loads queued messages** from the store and sends them. |
 | Best-effort sends | **No** guarantee of persistence across disconnects. |
 | Duplicate wire deliveries | **Suppressed** on the listener when `number_mess` is not greater than the last accepted value for that connection. |
+| Listener accept index | Sticky **`SocketAddr → ix`**; never recycle `ix` across different addresses (mempool / ACK state). |
 | Ack timing | Listener flushes acks to the store on a **~1 s** cadence (`UPDATE_LAST_MESS_NUMBER_TIMEOUT_MS`). |
 | Isolated SQLite (different path per process) | Do **not** use **`at_least_once_delivery == true`** for cross-peer sends unless you accept unbounded RAM / wrong ack sync; use **`false`** or a **shared** catalog file. |
 

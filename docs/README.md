@@ -18,7 +18,7 @@ Supplements the [crate docs on docs.rs](https://docs.rs/liner_broker/) and the p
 | [using-sqlite.md](using-sqlite.md) | **SQLite how-to:** `new_sqlite`, `receivers_json`, C API, reference test walkthrough |
 | [using-postgres.md](using-postgres.md) | **PostgreSQL how-to:** `--features postgres`, shared URL, C/Rust/Python, tests |
 | [using-the-api.md](using-the-api.md) | Lifecycle, threading, common pitfalls |
-| [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md) | Disconnects, store-backed queues, reconnect interval, `number_mess`, deduplication |
+| [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md) | Disconnects, store-backed queues, reconnect interval, `number_mess`, deduplication, listener accept-slot index affinity |
 | [routing-and-store-layout.md](routing-and-store-layout.md) | Topic → address routing, Redis keys, SQLite tables, operator troubleshooting |
 | [operations-redis-sqlite.md](operations-redis-sqlite.md) | `lnr_*` prefix, `clear_*` scope, Redis ≥ 6.2, SQLite WAL and backup |
 | [capacity-and-limits.md](capacity-and-limits.md) | Mempool / bytestream limits, zstd threshold, sizing checklist |

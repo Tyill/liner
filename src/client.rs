@@ -8,15 +8,14 @@ use crate::settings::INTERNAL_CHANNEL_TOPIC;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::ffi::CStr;
 use mio::net::TcpListener;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 
 pub struct Client{
     unique_name: String,
     source_topic: String,
     localhost: String,
-    store_backend: crate::store::StoreBackend,
-    db: Box<dyn Store>,
+    db: Arc<Mutex<dyn Store>>,
     listener: Option<Listener>,
     sender: Option<Sender>,
     last_send_index: HashMap<String, usize>,
@@ -35,14 +34,16 @@ impl Client {
         let store_backend = crate::store::StoreBackend::Redis {
             url: redis_url.to_string(),
         };
-        let mut db = crate::store::open_store(unique_name, store_backend.clone()).ok()?;
-        db.set_source_topic(topic);
-        db.set_source_localhost(localhost);
+        let db = crate::store::open_store_mutex(unique_name, store_backend).ok()?;
+        {
+            let mut db = db.lock().ok()?;
+            db.set_source_topic(topic);
+            db.set_source_localhost(localhost);
+        }
         Some(Self {
             unique_name: unique_name.to_string(),
             source_topic: topic.to_string(),
             localhost: localhost.to_string(),
-            store_backend,
             db,
             listener: None,
             sender: None,
@@ -67,21 +68,24 @@ impl Client {
         let store_backend = crate::store::StoreBackend::Sqlite {
             path: sqlite_path.to_string(),
         };
-        let mut db = crate::store::open_store(unique_name, store_backend.clone()).ok()?;
-        db.set_source_topic(topic);
-        db.set_source_localhost(localhost);
-        let trimmed = receivers_json.trim();
-        if !trimmed.is_empty() {
-            match serde_json::from_str::<Vec<crate::store::ReceiverSeedEntry>>(trimmed) {
-                Ok(entries) => {
-                    if let Err(err) = db.seed_receivers(&entries) {
-                        print_error!(&format!("seed_receivers: {}", err));
+        let db = crate::store::open_store_mutex(unique_name, store_backend).ok()?;
+        {
+            let mut db = db.lock().ok()?;
+            db.set_source_topic(topic);
+            db.set_source_localhost(localhost);
+            let trimmed = receivers_json.trim();
+            if !trimmed.is_empty() {
+                match serde_json::from_str::<Vec<crate::store::ReceiverSeedEntry>>(trimmed) {
+                    Ok(entries) => {
+                        if let Err(err) = db.seed_receivers(&entries) {
+                            print_error!(&format!("seed_receivers: {}", err));
+                            return None;
+                        }
+                    }
+                    Err(err) => {
+                        print_error!(&format!("receivers_json parse error: {}", err));
                         return None;
                     }
-                }
-                Err(err) => {
-                    print_error!(&format!("receivers_json parse error: {}", err));
-                    return None;
                 }
             }
         }
@@ -89,7 +93,6 @@ impl Client {
             unique_name: unique_name.to_string(),
             source_topic: topic.to_string(),
             localhost: localhost.to_string(),
-            store_backend,
             db,
             listener: None,
             sender: None,
@@ -118,14 +121,16 @@ impl Client {
         let store_backend = crate::store::StoreBackend::Postgres {
             url: postgres_url.to_string(),
         };
-        let mut db = crate::store::open_store(unique_name, store_backend.clone()).ok()?;
-        db.set_source_topic(topic);
-        db.set_source_localhost(localhost);
+        let db = crate::store::open_store_mutex(unique_name, store_backend).ok()?;
+        {
+            let mut db = db.lock().ok()?;
+            db.set_source_topic(topic);
+            db.set_source_localhost(localhost);
+        }
         Some(Self {
             unique_name: unique_name.to_string(),
             source_topic: topic.to_string(),
             localhost: localhost.to_string(),
-            store_backend,
             db,
             listener: None,
             sender: None,
@@ -160,10 +165,6 @@ impl Client {
             print_error!("client already is running");
             return true;
         }
-        if let Err(err) = self.db.regist_topic(&self.source_topic){
-            print_error!(&format!("{}", err));
-            return false;
-        }
         let sa = str_to_socket_addr(&self.localhost);
         if sa.is_none(){
             return false;
@@ -176,46 +177,39 @@ impl Client {
             }
         };
         self.bound_listen_addr = tcp_listener.local_addr().ok().map(|a| a.to_string());
-        if let Some(bound) = self.bound_listen_addr.clone() {
-            if bound != self.localhost {
-                let stale = self.localhost.clone();
-                self.db.set_source_localhost(&stale);
-                if let Err(err) = self.db.unregist_topic(&self.source_topic) {
-                    print_error!(&format!("{}", err));
-                    return false;
+        // Register only after bind so port-0 peers never see `host:0`.
+        {
+            let mut db = self.db.lock().unwrap();
+            if let Some(bound) = self.bound_listen_addr.clone() {
+                if bound != self.localhost {
+                    self.localhost = bound.clone();
                 }
-                self.localhost = bound.clone();
-                self.db.set_source_localhost(&bound);
-                if let Err(err) = self.db.regist_topic(&self.source_topic) {
-                    print_error!(&format!("{}", err));
-                    return false;
-                }
+                db.set_source_localhost(&self.localhost);
+            }
+            if let Err(err) = db.regist_topic(&self.source_topic){
+                print_error!(&format!("{}", err));
+                return false;
             }
         }
         self.user_receive_cb = Some(receive_cb);
         self.user_receive_udata = udata;
         self.listener = Some(Listener::new(
             tcp_listener,
-            &self.unique_name,
-            self.store_backend.clone(),
+            self.db.clone(),
             &self.source_topic,
             &self.subscriptions,
             client_receive_wrapper,
             UData(client_ptr as *mut libc::c_void),
         ));
-        self.sender = Some(Sender::new(
-            &self.unique_name,
-            self.store_backend.clone(),
-            &self.source_topic,
-        ));
+        self.sender = Some(Sender::new(self.db.clone(), &self.source_topic));
         if let Some(sender) = self.sender.as_mut() {
-            sender.load_prev_connects(self.db.as_mut());
+            sender.load_prev_connects(&mut *self.db.lock().unwrap());
         }
         self.is_run = true;
         if !subscribe_inner(
             INTERNAL_CHANNEL_TOPIC,
             &self.source_topic,
-            &mut self.db,
+            &mut *self.db.lock().unwrap(),
             self.is_run,
             &mut self.listener,
             &mut self.subscriptions,
@@ -230,9 +224,8 @@ impl Client {
             &self.unique_name,
             &self.source_topic,
             self.bound_listen_addr.as_deref(),
-            &self.localhost,
             &mut self.address_topic,
-            self.db.as_mut(),
+            &self.db,
             self.sender.as_mut().unwrap(),
             "client_connected",
             None,
@@ -242,51 +235,109 @@ impl Client {
     }
 
     pub fn send_to(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
+        // Hold mtx for route + ensure + enqueue so concurrent FFI calls stay serialized
+        // (see docs/using-the-api.md). Store is still only locked briefly in ensure_send_route.
         let _lock = self.mtx.lock().unwrap();
-        if !self.is_run{
+        if !self.is_run {
             print_error!("you can't send_to because client not is running");
             return false;
         }
-        if topic == self.source_topic{
+        if topic == self.source_topic {
             print_error!("you can't send on your own topic");
             return false;
         }
-        let Some(address) = resolve_send_addresses(
-            topic,
-            at_least_once_delivery,
-            &mut self.address_topic,
-            self.db.as_mut(),
-        ) else {
-            self.address_topic.remove(topic);
-            return false;
+        apply_failed_routes(&mut self.address_topic, self.sender.as_mut());
+        let address = if let Some(cached) = self
+            .address_topic
+            .get(topic)
+            .filter(|a| !a.is_empty())
+        {
+            cached.as_slice()
+        } else {
+            let Some(address) = resolve_send_addresses(
+                topic,
+                at_least_once_delivery,
+                &mut self.address_topic,
+                &mut *self.db.lock().unwrap(),
+            ) else {
+                self.address_topic.remove(topic);
+                return false;
+            };
+            address
         };
         if !self.last_send_index.contains_key(topic) {
             self.last_send_index.insert(topic.to_owned(), 0);
         }
         let index = self.last_send_index.get_mut(topic).unwrap();
-        if *index >= address.len(){
+        if *index >= address.len() {
             *index = 0;
         }
         let addr = address[*index].clone();
         *index += 1;
-        self.sender.as_mut().unwrap().send_to(self.db.as_mut(), &addr, 
-                                topic, data, at_least_once_delivery)
+
+        let sender = self.sender.as_mut().unwrap();
+        if sender.needs_store_for_send(&addr, topic) {
+            let mut db = self.db.lock().unwrap();
+            if !sender.ensure_send_route(&mut *db, &addr, topic) {
+                return false;
+            }
+        }
+        sender.send_to(&addr, topic, data, at_least_once_delivery)
     }
 
     pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
         let _lock = self.mtx.lock().unwrap();
-        send_all_inner(
-            self.is_run,
-            &self.source_topic,
-            &self.localhost,
-            &mut self.address_topic,
-            self.db.as_mut(),
-            self.sender.as_mut().unwrap(),
-            topic,
-            data,
-            at_least_once_delivery,
-            false,
-        )
+        if !self.is_run {
+            print_error!("you can't send_all because client not is running");
+            return false;
+        }
+        if topic == self.source_topic {
+            print_error!("you can't send on your own topic");
+            return false;
+        }
+        apply_failed_routes(&mut self.address_topic, self.sender.as_mut());
+        let addrs = if let Some(cached) = self
+            .address_topic
+            .get(topic)
+            .filter(|a| !a.is_empty())
+        {
+            cached.to_vec()
+        } else {
+            let Some(address) = resolve_send_addresses(
+                topic,
+                at_least_once_delivery,
+                &mut self.address_topic,
+                &mut *self.db.lock().unwrap(),
+            ) else {
+                self.address_topic.remove(topic);
+                return false;
+            };
+            address.to_vec()
+        };
+        let sender = self.sender.as_mut().unwrap();
+        let mut warm_ok = vec![true; addrs.len()];
+        if addrs
+            .iter()
+            .any(|addr| sender.needs_store_for_send(addr, topic))
+        {
+            let mut db = self.db.lock().unwrap();
+            for (i, addr) in addrs.iter().enumerate() {
+                if sender.needs_store_for_send(addr, topic)
+                    && !sender.ensure_send_route(&mut *db, addr, topic)
+                {
+                    warm_ok[i] = false;
+                }
+            }
+        }
+        let mut ok = true;
+        for (i, addr) in addrs.iter().enumerate() {
+            if !warm_ok[i] {
+                ok = false;
+                continue;
+            }
+            ok &= sender.send_to(addr, topic, data, at_least_once_delivery);
+        }
+        ok
     }
 
     pub fn subscribe(&mut self, topic: &str) -> bool {
@@ -302,7 +353,7 @@ impl Client {
         if !subscribe_inner(
             topic,
             &self.source_topic,
-            &mut self.db,
+            &mut *self.db.lock().unwrap(),
             self.is_run,
             &mut self.listener,
             &mut self.subscriptions,
@@ -315,9 +366,8 @@ impl Client {
                 &self.unique_name,
                 &self.source_topic,
                 self.bound_listen_addr.as_deref(),
-                &self.localhost,
                 &mut self.address_topic,
-                self.db.as_mut(),
+                &self.db,
                 self.sender.as_mut().unwrap(),
                 "subscribed",
                 Some(topic),
@@ -339,7 +389,7 @@ impl Client {
         if !unsubscribe_inner(
             topic,
             &self.source_topic,
-            &mut self.db,
+            &mut *self.db.lock().unwrap(),
             self.is_run,
             &mut self.listener,
             &mut self.subscriptions,
@@ -352,9 +402,8 @@ impl Client {
                 &self.unique_name,
                 &self.source_topic,
                 self.bound_listen_addr.as_deref(),
-                &self.localhost,
                 &mut self.address_topic,
-                self.db.as_mut(),
+                &self.db,
                 self.sender.as_mut().unwrap(),
                 "unsubscribed",
                 Some(topic),
@@ -365,7 +414,7 @@ impl Client {
 
     pub fn refresh_address_topic(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        refresh_address_topic_cache(&mut self.address_topic, self.db.as_mut(), topic)
+        refresh_address_topic_cache(&mut self.address_topic, &mut *self.db.lock().unwrap(), topic)
     }
 
     pub fn clear_stored_messages(&mut self) -> bool {
@@ -374,7 +423,7 @@ impl Client {
             print_error!("you can't clear_stored_messages because client already is running");
             return false;
         }
-        if let Err(err) = self.db.clear_stored_messages(){
+        if let Err(err) = self.db.lock().unwrap().clear_stored_messages(){
             print_error!(&format!("{}", err));
             return false;
         }
@@ -386,7 +435,7 @@ impl Client {
             print_error!("you can't clear_addresses_of_topic because client already is running");
             return false;
         }
-        if let Err(err) = self.db.clear_addresses_of_topic(){
+        if let Err(err) = self.db.lock().unwrap().clear_addresses_of_topic(){
             print_error!(&format!("{}", err));
             return false;
         }
@@ -397,7 +446,7 @@ impl Client {
 fn subscribe_inner(
     topic: &str,
     source_topic: &str,
-    db: &mut Box<dyn Store>,
+    db: &mut dyn Store,
     is_run: bool,
     listener: &mut Option<Listener>,
     subscriptions: &mut HashMap<i32, String>,
@@ -428,7 +477,7 @@ fn subscribe_inner(
 fn unsubscribe_inner(
     topic: &str,
     source_topic: &str,
-    db: &mut Box<dyn Store>,
+    db: &mut dyn Store,
     is_run: bool,
     listener: &mut Option<Listener>,
     subscriptions: &mut HashMap<i32, String>,
@@ -437,57 +486,22 @@ fn unsubscribe_inner(
         print_error!("you can't unsubscribe on your own topic");
         return false;
     }
-    if let Err(err) = db.unregist_topic(topic) {
-        print_error!(&format!("{}", err));
-        return false;
-    }
-    match db.get_topic_key(topic) {
-        Ok(topic_key) => {
-            if is_run {
-                listener.as_mut().unwrap().unsubscribe(topic_key);
-            }
-            subscriptions.remove(&topic_key);
-        }
+    let topic_key = match db.get_topic_key(topic) {
+        Ok(topic_key) => topic_key,
         Err(err) => {
             print_error!(&format!("{}", err));
             return false;
         }
-    }
-    true
-}
-
-fn send_all_inner(
-    is_run: bool,
-    source_topic: &str,
-    localhost: &str,
-    address_topic: &mut HashMap<String, Vec<String>>,
-    db: &mut dyn Store,
-    sender: &mut Sender,
-    topic: &str,
-    data: &[u8],
-    at_least_once_delivery: bool,
-    exclude_self: bool,
-) -> bool {
-    if !is_run {
-        print_error!("you can't send_all because client not is running");
-        return false;
-    }
-    if topic == source_topic {
-        print_error!("you can't send on your own topic");
-        return false;
-    }
-    let Some(address) = resolve_send_addresses(topic, at_least_once_delivery, address_topic, db) else {
-        address_topic.remove(topic);
-        return false;
     };
-    let mut ok = true;
-    for addr in address {
-        if exclude_self && addr == localhost {
-            continue;
-        }
-        ok &= sender.send_to(db, addr, topic, data, at_least_once_delivery);
+    if let Err(err) = db.unregist_topic(topic) {
+        print_error!(&format!("{}", err));
+        return false;
     }
-    ok
+    if is_run {
+        listener.as_mut().unwrap().unsubscribe(topic_key);
+    }
+    subscriptions.remove(&topic_key);
+    true
 }
 
 fn emit_internal_event(
@@ -495,9 +509,8 @@ fn emit_internal_event(
     unique_name: &str,
     source_topic: &str,
     bound_listen_addr: Option<&str>,
-    localhost: &str,
     address_topic: &mut HashMap<String, Vec<String>>,
-    db: &mut dyn Store,
+    db: &Arc<Mutex<dyn Store>>,
     sender: &mut Sender,
     event: &str,
     subscription_topic: Option<&str>,
@@ -512,27 +525,42 @@ fn emit_internal_event(
         "topic": topic_field,
     });
     if event == "client_connected" {
-        let addr = bound_listen_addr.unwrap_or(localhost);
+        let addr = bound_listen_addr.unwrap_or("");
         value["addr"] = serde_json::Value::String(addr.to_string());
     }
     let Ok(bytes) = serde_json::to_vec(&value) else {
         return;
     };
-    if let Some(addr) = get_address_topic(INTERNAL_CHANNEL_TOPIC, db, false) {
-        address_topic.insert(INTERNAL_CHANNEL_TOPIC.to_string(), addr);
+    let address = {
+        let mut db = db.lock().unwrap();
+        if let Some(addr) = get_address_topic(INTERNAL_CHANNEL_TOPIC, &mut *db, false) {
+            address_topic.insert(INTERNAL_CHANNEL_TOPIC.to_string(), addr);
+        }
+        let Some(address) = resolve_send_addresses(
+            INTERNAL_CHANNEL_TOPIC,
+            false,
+            address_topic,
+            &mut *db,
+        ) else {
+            address_topic.remove(INTERNAL_CHANNEL_TOPIC);
+            return;
+        };
+        address.to_vec()
+    };
+    for addr in address {
+        {
+            let mut db = db.lock().unwrap();
+            if let Ok(name) = db.get_listener_unique_name(INTERNAL_CHANNEL_TOPIC, &addr) {
+                if name == unique_name {
+                    continue;
+                }
+            }
+            if !sender.ensure_send_route(&mut *db, &addr, INTERNAL_CHANNEL_TOPIC) {
+                continue;
+            }
+        }
+        let _ = sender.send_to(&addr, INTERNAL_CHANNEL_TOPIC, &bytes, false);
     }
-    let _ = send_all_inner(
-        is_run,
-        source_topic,
-        localhost,
-        address_topic,
-        db,
-        sender,
-        INTERNAL_CHANNEL_TOPIC,
-        &bytes,
-        false,
-        true,
-    );
 }
 
 extern "C" fn client_receive_wrapper(
@@ -574,16 +602,16 @@ fn apply_internal_channel_event(client: &mut Client, data: &[u8]) {
     };
     if let Some(t) = value.get("topic").and_then(|v| v.as_str()) {
         if t != INTERNAL_CHANNEL_TOPIC {
-            refresh_address_topic_cache(&mut client.address_topic, client.db.as_mut(), t);
+            refresh_address_topic_cache(&mut client.address_topic, &mut *client.db.lock().unwrap(), t);
             if event == "unsubscribed" {
-                let _ = client.db.remove_sender_listeners_on_topic(t);
+                let _ = client.db.lock().unwrap().remove_sender_listeners_on_topic(t);
             }
         }
     }
     if matches!(event, "client_connected" | "client_disconnected") {
         refresh_address_topic_cache(
             &mut client.address_topic,
-            client.db.as_mut(),
+            &mut *client.db.lock().unwrap(),
             INTERNAL_CHANNEL_TOPIC,
         );
     }
@@ -600,6 +628,32 @@ fn refresh_address_topic_cache(
     } else {
         address_topic.remove(topic);
         false
+    }
+}
+
+fn apply_failed_routes(
+    address_topic: &mut HashMap<String, Vec<String>>,
+    sender: Option<&mut Sender>,
+) {
+    let Some(sender) = sender else {
+        return;
+    };
+    let failed = sender.drain_failed_addrs();
+    if failed.is_empty() {
+        return;
+    }
+    let mut topics_to_refresh = Vec::new();
+    for (topic, addrs) in address_topic.iter_mut() {
+        let before = addrs.len();
+        addrs.retain(|a| !failed.contains(a));
+        if addrs.len() != before {
+            topics_to_refresh.push(topic.clone());
+        }
+    }
+    for topic in topics_to_refresh {
+        if address_topic.get(&topic).is_some_and(|a| a.is_empty()) {
+            address_topic.remove(&topic);
+        }
     }
 }
 
@@ -673,13 +727,13 @@ impl Drop for Client {
                 return;
             }
             // Unregister before announcing disconnect so peers refresh a catalog without us.
-            if let Err(err) = self.db.unregist_topic(&self.source_topic) {
+            if let Err(err) = self.db.lock().unwrap().unregist_topic(&self.source_topic) {
                 print_error!(&format!("{}", err));
             }
             let _ = unsubscribe_inner(
                 INTERNAL_CHANNEL_TOPIC,
                 &self.source_topic,
-                &mut self.db,
+                &mut *self.db.lock().unwrap(),
                 self.is_run,
                 &mut self.listener,
                 &mut self.subscriptions,
@@ -690,9 +744,8 @@ impl Drop for Client {
                     &self.unique_name,
                     &self.source_topic,
                     self.bound_listen_addr.as_deref(),
-                    &self.localhost,
                     &mut self.address_topic,
-                    self.db.as_mut(),
+                    &self.db,
                     sender,
                     "client_disconnected",
                     None,

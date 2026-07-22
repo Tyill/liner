@@ -189,7 +189,19 @@ impl Mempool{
         }
     }    
     pub fn free(&mut self, pos: usize, length: usize){
-        self.free_mem.get_mut(&length).unwrap().1.push(pos);
+        if length == 0 {
+            return;
+        }
+        // `entry.0` is the size-class block count (allocated + free), not `entry.1.len()`.
+        // Alloc/`new_mem` bumps count; free only returns a position to the free list.
+        let Some(entry) = self.free_mem.get_mut(&length) else {
+            return;
+        };
+        if entry.1.contains(&pos) {
+            // Already freed — ignore double-free.
+            return;
+        }
+        entry.1.push(pos);
         self.free_len += length;
         self.free_count += 1;
         if self.free_count > settings::MEMPOOL_FREE_COUNT_FOR_RESIZE{

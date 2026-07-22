@@ -1,6 +1,6 @@
 use crate::message::Message;
 use crate::mempool::Mempool;
-use crate::store::{open_store_mutex, Store, StoreBackend};
+use crate::store::Store;
 use crate::settings;
 use crate::common;
 use crate::{UCbackIntern, UData};
@@ -39,6 +39,11 @@ type MempoolList = Vec<Arc<Mutex<Mempool>>>;
 type SenderList = Vec<Sender>;
 type ReadStreamList = Vec<Arc<Mutex<ReadStream>>>; 
 
+/// Accept/token index `ix` is shared across `streams[ix]`, `senders[ix]`, `mempools[ix]`,
+/// and `messages[ix]`, and is owned by one `SocketAddr` in the accept map for the life of
+/// that peer identity. Do **not** recycle `ix` into a free-list for a different address:
+/// the mempool and `last_mess_num` / `connection_key` on that slot belong to the original peer.
+/// Same `SocketAddr` reconnecting must reuse its own `ix` (see `listener_accept`).
 pub struct Listener{
     stream_thread: Option<JoinHandle<()>>,
     receive_thread: Option<JoinHandle<()>>,
@@ -50,7 +55,7 @@ pub struct Listener{
 
 impl Listener {
     pub fn new(mut listener: TcpListener,
-               unique_name: &str, store_backend: StoreBackend, source_topic: &str, subscriptions: &HashMap<i32, String>, receive_cb: UCbackIntern, udata: UData)->Listener{
+               db: Arc<Mutex<dyn Store>>, source_topic: &str, subscriptions: &HashMap<i32, String>, receive_cb: UCbackIntern, udata: UData)->Listener{
         let mut poll = Poll::new().expect("couldn't create poll queue");
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let mut messages_ = messages.clone();
@@ -58,8 +63,6 @@ impl Listener {
         let mempools_= mempools.clone();
         let mut senders: Arc<Mutex<SenderList>> = Arc::new(Mutex::new(Vec::new()));
         let senders_ = senders.clone();
-        let db: Arc<Mutex<dyn Store>> =
-            open_store_mutex(unique_name, store_backend).expect("couldn't open store");
         db.lock().unwrap().set_source_topic(source_topic);
         let db_ = db.clone();
       
@@ -81,6 +84,8 @@ impl Listener {
         let waker = Arc::new(Waker::new(poll.registry(), WAKER).expect("couldn't create Waker"));
         let stream_thread = thread::spawn(move|| {            
             let mut streams: ReadStreamList = Vec::new();
+            // Sticky SocketAddr → slot index. Kept across TCP close so reconnect reuses the
+            // same streams/senders/mempools/messages index (never hand a freed ix to another addr).
             let mut address: HashMap<SocketAddr, usize> = HashMap::new();
             let mut events = Events::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
             loop{ 
@@ -291,8 +296,10 @@ fn listener_accept(poll: &Poll,
                         } else {
                             print_error!("listener_accept: messages lock poisoned");
                         }
-                        address.insert(addr, address.len());
+                        address.insert(addr, streams.len() - 1);
                     }else{
+                        // Same SocketAddr reconnects: keep index + mempool/sender/`last_mess_num`.
+                        // Only replace the TCP stream — do not reset parallel slot vectors.
                         streams[ix] = Arc::new(Mutex::new(ReadStream{
                             stream: Some(stream),
                             is_active: false,
@@ -454,6 +461,8 @@ fn read_stream(token: Token,
 }
 
 fn cleanup_closed_streams(poll: &Poll, streams: &mut ReadStreamList) {
+    // Drop the TCP fd only. Leave `address` → index and mempool/sender slots intact so a later
+    // accept from the same SocketAddr reclaims its own index (see module docs on `Listener`).
     for stream_lock in streams.iter() {
         let mut to_deregister: Option<TcpStream> = None;
         if let Ok(mut s) = stream_lock.lock() {
@@ -478,17 +487,41 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
 
 fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
                            db: &Arc<Mutex<dyn Store>>){
-    for sender in senders.lock().unwrap().iter_mut(){
-        if sender.connection_key >= 0 && sender.last_mess_num_saved < sender.last_mess_num{
-            set_last_mess_number(db, sender.connection_key, sender.last_mess_num);
-            sender.last_mess_num_saved = sender.last_mess_num;
+    let updates: Vec<(usize, i32, u64)> = {
+        let senders = senders.lock().unwrap();
+        let mut out = Vec::new();
+        for (ix, sender) in senders.iter().enumerate() {
+            if sender.connection_key >= 0 && sender.last_mess_num_saved < sender.last_mess_num {
+                out.push((ix, sender.connection_key, sender.last_mess_num));
+            }
+        }
+        out
+    };
+    if updates.is_empty() {
+        return;
+    }
+    let mut succeeded: Vec<(usize, u64)> = Vec::with_capacity(updates.len());
+    {
+        let mut db = db.lock().unwrap();
+        for (ix, connection_key, last_mess_num) in updates {
+            match db.set_last_mess_number_from_listener(connection_key, last_mess_num) {
+                Ok(()) => succeeded.push((ix, last_mess_num)),
+                Err(err) => {
+                    print_error!(&format!("couldn't db.set_last_mess_number: {}", err));
+                }
+            }
         }
     }
-}
-
-fn set_last_mess_number(db: &Arc<Mutex<dyn Store>>, connection_key: i32, last_mess_num: u64){
-    if let Err(err) = db.lock().unwrap().set_last_mess_number_from_listener(connection_key, last_mess_num){
-        print_error!(&format!("couldn't db.set_last_mess_number: {}", err));
+    if succeeded.is_empty() {
+        return;
+    }
+    let mut senders = senders.lock().unwrap();
+    for (ix, last_mess_num) in succeeded {
+        if let Some(sender) = senders.get_mut(ix) {
+            if sender.connection_key >= 0 && sender.last_mess_num_saved < last_mess_num {
+                sender.last_mess_num_saved = last_mess_num;
+            }
+        }
     }
 }
 
@@ -635,7 +668,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::from([(7, "to_topic".to_string())])));
 
         let data = b"hello";
-        let msg = Message::new(&mempool, 1, 7, 1, data, false);
+        let msg = Message::new(&mempool, 1, 7, 1, data, false).unwrap();
         messages.lock().unwrap()[0] = Some(vec![msg]);
 
         let (udata_ptr, raw_mutex) = make_udata_ptr();
@@ -676,7 +709,7 @@ mod tests {
         let listener_topic: Arc<Mutex<HashMap<i32, String>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
-        let msg = Message::new(&mempool, 1, 123, 1, b"hello", false);
+        let msg = Message::new(&mempool, 1, 123, 1, b"hello", false).unwrap();
         messages.lock().unwrap()[0] = Some(vec![msg]);
 
         let (udata_ptr, raw_mutex) = make_udata_ptr();
@@ -714,7 +747,7 @@ mod tests {
         let listener_topic: Arc<Mutex<HashMap<i32, String>>> =
             Arc::new(Mutex::new(HashMap::from([(7, "to\0topic".to_string())])));
 
-        let msg = Message::new(&mempool, 1, 7, 1, b"hello", false);
+        let msg = Message::new(&mempool, 1, 7, 1, b"hello", false).unwrap();
         messages.lock().unwrap()[0] = Some(vec![msg]);
 
         let (udata_ptr, raw_mutex) = make_udata_ptr();
@@ -821,7 +854,7 @@ mod tests {
             joins.push(std::thread::spawn(move || {
                 for i in 0..per_producer {
                     let number = (p * per_producer + i) as u64 + 1;
-                    let msg = Message::new(&mempool_p, 1, 7, number, b"x", false);
+                    let msg = Message::new(&mempool_p, 1, 7, number, b"x", false).unwrap();
                     let mut guard = messages_p.lock().unwrap();
                     if let Some(slot) = guard.get_mut(0) {
                         if let Some(v) = slot.as_mut() {

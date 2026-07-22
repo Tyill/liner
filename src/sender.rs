@@ -1,6 +1,6 @@
 use crate::mempool::Mempool;
 use crate::message::Message;
-use crate::store::{open_store_mutex, Store, StoreBackend};
+use crate::store::Store;
 use crate::{print_error, print_debug};
 use crate::settings;
 use crate::common;
@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::thread;
 use std::io::{BufWriter, Write};
 use std::net::TcpStream;
@@ -60,6 +60,8 @@ pub struct Sender{
     last_mess_number: Vec<u64>,
     connection_key: Vec<i32>,
     topic_keys: HashMap<String, i32>, // listener_topic -> wire topic_key
+    failed_addrs: Arc<Mutex<HashSet<String>>>,
+    has_failed_addrs: Arc<AtomicBool>,
     is_new_addr: Arc<AtomicBool>,
     is_close: Arc<AtomicBool>,
     delay_write_cvar: Arc<(Mutex<bool>, Condvar)>,
@@ -67,7 +69,7 @@ pub struct Sender{
 }
 
 impl Sender {
-    pub fn new(unique_name: &str, store_backend: StoreBackend, source_topic: &str)->Sender{
+    pub fn new(db: Arc<Mutex<dyn Store>>, source_topic: &str)->Sender{
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let messages_ = messages.clone();
         let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(Vec::new()));
@@ -75,9 +77,8 @@ impl Sender {
         let addrs_for: HashMap<String, usize> = HashMap::new();
         let addrs_new: Arc<Mutex<Vec<Address>>> = Arc::new(Mutex::new(Vec::new()));
         let mut addrs_new_ = addrs_new.clone();
-        let db: Arc<Mutex<dyn Store>> =
-            open_store_mutex(unique_name, store_backend).expect("couldn't open store");
         db.lock().unwrap().set_source_topic(source_topic);
+        let db_thread = db.clone();
         
         let delay_write_cvar = Arc::new((Mutex::new(false), Condvar::new()));
         let delay_write_cvar_ = delay_write_cvar.clone();
@@ -85,6 +86,10 @@ impl Sender {
         let is_new_addr_ = is_new_addr.clone();
         let is_close = Arc::new(AtomicBool::new(false));
         let is_close_ = is_close.clone();
+        let failed_addrs: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let failed_addrs_ = failed_addrs.clone();
+        let has_failed_addrs = Arc::new(AtomicBool::new(false));
+        let has_failed_addrs_ = has_failed_addrs.clone();
         let wdelay_thread = thread::spawn(move||{
             let mut streams: WriteStreamList = Vec::new();
             let mut prev_time: [u64; 2] = [common::current_time_ms(); 2];
@@ -98,6 +103,7 @@ impl Sender {
                     // or if we were just active in the previous loop.
                     if !has_new_mess && !ppl_wait && !is_new_addr_.load(Ordering::Relaxed){
                         *_started = false;
+                        // Wake-on-work via cvar; long timeout only for periodic maintenance.
                         match cvar.wait_timeout(
                             _started,
                             Duration::from_millis(settings::SENDER_THREAD_WAIT_TIMEOUT_MS),
@@ -112,8 +118,8 @@ impl Sender {
                         }
                     } 
                 }
-                if settings::SENDER_THREAD_WRITE_MESS_DELAY_MS > 0 && !has_new_mess{
-                    std::thread::sleep(Duration::from_millis(settings::SENDER_THREAD_WRITE_MESS_DELAY_MS));
+                if settings::SENDER_THREAD_IDLE_BACKOFF_MS > 0 && !has_new_mess{
+                    std::thread::sleep(Duration::from_millis(settings::SENDER_THREAD_IDLE_BACKOFF_MS));
                     has_new_mess = check_has_messages(&streams, &messages_);
                 }
                 ppl_wait = has_new_mess;
@@ -122,14 +128,22 @@ impl Sender {
                 }
                 let ctime = common::current_time_ms();
                 if check_available_stream(&is_new_addr_, ctime, &mut prev_time[0]) {
-                    append_streams(&mut streams, &mut addrs_new_, &db, &messages_, &mempools_);
+                    append_streams(
+                        &mut streams,
+                        &mut addrs_new_,
+                        &db_thread,
+                        &messages_,
+                        &mempools_,
+                        &failed_addrs_,
+                        &has_failed_addrs_,
+                    );
                 }
                 if timeout_update_last_mess_number(ctime, &mut prev_time[1]){
-                    update_last_mess_number(&mut streams, &db, &messages_, &mempools_);
+                    update_last_mess_number(&mut streams, &db_thread, &messages_, &mempools_);
                 }
-                check_streams_close(&mut streams, &addrs_new_, &db, &messages_, &mempools_);
+                check_streams_close(&mut streams, &addrs_new_, &db_thread, &messages_, &mempools_);
             }
-            close_streams(&streams, &addrs_new_, &db, &messages_, &mempools_);
+            close_streams(&streams, &addrs_new_, &db_thread, &messages_, &mempools_);
         });
         Self{
             addrs_for,
@@ -139,25 +153,97 @@ impl Sender {
             last_mess_number: Vec::new(),
             connection_key: Vec::new(),
             topic_keys: HashMap::new(),
+            failed_addrs,
+            has_failed_addrs,
             is_new_addr,
             is_close,
             delay_write_cvar,
             wdelay_thread: Some(wdelay_thread),
         }
     }
-    
-    pub fn send_to(&mut self, db: &mut dyn Store, addr_to: &str, listener_topic: &str, 
-                   data: &[u8], at_least_once_delivery: bool)->bool{
-        let (ix, is_new_addr) = match self.addrs_for.get(addr_to) {
-            Some(&ix) => (ix, false),
-            None => {
-                if !self.append_new_state(db, addr_to, listener_topic){
+
+    pub fn drain_failed_addrs(&mut self) -> HashSet<String> {
+        if !self.has_failed_addrs.load(Ordering::Relaxed) {
+            return HashSet::new();
+        }
+        let taken = self
+            .failed_addrs
+            .lock()
+            .map(|mut g| std::mem::take(&mut *g))
+            .unwrap_or_default();
+        // Only clear the flag if nothing new arrived during the take.
+        if let Ok(g) = self.failed_addrs.lock() {
+            if g.is_empty() {
+                self.has_failed_addrs.store(false, Ordering::Relaxed);
+            }
+        }
+        taken
+    }
+
+    /// True when enqueue needs the shared store (unknown addr and/or topic_key).
+    pub fn needs_store_for_send(&self, addr_to: &str, listener_topic: &str) -> bool {
+        !self.addrs_for.contains_key(addr_to) || !self.topic_keys.contains_key(listener_topic)
+    }
+
+    /// Warm `addrs_for` / `topic_keys` (and kick connect for new addr). Hold store only here —
+    /// not across `Message::new` / compress.
+    pub fn ensure_send_route(
+        &mut self,
+        db: &mut dyn Store,
+        addr_to: &str,
+        listener_topic: &str,
+    ) -> bool {
+        if !self.addrs_for.contains_key(addr_to) {
+            if !self.append_new_state(db, addr_to, listener_topic) {
+                return false;
+            }
+            let ix = self.addrs_for.len();
+            let connection_key = match self.connection_key.get(ix) {
+                Some(&ck) => ck,
+                None => {
+                    print_error!(&format!(
+                        "ensure_send_route: connection_key missing after append, addr={}",
+                        addr_to
+                    ));
                     return false;
                 }
-                let ix = self.addrs_for.len();
-                self.addrs_for.insert(addr_to.to_string(), ix);
-                (ix, true)
+            };
+            self.addrs_for.insert(addr_to.to_string(), ix);
+            self.addrs_new.lock().unwrap().push(Address {
+                ix,
+                connection_key,
+                address: addr_to.to_string(),
+            });
+            self.is_new_addr.store(true, Ordering::Relaxed);
+        }
+        if !self.topic_keys.contains_key(listener_topic) {
+            match db.get_topic_key(listener_topic) {
+                Ok(key) => {
+                    self.topic_keys.insert(listener_topic.to_owned(), key);
+                }
+                Err(err) => {
+                    print_error!(format!(
+                        "couldn't db.get_topic_key {}, err {}",
+                        listener_topic, err
+                    ));
+                    return false;
+                }
             }
+        }
+        true
+    }
+
+    /// Enqueue message. Caller must have warm route (`ensure_send_route` or prior sends).
+    pub fn send_to(
+        &mut self,
+        addr_to: &str,
+        listener_topic: &str,
+        data: &[u8],
+        at_least_once_delivery: bool,
+    ) -> bool {
+        let Some(&ix) = self.addrs_for.get(addr_to) else {
+            print_error!(&format!("send_to: address not prepared: {}", addr_to));
+            return false;
         };
         let connection_key = match self.connection_key.get(ix) {
             Some(v) => *v,
@@ -169,24 +255,18 @@ impl Sender {
                 return false;
             }
         };
-        let listener_topic_key = if let Some(&key) = self.topic_keys.get(listener_topic) {
-            key
-        } else {
-            match db.get_topic_key(listener_topic) {
-                Ok(key) => {
-                    self.topic_keys.insert(listener_topic.to_owned(), key);
-                    key
-                }
-                Err(err) => {
-                    print_error!(format!("couldn't db.get_topic_key {}, err {}", listener_topic, err));
-                    return false;
-                }
-            }
+        let Some(&listener_topic_key) = self.topic_keys.get(listener_topic) else {
+            print_error!(&format!(
+                "send_to: topic_key not prepared: {}",
+                listener_topic
+            ));
+            return false;
         };
-        let number_mess = match self.last_mess_number.get_mut(ix) {
+        let number_mess = match self.last_mess_number.get(ix) {
             Some(slot) => {
-                *slot += 1;
-                *slot
+                // u64 wrap is effectively unreachable; checked fail would permanently
+                // wedge this connection_key with no recovery short of peer restart.
+                slot.wrapping_add(1)
             }
             None => {
                 print_error!(&format!(
@@ -196,7 +276,7 @@ impl Sender {
                 return false;
             }
         };
-       
+
         let mempool = match self.mempools.lock() {
             Ok(mps) => match mps.get(ix) {
                 Some(mp) => mp.clone(),
@@ -213,22 +293,19 @@ impl Sender {
                 return false;
             }
         };
-        let mess = Message::new(
+        let Some(mess) = Message::new(
             &mempool,
             connection_key,
             listener_topic_key,
             number_mess,
             data,
             at_least_once_delivery,
-        );
+        ) else {
+            return false;
+        };
+        // Commit sequence only after encode succeeded.
+        self.last_mess_number[ix] = number_mess;
         self.send_mess_notify(mess, ix);
-               
-        if is_new_addr{
-            self.addrs_new.lock().unwrap().push(Address{ix,
-                                                        connection_key,
-                                                        address: addr_to.to_string()});
-            self.is_new_addr.store(true, Ordering::Relaxed);
-        }
         true
     }
     
@@ -420,8 +497,18 @@ fn update_last_mess_number(streams: &mut WriteStreamList,
             connection_keys.push(stream.connection_key);
         }
     }
-    for (ix, connection_key) in connection_keys.iter().enumerate(){
-        match db.lock().unwrap().get_last_mess_number_for_sender(*connection_key){
+    let last_numbers: Vec<Result<u64, String>> = {
+        let mut db = db.lock().unwrap();
+        connection_keys
+            .iter()
+            .map(|ck| {
+                db.get_last_mess_number_for_sender(*ck)
+                    .map_err(|err| err.to_string())
+            })
+            .collect()
+    };
+    for (ix, result) in last_numbers.into_iter().enumerate(){
+        match result{
             Ok(last_mess_number)=>{
                 if let Some(stream_lock) = streams.get_mut(ix) {
                     if let Ok(mut s) = stream_lock.lock() {
@@ -476,13 +563,17 @@ fn update_last_mess_number(streams: &mut WriteStreamList,
     }
 }
 
-fn append_streams(streams: &mut WriteStreamList,
+fn append_streams(streams: &mut WriteStreamList, 
                   addrs: &mut Arc<Mutex<Vec<Address>>>,
                   db: &Arc<Mutex<dyn Store>>,
                   messages: &Arc<Mutex<MessList>>,
-                  mempools: &Arc<Mutex<MempoolList>>){
+                  mempools: &Arc<Mutex<MempoolList>>,
+                  failed_addrs: &Arc<Mutex<HashSet<String>>>,
+                  has_failed_addrs: &Arc<AtomicBool>){
+    // Take the queue so we don't hold `addrs` across connect/db (ensure_send_route also pushes here).
+    let pending: Vec<Address> = std::mem::take(&mut *addrs.lock().unwrap());
     let mut addrs_lost: Vec<Address> = Vec::new();
-    for addr in addrs.lock().unwrap().iter(){
+    for addr in pending {
         match TcpStream::connect(&addr.address){
             Ok(stream)=>{
                 // Use blocking sockets for the sender side.
@@ -493,13 +584,13 @@ fn append_streams(streams: &mut WriteStreamList,
                         Some(mp) => mp.clone(),
                         None => {
                             print_error!(&format!("append_streams: mempool index out of bounds {}", addr.ix));
-                            addrs_lost.push(addr.clone());
+                            addrs_lost.push(addr);
                             continue;
                         }
                     },
                     Err(_) => {
                         print_error!("append_streams: mempools lock poisoned");
-                        addrs_lost.push(addr.clone());
+                        addrs_lost.push(addr);
                         continue;
                     }
                 };
@@ -538,11 +629,16 @@ fn append_streams(streams: &mut WriteStreamList,
                 streams[addr.ix] = Arc::new(Mutex::new(wstream));                
             },
             Err(_err)=>{
-                addrs_lost.push(addr.clone());
+                if let Ok(mut failed) = failed_addrs.lock() {
+                    failed.insert(addr.address.clone());
+                }
+                has_failed_addrs.store(true, Ordering::Relaxed);
                 print_debug!(&format!("tcp connect, {} {}", _err, addr.address));
                 if let Ok(mut mess_lock) = messages.lock() {
                     if let Some(slot) = mess_lock.get_mut(addr.ix) {
                         if let Some(mess) = slot.take() {
+                            // Release messages before db — append_new_state/emit hold db then messages.
+                            drop(mess_lock);
                             save_mess_to_db(mess, db, addr.ix, addr.connection_key, mempools);
                         }
                     } else {
@@ -550,11 +646,15 @@ fn append_streams(streams: &mut WriteStreamList,
                     }
                 } else {
                     print_error!("append_streams: messages lock poisoned");
-                }                
+                }
+                addrs_lost.push(addr);
             }
         }
     }
-    *addrs.lock().unwrap() = addrs_lost;
+    // Re-queue failures; keep any addresses pushed by ensure_send_route while we were connecting.
+    if !addrs_lost.is_empty() {
+        addrs.lock().unwrap().extend(addrs_lost);
+    }
 }
 
 fn write_stream(stream: &Arc<Mutex<WriteStream>>,
@@ -702,6 +802,7 @@ fn check_streams_close(streams: &mut WriteStreamList,
                 if let Ok(mut ml) = messages.lock() {
                     if let Some(slot) = ml.get_mut(ix) {
                         if let Some(mess) = slot.take() {
+                            drop(ml);
                             save_mess_to_db(mess, db, ix, connection_key, mempools);
                         }
                     } else {
@@ -780,9 +881,14 @@ fn close_streams(streams: &WriteStreamList,
             stream.has_close_request = true;
         }
     }
-    for (ix, mess) in messages.lock().unwrap().iter_mut().enumerate(){
-        if let Some(mess_for_send) = mess.take(){
-            if !mess_for_send.is_empty(){
+    let mut pending: Vec<(usize, i32, Vec<Message>)> = Vec::new();
+    {
+        let mut messages = messages.lock().unwrap();
+        for (ix, mess) in messages.iter_mut().enumerate() {
+            if let Some(mess_for_send) = mess.take() {
+                if mess_for_send.is_empty() {
+                    continue;
+                }
                 let connection_key = streams
                     .get(ix)
                     .and_then(|s| s.lock().ok().map(|s| s.connection_key))
@@ -793,10 +899,13 @@ fn close_streams(streams: &WriteStreamList,
                             .and_then(|addrs| addrs.iter().find(|a| a.ix == ix).map(|a| a.connection_key))
                     });
                 if let Some(connection_key) = connection_key {
-                    save_mess_to_db(mess_for_send, db, ix, connection_key, mempools);
+                    pending.push((ix, connection_key, mess_for_send));
                 }
-            }          
+            }
         }
+    }
+    for (ix, connection_key, mess_for_send) in pending {
+        save_mess_to_db(mess_for_send, db, ix, connection_key, mempools);
     }
 }
 
@@ -842,7 +951,7 @@ mod tests {
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(vec![None]));
         let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(vec![mempool.clone()]));
 
-        let mess = Message::new(&mempool, 777, 42, 1, b"hello", false);
+        let mess = Message::new(&mempool, 777, 42, 1, b"hello", false).unwrap();
         messages.lock().unwrap()[0] = Some(vec![mess]);
 
         let ws = WriteStream {
@@ -902,7 +1011,7 @@ mod tests {
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(vec![None]));
         let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(vec![mempool.clone()]));
 
-        let mess = Message::new(&mempool, 888, 123, 1, b"payload", true);
+        let mess = Message::new(&mempool, 888, 123, 1, b"payload", true).unwrap();
         messages.lock().unwrap()[0] = Some(vec![mess]);
 
         let ws = WriteStream {
@@ -956,7 +1065,7 @@ mod tests {
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(vec![None]));
         let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(vec![mempool.clone()]));
 
-        let mess = Message::new(&mempool, 999, 7, 1, b"ack-me", true);
+        let mess = Message::new(&mempool, 999, 7, 1, b"ack-me", true).unwrap();
         messages.lock().unwrap()[0] = Some(vec![mess]);
 
         let ws = WriteStream {
