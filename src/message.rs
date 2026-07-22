@@ -96,15 +96,18 @@ impl Message{
     }
 
     fn free_inner(&self) {
-        if self.freed.replace(true) {
+        if self.freed.get() {
             return;
         }
         if self.mem_alloc_length == 0 {
+            self.freed.set(true);
             return;
         }
         if let Ok(mut mp) = self.mempool.lock() {
             mp.free(self.mem_alloc_pos, self.mem_alloc_length);
+            self.freed.set(true);
         }
+        // If the lock is poisoned, leave `freed == false` so Drop/retry can try again.
     }
     
     pub fn from_stream<T>(mempool: &Arc<Mutex<Mempool>>, stream: &mut T, is_shutdown: &mut bool) -> Option<Message>

@@ -324,12 +324,19 @@ impl Sender {
                         "send_mess_notify: messages index out of bounds: {}",
                         ix
                     ));
+                    drop(mess); // Drop → free_inner
                 }
-            } 
+            } else {
+                print_error!("send_mess_notify: messages lock poisoned");
+                drop(mess);
+            }
             if !*_started{
                 *_started = true;
                 cvar.notify_one();
             }
+        } else {
+            print_error!("send_mess_notify: delay_write_cvar lock poisoned");
+            drop(mess);
         }
     }
      
@@ -365,6 +372,7 @@ impl Sender {
                 if mess.number_mess > last_mess_num {
                     last_mess_num = mess.number_mess;
                 }
+                mess.free(&mempool);
             }
         } else {
             print_error!("db.load_last_message_for_sender");
@@ -611,17 +619,39 @@ fn append_streams(streams: &mut WriteStreamList,
                         print_error!(&format!("db.load_messages_for_sender, {} {}", addr.address, err));
                     }
                 }
-                let mut last_send_mess_number: u64 = 0;
+                let mut last_ack_mess_number: u64 = 0;
                 if let Ok(num) = db.lock().unwrap().get_last_mess_number_for_sender(addr.connection_key){
-                    last_send_mess_number = num;
+                    last_ack_mess_number = num;
                 }else{
                     print_error!(format!("couldn't db.get_last_mess_number_for_sender {}", addr.address));
+                }
+                // Drop already-ACKed messages loaded from the store so reconnect cannot
+                // re-inflate the mempool with persisted at-least-once payloads.
+                if last_ack_mess_number > 0 {
+                    if let Ok(mut mess_lock) = messages.lock() {
+                        if let Some(slot) = mess_lock.get_mut(addr.ix) {
+                            if let Some(mut queued) = slot.take() {
+                                let mut keep = Vec::new();
+                                for m in queued.drain(..) {
+                                    if last_ack_mess_number < m.number_mess {
+                                        keep.push(m);
+                                    } else {
+                                        m.free(&mempool);
+                                    }
+                                }
+                                if !keep.is_empty() {
+                                    *slot = Some(keep);
+                                }
+                            }
+                        }
+                    }
                 }
                 let wstream = WriteStream{ix: addr.ix,
                                                        connection_key: addr.connection_key,  
                                                        address: addr.address.clone(),
                                                        stream: Arc::new(Some(stream)), 
-                                                       last_send_mess_number, last_mess_number: 0,
+                                                       last_send_mess_number: last_ack_mess_number,
+                                                       last_mess_number: last_ack_mess_number,
                                                        is_active: false, has_close_request: false, is_closed: false};
                 while addr.ix >= streams.len() {
                     streams.push(Arc::new(Mutex::new(WriteStream::new())));

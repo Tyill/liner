@@ -192,16 +192,18 @@ impl Mempool{
         if length == 0 {
             return;
         }
-        // `entry.0` is the size-class block count (allocated + free), not `entry.1.len()`.
-        // Alloc/`new_mem` bumps count; free only returns a position to the free list.
-        let Some(entry) = self.free_mem.get_mut(&length) else {
-            return;
-        };
+        // Size-class bucket can be missing after coalescing removed the last free
+        // entry of this size while same-sized allocations were still live, or if
+        // accounting drifted. Recreate it — never silently drop a free.
+        let entry = self.free_mem.entry(length).or_insert_with(|| (0, Vec::new()));
         if entry.1.contains(&pos) {
             // Already freed — ignore double-free.
             return;
         }
         entry.1.push(pos);
+        if entry.0 == 0 {
+            entry.0 = 1;
+        }
         self.free_len += length;
         self.free_count += 1;
         if self.free_count > settings::MEMPOOL_FREE_COUNT_FOR_RESIZE{
@@ -709,5 +711,39 @@ mod tests {
         // With a large request, alloc() can't satisfy it either, so we expect None.
         let got = mp.check_free_mem(2 * chunk);
         assert_eq!(got, None);
+    }
+
+    #[test]
+    fn alloc_free_1mb_reuses_without_growth() {
+        let mut mp = Mempool::new();
+        let sz = 1024 * 1024 + 17;
+        let (p0, l0) = mp.alloc(sz);
+        assert_eq!(l0, sz);
+        let chunks_after_first = mp.buff.len();
+        mp.free(p0, l0);
+        for i in 0..200 {
+            let (p, l) = mp.alloc(sz);
+            assert_eq!(l, sz, "iter {i}");
+            mp.free(p, l);
+        }
+        assert_eq!(
+            mp.buff.len(),
+            chunks_after_first,
+            "buff grew: free_len={} keys={:?}",
+            mp.free_len,
+            mp.free_mem.keys().copied().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn free_restores_missing_size_bucket() {
+        let mut mp = Mempool::new();
+        let (p, l) = mp.alloc(128);
+        mp.free_mem.clear();
+        mp.free_len = 0;
+        mp.free(p, l);
+        assert!(mp.free_mem.get(&l).is_some_and(|e| e.1.contains(&p)));
+        let (p2, l2) = mp.alloc(128);
+        assert_eq!((p2, l2), (p, l));
     }
 }

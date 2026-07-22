@@ -99,21 +99,55 @@ impl Redis {
     pub fn clear_stored_messages(&mut self)->RedisResult<()>{
         let key = format!("{}:{}", redis_safe(&self.unique_name), redis_safe(&self.source_topic));
         let addr_topic: Vec<(String, String)>;
+        let conn_key_pattern = format!(
+            "lnr_connection:{}:{}:*:key",
+            redis_safe(&self.unique_name),
+            redis_safe(&self.source_topic)
+        );
         {
             let dbconn = self.get_dbconn()?;
             addr_topic = dbconn.hgetall(&format!("lnr_sender:{key}:listener"))?;
         }
-        for t in addr_topic{
-            if let Ok(listener_name) = self.get_listener_unique_name(&t.1, &t.0){
-                if let Ok(connection_key) = self.get_connection_key_for_sender(&listener_name){
-                    let dbconn = self.get_dbconn()?;
-                    let () = dbconn.del(&format!("lnr_connection:{connection_key}:messages"))?;
-                    let () = dbconn.del(&format!("lnr_connection:{connection_key}:mess_number"))?;
+        let mut connection_keys: Vec<i32> = Vec::new();
+        for t in &addr_topic {
+            // Prefer persisted listener name (topic\x1fname); fall back to catalog lookup.
+            let listener_topic = t.1.split('\x1f').next().unwrap_or(t.1.as_str());
+            let listener_name = t
+                .1
+                .split_once('\x1f')
+                .map(|(_, n)| n.to_string())
+                .filter(|n| !n.is_empty())
+                .or_else(|| self.get_listener_unique_name(listener_topic, &t.0).ok());
+            if let Some(listener_name) = listener_name {
+                if let Ok(connection_key) = self.get_connection_key_for_sender(&listener_name) {
+                    connection_keys.push(connection_key);
                 }
             }
         }
-        let dbconn = self.get_dbconn()?;
-        let () = dbconn.del(&format!("lnr_sender:{key}:listener"))?;       
+        // Also pick up connection keys from the mapping keys themselves — covers orphans
+        // left after kill -9 when listener-hash lookup fails.
+        {
+            let dbconn = self.get_dbconn()?;
+            let mapped: Vec<String> = dbconn.keys(&conn_key_pattern)?;
+            for map_key in mapped {
+                let res: Option<String> = dbconn.get(&map_key)?;
+                if let Some(res) = res {
+                    if let Ok(ck) = parse_i32_res(&res, "invalid connection key") {
+                        connection_keys.push(ck);
+                    }
+                }
+            }
+        }
+        connection_keys.sort_unstable();
+        connection_keys.dedup();
+        {
+            let dbconn = self.get_dbconn()?;
+            for connection_key in connection_keys {
+                let () = dbconn.del(&format!("lnr_connection:{connection_key}:messages"))?;
+                let () = dbconn.del(&format!("lnr_connection:{connection_key}:mess_number"))?;
+            }
+            let () = dbconn.del(&format!("lnr_sender:{key}:listener"))?;
+        }
         Ok(())
     }
            
