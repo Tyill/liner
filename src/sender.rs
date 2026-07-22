@@ -295,7 +295,7 @@ impl Sender {
             }
         };
         let Some(mess) = Message::new(
-            &mempool,
+            mempool,
             connection_key,
             listener_topic_key,
             number_mess,
@@ -447,17 +447,29 @@ fn send_mess_to_listener(streams: &WriteStreamList,
                          messages: &Arc<Mutex<MessList>>,
                          mempools: &Arc<Mutex<MempoolList>>,
                          delay_write_cvar: &Arc<(Mutex<bool>, Condvar)>){
-    for (ix, mess) in messages.lock().unwrap().iter().enumerate(){
-        if let Some(stream) = streams.get(ix){            
-            if let Some(mess) = mess.as_ref(){
-                if let Some(last) = mess.last() {
-                    let has_mess =
-                        last.number_mess > stream.lock().unwrap().last_send_mess_number;
-                    if has_mess {
-                        write_stream(stream, messages, mempools, delay_write_cvar.clone());
+    // Snapshot writable indices under the messages lock, then spawn writes without
+    // holding it (enqueue / other peers must not stall on this).
+    let to_write: Vec<usize> = {
+        let mess_lock = messages.lock().unwrap();
+        let mut out = Vec::new();
+        for (ix, mess) in mess_lock.iter().enumerate() {
+            if let Some(stream) = streams.get(ix) {
+                if let Some(mess) = mess.as_ref() {
+                    if let Some(last) = mess.last() {
+                        let has_mess =
+                            last.number_mess > stream.lock().unwrap().last_send_mess_number;
+                        if has_mess {
+                            out.push(ix);
+                        }
                     }
                 }
             }
+        }
+        out
+    };
+    for ix in to_write {
+        if let Some(stream) = streams.get(ix) {
+            write_stream(stream, messages, mempools, delay_write_cvar.clone());
         }
     }
 }
@@ -997,7 +1009,7 @@ mod tests {
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(vec![None]));
         let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(vec![mempool.clone()]));
 
-        let mess = Message::new(&mempool, 777, 42, 1, b"hello", false).unwrap();
+        let mess = Message::new(mempool.clone(), 777, 42, 1, b"hello", false).unwrap();
         messages.lock().unwrap()[0] = Some(vec![mess]);
 
         let ws = WriteStream {
@@ -1058,7 +1070,7 @@ mod tests {
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(vec![None]));
         let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(vec![mempool.clone()]));
 
-        let mess = Message::new(&mempool, 888, 123, 1, b"payload", true).unwrap();
+        let mess = Message::new(mempool.clone(), 888, 123, 1, b"payload", true).unwrap();
         messages.lock().unwrap()[0] = Some(vec![mess]);
 
         let ws = WriteStream {
@@ -1113,7 +1125,7 @@ mod tests {
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(vec![None]));
         let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(vec![mempool.clone()]));
 
-        let mess = Message::new(&mempool, 999, 7, 1, b"ack-me", true).unwrap();
+        let mess = Message::new(mempool.clone(), 999, 7, 1, b"ack-me", true).unwrap();
         messages.lock().unwrap()[0] = Some(vec![mess]);
 
         let ws = WriteStream {

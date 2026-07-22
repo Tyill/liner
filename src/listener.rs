@@ -669,7 +669,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::from([(7, "to_topic".to_string())])));
 
         let data = b"hello";
-        let msg = Message::new(&mempool, 1, 7, 1, data, false).unwrap();
+        let msg = Message::new(mempool.clone(), 1, 7, 1, data, false).unwrap();
         messages.lock().unwrap()[0] = Some(vec![msg]);
 
         let (udata_ptr, raw_mutex) = make_udata_ptr();
@@ -710,7 +710,7 @@ mod tests {
         let listener_topic: Arc<Mutex<HashMap<i32, String>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
-        let msg = Message::new(&mempool, 1, 123, 1, b"hello", false).unwrap();
+        let msg = Message::new(mempool.clone(), 1, 123, 1, b"hello", false).unwrap();
         messages.lock().unwrap()[0] = Some(vec![msg]);
 
         let (udata_ptr, raw_mutex) = make_udata_ptr();
@@ -748,7 +748,7 @@ mod tests {
         let listener_topic: Arc<Mutex<HashMap<i32, String>>> =
             Arc::new(Mutex::new(HashMap::from([(7, "to\0topic".to_string())])));
 
-        let msg = Message::new(&mempool, 1, 7, 1, b"hello", false).unwrap();
+        let msg = Message::new(mempool.clone(), 1, 7, 1, b"hello", false).unwrap();
         messages.lock().unwrap()[0] = Some(vec![msg]);
 
         let (udata_ptr, raw_mutex) = make_udata_ptr();
@@ -855,7 +855,7 @@ mod tests {
             joins.push(std::thread::spawn(move || {
                 for i in 0..per_producer {
                     let number = (p * per_producer + i) as u64 + 1;
-                    let msg = Message::new(&mempool_p, 1, 7, number, b"x", false).unwrap();
+                    let msg = Message::new(mempool_p.clone(), 1, 7, number, b"x", false).unwrap();
                     let mut guard = messages_p.lock().unwrap();
                     if let Some(slot) = guard.get_mut(0) {
                         if let Some(v) = slot.as_mut() {

@@ -741,8 +741,8 @@ mod tests {
         db.set_source_topic("st");
         let ck = 42i32;
         let pool = Arc::new(Mutex::new(Mempool::new()));
-        let m1 = Message::new(&pool, ck, 10, 1, b"a", true).unwrap();
-        let m2 = Message::new(&pool, ck, 10, 2, b"b", true).unwrap();
+        let m1 = Message::new(pool.clone(), ck, 10, 1, b"a", true).unwrap();
+        let m2 = Message::new(pool.clone(), ck, 10, 2, b"b", true).unwrap();
         db.save_messages_from_sender(&pool, ck, vec![m1, m2]).unwrap();
 
         let peek = db

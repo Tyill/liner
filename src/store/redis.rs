@@ -599,8 +599,8 @@ mod tests {
         let free_before = mempool.lock().unwrap().debug_free_len();
         let count_before = mempool.lock().unwrap().debug_free_count();
 
-        let m1 = Message::new(&mempool, connection_key, 10, 1, b"hello", true).unwrap();
-        let m2 = Message::new(&mempool, connection_key, 10, 2, b"world", true).unwrap();
+        let m1 = Message::new(mempool.clone(), connection_key, 10, 1, b"hello", true).unwrap();
+        let m2 = Message::new(mempool.clone(), connection_key, 10, 2, b"world", true).unwrap();
 
         c.save_messages_from_sender(&mempool, connection_key, vec![m1, m2])
             .expect("save_messages_from_sender");
@@ -644,8 +644,8 @@ mod tests {
         let free_before = mempool.lock().unwrap().debug_free_len();
         let count_before = mempool.lock().unwrap().debug_free_count();
 
-        let m1 = Message::new(&mempool, 1, 10, 1, b"hello", true).unwrap();
-        let m2 = Message::new(&mempool, 1, 10, 2, b"world", true).unwrap();
+        let m1 = Message::new(mempool.clone(), 1, 10, 1, b"hello", true).unwrap();
+        let m2 = Message::new(mempool.clone(), 1, 10, 2, b"world", true).unwrap();
 
         let encoded = encode_and_free_messages(&mempool, vec![m1, m2]);
         assert_eq!(encoded.len(), 2);

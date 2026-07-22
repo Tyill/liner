@@ -247,42 +247,52 @@ impl Client {
             return false;
         }
         apply_failed_routes(&mut self.address_topic, self.sender.as_mut());
-        let address = if let Some(cached) = self
+        // Resolve routes first so round-robin can borrow the address without cloning.
+        if self
             .address_topic
             .get(topic)
-            .filter(|a| !a.is_empty())
+            .map(|a| a.is_empty())
+            .unwrap_or(true)
         {
-            cached.as_slice()
-        } else {
-            let Some(address) = resolve_send_addresses(
+            if resolve_send_addresses(
                 topic,
                 at_least_once_delivery,
                 &mut self.address_topic,
                 &mut *self.db.lock().unwrap(),
-            ) else {
+            )
+            .is_none()
+            {
                 self.address_topic.remove(topic);
-                return false;
-            };
-            address
-        };
-        if !self.last_send_index.contains_key(topic) {
-            self.last_send_index.insert(topic.to_owned(), 0);
-        }
-        let index = self.last_send_index.get_mut(topic).unwrap();
-        if *index >= address.len() {
-            *index = 0;
-        }
-        let addr = address[*index].clone();
-        *index += 1;
-
-        let sender = self.sender.as_mut().unwrap();
-        if sender.needs_store_for_send(&addr, topic) {
-            let mut db = self.db.lock().unwrap();
-            if !sender.ensure_send_route(&mut *db, &addr, topic) {
                 return false;
             }
         }
-        sender.send_to(&addr, topic, data, at_least_once_delivery)
+        let addr_len = self.address_topic.get(topic).map(|a| a.len()).unwrap_or(0);
+        if addr_len == 0 {
+            return false;
+        }
+        let index = if let Some(slot) = self.last_send_index.get_mut(topic) {
+            if *slot >= addr_len {
+                *slot = 0;
+            }
+            let i = *slot;
+            *slot = i + 1;
+            if *slot >= addr_len {
+                *slot = 0;
+            }
+            i
+        } else {
+            self.last_send_index.insert(topic.to_owned(), if addr_len > 1 { 1 } else { 0 });
+            0
+        };
+        let addr = self.address_topic.get(topic).unwrap()[index].as_str();
+        let sender = self.sender.as_mut().unwrap();
+        if sender.needs_store_for_send(addr, topic) {
+            let mut db = self.db.lock().unwrap();
+            if !sender.ensure_send_route(&mut *db, addr, topic) {
+                return false;
+            }
+        }
+        sender.send_to(addr, topic, data, at_least_once_delivery)
     }
 
     pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
