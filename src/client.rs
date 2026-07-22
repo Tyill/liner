@@ -220,6 +220,9 @@ impl Client {
             &mut self.listener,
             &mut self.subscriptions,
         ) {
+            self.is_run = false;
+            drop(self.listener.take());
+            drop(self.sender.take());
             return false;
         }
         emit_internal_event(
@@ -251,22 +254,23 @@ impl Client {
         let Some(address) = resolve_send_addresses(
             topic,
             at_least_once_delivery,
-            &self.address_topic,
+            &mut self.address_topic,
             self.db.as_mut(),
         ) else {
             self.address_topic.remove(topic);
             return false;
         };
-        self.address_topic.insert(topic.to_string(), address.clone());
-        let index = self.last_send_index.entry(topic.to_string()).or_insert(0);
+        if !self.last_send_index.contains_key(topic) {
+            self.last_send_index.insert(topic.to_owned(), 0);
+        }
+        let index = self.last_send_index.get_mut(topic).unwrap();
         if *index >= address.len(){
             *index = 0;
         }
-        let addr = &address[*index];
-        let ok = self.sender.as_mut().unwrap().send_to(self.db.as_mut(), addr, 
-                                topic, data, at_least_once_delivery);
+        let addr = address[*index].clone();
         *index += 1;
-        ok
+        self.sender.as_mut().unwrap().send_to(self.db.as_mut(), &addr, 
+                                topic, data, at_least_once_delivery)
     }
 
     pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
@@ -361,13 +365,7 @@ impl Client {
 
     pub fn refresh_address_topic(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        if let Some(addr) = get_address_topic(topic, self.db.as_mut()) {
-            self.address_topic.insert(topic.to_string(), addr);
-            true
-        } else {
-            self.address_topic.remove(topic);
-            false
-        }
+        refresh_address_topic_cache(&mut self.address_topic, self.db.as_mut(), topic)
     }
 
     pub fn clear_stored_messages(&mut self) -> bool {
@@ -482,9 +480,8 @@ fn send_all_inner(
         address_topic.remove(topic);
         return false;
     };
-    address_topic.insert(topic.to_string(), address.clone());
     let mut ok = true;
-    for addr in &address {
+    for addr in address {
         if exclude_self && addr == localhost {
             continue;
         }
@@ -521,7 +518,7 @@ fn emit_internal_event(
     let Ok(bytes) = serde_json::to_vec(&value) else {
         return;
     };
-    if let Some(addr) = get_address_topic(INTERNAL_CHANNEL_TOPIC, db) {
+    if let Some(addr) = get_address_topic(INTERNAL_CHANNEL_TOPIC, db, false) {
         address_topic.insert(INTERNAL_CHANNEL_TOPIC.to_string(), addr);
     }
     let _ = send_all_inner(
@@ -577,27 +574,37 @@ fn apply_internal_channel_event(client: &mut Client, data: &[u8]) {
     };
     if let Some(t) = value.get("topic").and_then(|v| v.as_str()) {
         if t != INTERNAL_CHANNEL_TOPIC {
-            refresh_address_topic_cache(client, t);
+            refresh_address_topic_cache(&mut client.address_topic, client.db.as_mut(), t);
             if event == "unsubscribed" {
                 let _ = client.db.remove_sender_listeners_on_topic(t);
             }
         }
     }
     if matches!(event, "client_connected" | "client_disconnected") {
-        refresh_address_topic_cache(client, INTERNAL_CHANNEL_TOPIC);
+        refresh_address_topic_cache(
+            &mut client.address_topic,
+            client.db.as_mut(),
+            INTERNAL_CHANNEL_TOPIC,
+        );
     }
 }
 
-fn refresh_address_topic_cache(client: &mut Client, topic: &str) {
-    if let Some(addr) = get_address_topic(topic, client.db.as_mut()) {
-        client.address_topic.insert(topic.to_string(), addr);
+fn refresh_address_topic_cache(
+    address_topic: &mut HashMap<String, Vec<String>>,
+    db: &mut dyn Store,
+    topic: &str,
+) -> bool {
+    if let Some(addr) = get_address_topic(topic, db, true) {
+        address_topic.insert(topic.to_string(), addr);
+        true
     } else {
-        client.address_topic.remove(topic);
+        address_topic.remove(topic);
+        false
     }
 }
 
-fn get_address_topic(topic: &str, db: &mut dyn Store) -> Option<Vec<String>> {
-    match db.get_addresses_of_topic(true, topic){
+fn get_address_topic(topic: &str, db: &mut dyn Store, without_cache: bool) -> Option<Vec<String>> {
+    match db.get_addresses_of_topic(without_cache, topic){
         Ok(addresses)=>{
             if !addresses.is_empty(){
                 return Some(addresses);
@@ -610,36 +617,40 @@ fn get_address_topic(topic: &str, db: &mut dyn Store) -> Option<Vec<String>> {
     None
 }
 
-/// Store catalog is authoritative when non-empty. With `at_least_once_delivery`, fall back to a
-/// previously resolved route so offline queueing still works after the listener drops from the
-/// catalog on `Drop` (distinct from `unsubscribe`, which clears routes via refresh/internal events).
-fn resolve_send_addresses(
+/// Prefer the in-memory route cache (kept fresh by the internal channel / `refresh_address_topic`).
+/// On miss, resolve from the store catalog and populate the cache. With `at_least_once_delivery`,
+/// fall back to `sender_listener` so offline queueing still works after the listener drops from
+/// the catalog on `Drop` (distinct from `unsubscribe`, which clears routes via refresh/internal events).
+fn resolve_send_addresses<'a>(
     topic: &str,
     at_least_once_delivery: bool,
-    address_topic: &HashMap<String, Vec<String>>,
+    address_topic: &'a mut HashMap<String, Vec<String>>,
     db: &mut dyn Store,
-) -> Option<Vec<String>> {
-    if let Some(addr) = get_address_topic(topic, db) {
-        return Some(addr);
+) -> Option<&'a [String]> {
+    if address_topic.get(topic).is_some_and(|a| !a.is_empty()) {
+        return Some(address_topic[topic].as_slice());
     }
-    if at_least_once_delivery {
-        if let Some(addr) = address_topic.get(topic) {
-            if !addr.is_empty() {
-                return Some(addr.clone());
-            }
+    address_topic.remove(topic);
+    let addrs = if let Some(addr) = get_address_topic(topic, db, true) {
+        addr
+    } else if at_least_once_delivery {
+        let Ok(listeners) = db.get_listeners_of_sender() else {
+            return None;
+        };
+        let addrs: Vec<String> = listeners
+            .into_iter()
+            .filter(|(_, listener_topic)| listener_topic == topic)
+            .map(|(addr, _)| addr)
+            .collect();
+        if addrs.is_empty() {
+            return None;
         }
-        if let Ok(listeners) = db.get_listeners_of_sender() {
-            let addrs: Vec<String> = listeners
-                .into_iter()
-                .filter(|(_, listener_topic)| listener_topic == topic)
-                .map(|(addr, _)| addr)
-                .collect();
-            if !addrs.is_empty() {
-                return Some(addrs);
-            }
-        }
-    }
-    None
+        addrs
+    } else {
+        return None;
+    };
+    let slot = address_topic.entry(topic.to_string()).or_insert(addrs);
+    Some(slot.as_slice())
 }
 
 fn str_to_socket_addr(localhost: &str)->Option<SocketAddr>{
@@ -656,35 +667,43 @@ fn str_to_socket_addr(localhost: &str)->Option<SocketAddr>{
 
 impl Drop for Client {
     fn drop(&mut self) {
-        let _lock = self.mtx.lock();
-        if !self.is_run{
-            return;
-        }
-        emit_internal_event(
-            self.is_run,
-            &self.unique_name,
-            &self.source_topic,
-            self.bound_listen_addr.as_deref(),
-            &self.localhost,
-            &mut self.address_topic,
-            self.db.as_mut(),
-            self.sender.as_mut().unwrap(),
-            "client_disconnected",
-            None,
-        );
-        if let Err(err) = self.db.unregist_topic(&self.source_topic) {
-            print_error!(&format!("{}", err));
-        }
-        let _ = unsubscribe_inner(
-            INTERNAL_CHANNEL_TOPIC,
-            &self.source_topic,
-            &mut self.db,
-            self.is_run,
-            &mut self.listener,
-            &mut self.subscriptions,
-        );
-        drop(self.listener.take());
-        drop(self.sender.take());
+        let (listener, sender) = {
+            let _lock = self.mtx.lock();
+            if !self.is_run {
+                return;
+            }
+            // Unregister before announcing disconnect so peers refresh a catalog without us.
+            if let Err(err) = self.db.unregist_topic(&self.source_topic) {
+                print_error!(&format!("{}", err));
+            }
+            let _ = unsubscribe_inner(
+                INTERNAL_CHANNEL_TOPIC,
+                &self.source_topic,
+                &mut self.db,
+                self.is_run,
+                &mut self.listener,
+                &mut self.subscriptions,
+            );
+            if let Some(sender) = self.sender.as_mut() {
+                emit_internal_event(
+                    self.is_run,
+                    &self.unique_name,
+                    &self.source_topic,
+                    self.bound_listen_addr.as_deref(),
+                    &self.localhost,
+                    &mut self.address_topic,
+                    self.db.as_mut(),
+                    sender,
+                    "client_disconnected",
+                    None,
+                );
+            }
+            self.is_run = false;
+            (self.listener.take(), self.sender.take())
+        };
+        // Join threads outside Client.mtx — receive path also takes that lock.
+        drop(listener);
+        drop(sender);
     }
 }
 

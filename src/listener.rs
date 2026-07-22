@@ -190,6 +190,7 @@ fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,
             };
             let topic_from = CString::new(sender_topic.as_bytes()).unwrap_or_else(|_| CString::new("").unwrap());
             let mut last_mess_num = 0;
+            let mut topic_cstr_cache: HashMap<i32, CString> = HashMap::new();
             let mempool = match mempools.lock() {
                 Ok(mp) => match mp.get(ix) {
                     Some(m) => m.clone(),
@@ -206,16 +207,21 @@ fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,
             for m in mess{
                 // Important: don't hold the `listener_topic` lock while calling `receive_cb`:
                 // callback can be slow, and we don't want to block subscribe/unsubscribe.
-                let topic = match listener_topic.lock() {
-                    Ok(lt) => lt.get(&m.listener_topic_key).cloned(),
-                    Err(_) => {
-                        print_error!("do_receive_cb: listener_topic lock poisoned");
-                        None
+                if !topic_cstr_cache.contains_key(&m.listener_topic_key) {
+                    let topic = match listener_topic.lock() {
+                        Ok(lt) => lt.get(&m.listener_topic_key).cloned(),
+                        Err(_) => {
+                            print_error!("do_receive_cb: listener_topic lock poisoned");
+                            None
+                        }
+                    };
+                    if let Some(topic) = topic {
+                        let topic_to = CString::new(topic.as_bytes())
+                            .unwrap_or_else(|_| CString::new("").unwrap());
+                        topic_cstr_cache.insert(m.listener_topic_key, topic_to);
                     }
-                };
-                if let Some(topic) = topic {
-                    let topic_to = CString::new(topic.as_bytes())
-                        .unwrap_or_else(|_| CString::new("").unwrap());
+                }
+                if let Some(topic_to) = topic_cstr_cache.get(&m.listener_topic_key) {
                     let mlen = m.get_data(&mempool, buff_data);
                     m.free(&mempool);
                     receive_cb(topic_to.as_c_str().as_ptr(), 
@@ -227,9 +233,9 @@ fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,
                     // Important: always free the message, even if it won't be delivered.
                     m.free(&mempool);
                 }
-                if m.number_mess > last_mess_num{
+                if m.number_mess > last_mess_num {
                     last_mess_num = m.number_mess;
-                }             
+                }
             }
             if let Ok(mut senders) = senders.lock() {
                 if let Some(sender) = senders.get_mut(ix) {

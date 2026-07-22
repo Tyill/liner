@@ -59,6 +59,7 @@ pub struct Sender{
     mempools: Arc<Mutex<MempoolList>>, 
     last_mess_number: Vec<u64>,
     connection_key: Vec<i32>,
+    topic_keys: HashMap<String, i32>, // listener_topic -> wire topic_key
     is_new_addr: Arc<AtomicBool>,
     is_close: Arc<AtomicBool>,
     delay_write_cvar: Arc<(Mutex<bool>, Condvar)>,
@@ -137,6 +138,7 @@ impl Sender {
             mempools,
             last_mess_number: Vec::new(),
             connection_key: Vec::new(),
+            topic_keys: HashMap::new(),
             is_new_addr,
             is_close,
             delay_write_cvar,
@@ -146,15 +148,17 @@ impl Sender {
     
     pub fn send_to(&mut self, db: &mut dyn Store, addr_to: &str, listener_topic: &str, 
                    data: &[u8], at_least_once_delivery: bool)->bool{
-        let mut is_new_addr = false;
-        if !self.addrs_for.contains_key(addr_to){
-            if !self.append_new_state(db, addr_to, listener_topic){
-                return false;
+        let (ix, is_new_addr) = match self.addrs_for.get(addr_to) {
+            Some(&ix) => (ix, false),
+            None => {
+                if !self.append_new_state(db, addr_to, listener_topic){
+                    return false;
+                }
+                let ix = self.addrs_for.len();
+                self.addrs_for.insert(addr_to.to_string(), ix);
+                (ix, true)
             }
-            self.addrs_for.insert(addr_to.to_string(), self.addrs_for.len());
-            is_new_addr = true;
-        }
-        let ix = self.addrs_for[addr_to];
+        };
         let connection_key = match self.connection_key.get(ix) {
             Some(v) => *v,
             None => {
@@ -165,16 +169,20 @@ impl Sender {
                 return false;
             }
         };
-        let listener_topic_key;
-        match db.get_topic_key(listener_topic){
-            Ok(key)=>{
-                listener_topic_key = key;
-            },
-            Err(err)=>{
-                print_error!(format!("couldn't db.get_topic_key {}, err {}", listener_topic, err));
-                return false;
+        let listener_topic_key = if let Some(&key) = self.topic_keys.get(listener_topic) {
+            key
+        } else {
+            match db.get_topic_key(listener_topic) {
+                Ok(key) => {
+                    self.topic_keys.insert(listener_topic.to_owned(), key);
+                    key
+                }
+                Err(err) => {
+                    print_error!(format!("couldn't db.get_topic_key {}, err {}", listener_topic, err));
+                    return false;
+                }
             }
-        }
+        };
         let number_mess = match self.last_mess_number.get_mut(ix) {
             Some(slot) => {
                 *slot += 1;
@@ -249,84 +257,70 @@ impl Sender {
     }
      
     fn append_new_state(&mut self, db: &mut dyn Store, addr_to: &str, listener_topic: &str)->bool{
-        let listener_name;
-        if let Ok(name) = db.get_listener_unique_name(listener_topic, addr_to){
-            listener_name = name;
-        }else{
-            print_error!(format!("couldn't db.get_listener_unique_name {}", addr_to));
-            return false;
-        }
-        let connection_key;
-        match db.get_connection_key_for_sender(&listener_name){
-            Ok(ck) =>{
-                self.connection_key.push(ck);
-                connection_key = ck;
-            },
-            Err(err)=>{
+        let listener_name = match db.get_listener_unique_name(listener_topic, addr_to) {
+            Ok(name) => name,
+            Err(_) => {
+                print_error!(format!("couldn't db.get_listener_unique_name {}", addr_to));
+                return false;
+            }
+        };
+        let connection_key = match db.get_connection_key_for_sender(&listener_name) {
+            Ok(ck) => ck,
+            Err(err) => {
                 print_error!(&format!("get_connection_key_for_sender from db: {}", err));
                 return false;
             }
-        }
-        match db.get_last_mess_number_for_sender(connection_key) {
-            Ok(last_mess_num) => {
-                self.last_mess_number.push(last_mess_num);
-            }
+        };
+        let mut last_mess_num = match db.get_last_mess_number_for_sender(connection_key) {
+            Ok(n) => n,
             Err(err) => {
-                // Not fatal: treat as "nothing sent yet", but keep the error for diagnostics.
                 print_error!(&format!(
                     "get_last_mess_number_for_sender from db (connection_key {}): {}",
                     connection_key, err
                 ));
                 return false;
             }
-        }
-        let ix = match self.mempools.lock() {
-            Ok(mps) => mps.len(),
-            Err(_) => {
-                print_error!("append_new_state: mempools lock poisoned");
-                return false;
-            }
         };
-        if let Ok(mut mps) = self.mempools.lock() {
-            mps.push(Arc::new(Mutex::new(Mempool::new())));
+
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        if let Ok(last_mess) = db.load_last_message_for_sender(&mempool, connection_key) {
+            if let Some(mess) = last_mess {
+                if mess.number_mess > last_mess_num {
+                    last_mess_num = mess.number_mess;
+                }
+            }
         } else {
-            print_error!("append_new_state: mempools lock poisoned at push");
-            return false;
-        }
-        let mempool = match self.mempools.lock() {
-            Ok(mps) => match mps.get(ix) {
-                Some(mp) => mp.clone(),
-                None => {
-                    print_error!(&format!("append_new_state: mempool index out of bounds: {}", ix));
-                    return false;
-                }
-            },
-            Err(_) => {
-                print_error!("append_new_state: mempools lock poisoned at get");
-                return false;
-            }
-        };
-        if let Ok(last_mess) = db.load_last_message_for_sender(&mempool, connection_key){
-            if let Some(mess) = last_mess{
-                let mess_num = mess.number_mess;
-                if let Some(last) = self.last_mess_number.get(ix).copied() {
-                    if mess_num > last {
-                        if let Some(slot) = self.last_mess_number.get_mut(ix) {
-                            *slot = mess_num;
-                        }
-                    }
-                }
-            }
-        }else {
             print_error!("db.load_last_message_for_sender");
         }
-        if let Err(err) = db.save_listener_for_sender(addr_to, listener_topic, &listener_name){
+        if let Err(err) = db.save_listener_for_sender(addr_to, listener_topic, &listener_name) {
             print_error!(&format!("db.save_listener_for_sender {}", err));
         }
-        if let Err(err) = db.set_sender_topic_by_connection_key_from_sender(connection_key){
+        if let Err(err) = db.set_sender_topic_by_connection_key_from_sender(connection_key) {
             print_error!(&format!("db.set_sender_topic_by_connection_key_from_sender {}", err));
         }
-        self.messages.lock().unwrap().push(Some(Vec::new()));
+
+        // Commit related index vectors together so a mid-function Err cannot leave them desynced.
+        self.connection_key.push(connection_key);
+        self.last_mess_number.push(last_mess_num);
+        if let Ok(mut mps) = self.mempools.lock() {
+            mps.push(mempool);
+        } else {
+            print_error!("append_new_state: mempools lock poisoned at push");
+            self.connection_key.pop();
+            self.last_mess_number.pop();
+            return false;
+        }
+        if let Ok(mut messages) = self.messages.lock() {
+            messages.push(Some(Vec::new()));
+        } else {
+            print_error!("append_new_state: messages lock poisoned at push");
+            self.connection_key.pop();
+            self.last_mess_number.pop();
+            if let Ok(mut mps) = self.mempools.lock() {
+                mps.pop();
+            }
+            return false;
+        }
         true
     }
 
