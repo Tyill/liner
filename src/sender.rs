@@ -96,12 +96,13 @@ impl Sender {
             let mut ppl_wait = false;
             while !is_close_.load(Ordering::Relaxed){ // write delay cycle
                 let (lock, cvar) = &*delay_write_cvar_;
-                let mut has_new_mess = false;
+                let mut can_write = false;
                 if let Ok(mut _started) = lock.lock(){
-                    has_new_mess = check_has_messages(&streams, &messages_);
-                    // Don't sleep if we have queued messages but streams aren't ready yet,
-                    // or if we were just active in the previous loop.
-                    if !has_new_mess && !ppl_wait && !is_new_addr_.load(Ordering::Relaxed){
+                    // Only start a write when a stream is free. If messages are pending but
+                    // the writer is busy, wait for write-complete notify — do not busy-spin
+                    // on this lock (that stalls every send_to).
+                    can_write = check_writable_messages(&streams, &messages_);
+                    if !can_write && !ppl_wait && !is_new_addr_.load(Ordering::Relaxed){
                         *_started = false;
                         // Wake-on-work via cvar; long timeout only for periodic maintenance.
                         match cvar.wait_timeout(
@@ -110,7 +111,7 @@ impl Sender {
                         ) {
                             Ok((guard, _timeout)) => {
                                 _started = guard;
-                                has_new_mess = *_started;
+                                can_write = check_writable_messages(&streams, &messages_);
                             }
                             Err(_) => {
                                 print_error!("wdelay_thread: delay_write_cvar poisoned");
@@ -118,13 +119,13 @@ impl Sender {
                         }
                     } 
                 }
-                if settings::SENDER_THREAD_IDLE_BACKOFF_MS > 0 && !has_new_mess{
+                if settings::SENDER_THREAD_IDLE_BACKOFF_MS > 0 && !can_write {
                     std::thread::sleep(Duration::from_millis(settings::SENDER_THREAD_IDLE_BACKOFF_MS));
-                    has_new_mess = check_has_messages(&streams, &messages_);
+                    can_write = check_writable_messages(&streams, &messages_);
                 }
-                ppl_wait = has_new_mess;
-                if has_new_mess{
-                    send_mess_to_listener(&streams, &messages_, &mempools_);
+                ppl_wait = can_write;
+                if can_write{
+                    send_mess_to_listener(&streams, &messages_, &mempools_, &delay_write_cvar_);
                 }
                 let ctime = common::current_time_ms();
                 if check_available_stream(&is_new_addr_, ctime, &mut prev_time[0]) {
@@ -330,7 +331,10 @@ impl Sender {
                 print_error!("send_mess_notify: messages lock poisoned");
                 drop(mess);
             }
-            if !*_started{
+            // Skip notify when the writer is already awake/running: 10k notify_one calls
+            // per batch stall send_to on this lock. write_stream still notifies on completion
+            // so messages queued while is_active are not stranded.
+            if !*_started {
                 *_started = true;
                 cvar.notify_one();
             }
@@ -431,16 +435,18 @@ impl Sender {
             self.is_new_addr.store(true, Ordering::Relaxed);            
         }   
     }    
-    fn wdelay_thread_notify(&self){
-        let (lock, cvar) = &*self.delay_write_cvar;
-        *lock.lock().unwrap() = true;
-        cvar.notify_one();
-    }
+}
+
+fn wdelay_thread_notify(delay_write_cvar: &Arc<(Mutex<bool>, Condvar)>) {
+    let (lock, cvar) = &**delay_write_cvar;
+    *lock.lock().unwrap() = true;
+    cvar.notify_one();
 }
 
 fn send_mess_to_listener(streams: &WriteStreamList, 
                          messages: &Arc<Mutex<MessList>>,
-                         mempools: &Arc<Mutex<MempoolList>>){
+                         mempools: &Arc<Mutex<MempoolList>>,
+                         delay_write_cvar: &Arc<(Mutex<bool>, Condvar)>){
     for (ix, mess) in messages.lock().unwrap().iter().enumerate(){
         if let Some(stream) = streams.get(ix){            
             if let Some(mess) = mess.as_ref(){
@@ -448,7 +454,7 @@ fn send_mess_to_listener(streams: &WriteStreamList,
                     let has_mess =
                         last.number_mess > stream.lock().unwrap().last_send_mess_number;
                     if has_mess {
-                        write_stream(stream, messages, mempools);
+                        write_stream(stream, messages, mempools, delay_write_cvar.clone());
                     }
                 }
             }
@@ -456,7 +462,7 @@ fn send_mess_to_listener(streams: &WriteStreamList,
     }
 }
 
-fn check_has_messages(streams: &WriteStreamList, messages: &Arc<Mutex<MessList>>)->bool{
+fn check_writable_messages(streams: &WriteStreamList, messages: &Arc<Mutex<MessList>>)->bool{
     let mut has_mess = false;
     for (ix, mess) in messages.lock().unwrap().iter().enumerate(){
         if let Some(stream) = streams.get(ix){            
@@ -587,6 +593,8 @@ fn append_streams(streams: &mut WriteStreamList,
                 // Use blocking sockets for the sender side.
                 // Our bytestream writer expects blocking semantics (no WouldBlock on write/flush).
                 let _ = stream.set_nonblocking(false);
+                // Avoid Nagle + delayed-ACK ~40ms stalls on small end-of-batch writes.
+                let _ = stream.set_nodelay(true);
                 let mempool = match mempools.lock() {
                     Ok(mps) => match mps.get(addr.ix) {
                         Some(mp) => mp.clone(),
@@ -689,7 +697,8 @@ fn append_streams(streams: &mut WriteStreamList,
 
 fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 messages: &Arc<Mutex<MessList>>,
-                mempools: &Arc<Mutex<MempoolList>>){
+                mempools: &Arc<Mutex<MempoolList>>,
+                delay_write_cvar: Arc<(Mutex<bool>, Condvar)>){
     if let Ok(mut stream) = stream.lock(){
         if !stream.is_active && !stream.has_close_request{
             stream.is_active = true;
@@ -725,6 +734,8 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                             s.is_active = false;
                             s.has_close_request = true;
                         }
+                        // Wake loop: stream is free again for retries / close handling.
+                        wdelay_thread_notify(&delay_write_cvar);
                         return;
                     }
                 },
@@ -734,6 +745,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                         s.is_active = false;
                         s.has_close_request = true;
                     }
+                    wdelay_thread_notify(&delay_write_cvar);
                     return;
                 }
             };
@@ -811,6 +823,10 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 stream.has_close_request = true;
             }
         }
+        // Messages may have been enqueued while is_active==true (check_writable_messages
+        // then returns false). Wake the sender loop immediately instead of waiting
+        // for SENDER_THREAD_WAIT_TIMEOUT_MS.
+        wdelay_thread_notify(&delay_write_cvar);
     });
 }
 
@@ -942,7 +958,7 @@ fn close_streams(streams: &WriteStreamList,
 impl Drop for Sender {
     fn drop(&mut self) {                
         self.is_close.store(true, Ordering::Relaxed);
-        self.wdelay_thread_notify();
+        wdelay_thread_notify(&self.delay_write_cvar);
         if let Err(err) = self.wdelay_thread.take().unwrap().join(){
             print_error!(&format!("wdelay_thread.join, {:?}", err));
         }
@@ -997,7 +1013,8 @@ mod tests {
         };
         let stream = Arc::new(Mutex::new(ws));
 
-        write_stream(&stream, &messages, &mempools);
+        let cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        write_stream(&stream, &messages, &mempools, cvar);
 
         assert!(
             wait_until(Duration::from_secs(1), || {
@@ -1058,7 +1075,8 @@ mod tests {
         };
         let stream = Arc::new(Mutex::new(ws));
 
-        write_stream(&stream, &messages, &mempools);
+        let cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        write_stream(&stream, &messages, &mempools, cvar);
 
         assert!(
             wait_until(Duration::from_secs(1), || {
@@ -1112,7 +1130,8 @@ mod tests {
         let stream = Arc::new(Mutex::new(ws));
 
         // First attempt sends the message but keeps it queued (at-least-once, not yet confirmed).
-        write_stream(&stream, &messages, &mempools);
+        let cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        write_stream(&stream, &messages, &mempools, cvar);
         assert!(
             wait_until(Duration::from_secs(1), || {
                 let s = stream.lock().unwrap();
@@ -1135,7 +1154,8 @@ mod tests {
         stream.lock().unwrap().last_mess_number = 1;
 
         // Second call should free + clear the queued message without re-sending (last_send already 1).
-        write_stream(&stream, &messages, &mempools);
+        let cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        write_stream(&stream, &messages, &mempools, cvar);
         assert!(
             wait_until(Duration::from_secs(1), || !stream.lock().unwrap().is_active),
             "second write_stream didn't finish in time"
@@ -1148,7 +1168,7 @@ mod tests {
     }
 
     #[test]
-    fn check_has_messages_does_not_panic_on_empty_message_vec() {
+    fn check_writable_messages_does_not_panic_on_empty_message_vec() {
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(vec![Some(Vec::new())]));
 
         let ws = WriteStream {
@@ -1164,6 +1184,6 @@ mod tests {
         };
         let streams: WriteStreamList = vec![Arc::new(Mutex::new(ws))];
 
-        assert!(!check_has_messages(&streams, &messages));
+        assert!(!check_writable_messages(&streams, &messages));
     }
 }

@@ -268,6 +268,7 @@ fn listener_accept(poll: &Poll,
     loop {
         match listener.accept() {
             Ok((mut stream, addr)) => {
+                let _ = stream.set_nodelay(true);
                 let mut token = Token(address.len());
                 let mut ix = usize::MAX;
                 if address.contains_key(&addr){
@@ -435,10 +436,10 @@ fn read_stream(token: Token,
                         }
                     }
                 }
-                if !*_started{
-                    *_started = true;
-                    cvar.notify_one();
-                }
+                // Always wake: skipping notify when *_started is already true can miss
+                // the receive thread entering wait_timeout → ~LISTENER wait spikes.
+                *_started = true;
+                cvar.notify_one();
             }
         }
         if let Ok(mut senders) = senders.lock(){

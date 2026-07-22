@@ -195,11 +195,9 @@ impl Mempool{
         // Size-class bucket can be missing after coalescing removed the last free
         // entry of this size while same-sized allocations were still live, or if
         // accounting drifted. Recreate it — never silently drop a free.
+        // No contains() — Message::freed already guards double-free; O(n) scan
+        // on every free was hurting receive throughput under load.
         let entry = self.free_mem.entry(length).or_insert_with(|| (0, Vec::new()));
-        if entry.1.contains(&pos) {
-            // Already freed — ignore double-free.
-            return;
-        }
         entry.1.push(pos);
         if entry.0 == 0 {
             entry.0 = 1;

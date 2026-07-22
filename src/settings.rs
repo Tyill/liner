@@ -12,7 +12,7 @@ pub const UPDATE_LAST_MESS_NUMBER_TIMEOUT_MS: u64 = 1000;    //1s
 pub const BYTESTREAM_WOULD_BLOCK_TIMEOUT_MS: u64 = 10*1000;  //10sec
 pub const SENDER_THREAD_WAIT_TIMEOUT_MS: u64 = 100;
 pub const LISTENER_THREAD_WAIT_TIMEOUT_MS: u64 = 100;
-/// Backoff when the sender loop has no queued messages (avoids tight lock contention).
+/// Backoff when the sender loop has no writable work (avoids tight lock contention).
 pub const SENDER_THREAD_IDLE_BACKOFF_MS: u64 = 1;
 pub const MIN_SIZE_DATA_FOR_COMPRESS_BYTE: usize = 1024*1024;
 pub const DATA_COMPRESS_LEVEL: i32 = 0; // A level of `0` uses zstd's default (currently `3`).
