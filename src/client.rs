@@ -248,16 +248,17 @@ impl Client {
             print_error!("you can't send on your own topic");
             return false;
         }
-        let Some(address) = resolve_send_addresses(
+        if !ensure_send_addresses(
             topic,
             at_least_once_delivery,
-            &self.address_topic,
+            &mut self.address_topic,
             self.db.as_mut(),
-        ) else {
-            self.address_topic.remove(topic);
+        ) {
+            return false;
+        }
+        let Some(address) = self.address_topic.get(topic) else {
             return false;
         };
-        self.address_topic.insert(topic.to_string(), address.clone());
         let index = self.last_send_index.entry(topic.to_string()).or_insert(0);
         if *index >= address.len(){
             *index = 0;
@@ -478,13 +479,14 @@ fn send_all_inner(
         print_error!("you can't send on your own topic");
         return false;
     }
-    let Some(address) = resolve_send_addresses(topic, at_least_once_delivery, address_topic, db) else {
-        address_topic.remove(topic);
+    if !ensure_send_addresses(topic, at_least_once_delivery, address_topic, db) {
+        return false;
+    }
+    let Some(address) = address_topic.get(topic) else {
         return false;
     };
-    address_topic.insert(topic.to_string(), address.clone());
     let mut ok = true;
-    for addr in &address {
+    for addr in address {
         if exclude_self && addr == localhost {
             continue;
         }
@@ -610,24 +612,25 @@ fn get_address_topic(topic: &str, db: &mut dyn Store) -> Option<Vec<String>> {
     None
 }
 
-/// Store catalog is authoritative when non-empty. With `at_least_once_delivery`, fall back to a
-/// previously resolved route so offline queueing still works after the listener drops from the
-/// catalog on `Drop` (distinct from `unsubscribe`, which clears routes via refresh/internal events).
-fn resolve_send_addresses(
+/// Prefer the in-memory address cache (kept fresh via the internal channel /
+/// `refresh_address_topic`). On cache miss, resolve from the store catalog.
+/// With `at_least_once_delivery`, if the catalog is empty (peer went offline /
+/// dropped), fall back to persisted `sender_listener` routes so queueing still works.
+/// `unsubscribe` clears both the cache and those routes via internal events.
+fn ensure_send_addresses(
     topic: &str,
     at_least_once_delivery: bool,
-    address_topic: &HashMap<String, Vec<String>>,
+    address_topic: &mut HashMap<String, Vec<String>>,
     db: &mut dyn Store,
-) -> Option<Vec<String>> {
+) -> bool {
+    if address_topic.get(topic).is_some_and(|addr| !addr.is_empty()) {
+        return true;
+    }
     if let Some(addr) = get_address_topic(topic, db) {
-        return Some(addr);
+        address_topic.insert(topic.to_string(), addr);
+        return true;
     }
     if at_least_once_delivery {
-        if let Some(addr) = address_topic.get(topic) {
-            if !addr.is_empty() {
-                return Some(addr.clone());
-            }
-        }
         if let Ok(listeners) = db.get_listeners_of_sender() {
             let addrs: Vec<String> = listeners
                 .into_iter()
@@ -635,11 +638,13 @@ fn resolve_send_addresses(
                 .map(|(addr, _)| addr)
                 .collect();
             if !addrs.is_empty() {
-                return Some(addrs);
+                address_topic.insert(topic.to_string(), addrs);
+                return true;
             }
         }
     }
-    None
+    address_topic.remove(topic);
+    false
 }
 
 fn str_to_socket_addr(localhost: &str)->Option<SocketAddr>{
