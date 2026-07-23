@@ -4,6 +4,16 @@ import ctypes
 
 lib_ = None
 
+# Status callback kinds (match include/liner.h)
+PEER_CONNECTED = 1
+PEER_DISCONNECTED = 2
+PEER_SUBSCRIBED = 3
+PEER_UNSUBSCRIBED = 4
+SENDER_ROUTE_LOST = 5
+SENDER_STORE_ERROR = 6
+SENDER_SEND_ERROR = 7
+LISTENER_STORE_ERROR = 8
+
 def loadLib(path : str):
   global lib_
   lib_ = ctypes.CDLL(path)
@@ -119,6 +129,35 @@ class Client:
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p, recvCBackType, ctypes.c_void_p)
         return pfun(self.hClient_, self.recvCBack_, ctypes.c_void_p())
+
+    def set_status_callback(self, status_cback)->bool:
+        """Register status/background-error callback: ``fn(kind: int, topic: str, peer: str, message: str)``.
+
+        Pass ``None`` to clear. Peer events are filtered to related topics (sent/subscribed/refreshed).
+        Kind constants: module-level ``PEER_CONNECTED`` .. ``LISTENER_STORE_ERROR``.
+        """
+        StatusCBackType = ctypes.CFUNCTYPE(
+            None, ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p
+        )
+        pfun = lib_.lnr_set_status_cb
+        pfun.restype = ctypes.c_bool
+        pfun.argtypes = (ctypes.c_void_p, StatusCBackType, ctypes.c_void_p)
+
+        if status_cback is None:
+            self.statusCBack_ = None
+            # NULL function pointer clears the callback (Option::None on Rust side).
+            pfun.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+            return pfun(self.hClient_, None, None)
+
+        def c_scb(kind: ctypes.c_int, topic: ctypes.c_char_p, peer: ctypes.c_char_p,
+                  message: ctypes.c_char_p, udata: ctypes.c_void_p):
+            t = topic.decode("utf-8") if topic else ""
+            p = peer.decode("utf-8") if peer else ""
+            m = message.decode("utf-8") if message else ""
+            status_cback(int(kind), t, p, m)
+
+        self.statusCBack_ = StatusCBackType(c_scb)
+        return pfun(self.hClient_, self.statusCBack_, ctypes.c_void_p())
     
     def send_to(self, to_topic: str, data: bytearray, at_least_once_delivery: bool = True) -> bool:
         """``at_least_once_delivery``: same as C API; default ``True``. Use ``False`` for isolated per-process SQLite."""

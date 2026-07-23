@@ -62,6 +62,7 @@ API отправки экспортируют **`at_least_once_delivery`** (C: `
 - **Создание:** если хранилище не открылось или параметры неверны, в Rust — **`None`**, в C — **`NULL`**. Иначе при простом сбое открытия stderr часто пуст (см. [errors-and-logging.md](errors-and-logging.md)).
 - **`run`:** возвращает **`false`**, если регистрация топика не удалась, адрес привязки неверен или TCP bind не удался. Возвращает **`true`**, если клиент **уже** был в running (идемпотентно). Внутренний старт listener/sender всё ещё может **паниковать** при редких сбоях хранилища — см. [store-startup-failure-semantics.md](store-startup-failure-semantics.md).
 - **Отправка / subscribe / refresh:** **`false`** при ошибках валидации, отсутствии адресов или ошибках хранилища; детали обычно в **stderr** через `print_error!`.
+- **Status callback** (`lnr_set_status_cb`): асинхронные peer up/down (только связанные топики) и фоновые сбои route/store/send — см. [using-the-api.md](using-the-api.md) и [errors-and-logging.md](errors-and-logging.md). Не заменяет синхронные коды возврата.
 - **Очистка данных:** **`clear_stored_messages`** и **`clear_addresses_of_topic`** успешны только когда клиент **не** в running.
 
 Полная матрица (Rust `Client`, `Liner`, C, poison mutex) — в [errors-and-logging.md](errors-and-logging.md).
@@ -74,4 +75,4 @@ API отправки экспортируют **`at_least_once_delivery`** (C: `
 2. **Исходный топик** = ваше опубликованное имя и адрес привязки.  
 3. **`send_to` / `send_all`** = поиск пиров по строке топика, затем TCP + опциональная персистентность.  
 4. **`subscribe`** = какие входящие логические топики принимает ваш колбэк.  
-5. **Ошибки** = в основном **boolean / null** плюс строки **stderr**, а не структурированные коды.
+5. **Ошибки** = синхронный **boolean / null** плюс **stderr**; асинхронные peer/route — опционально через **status callback**.

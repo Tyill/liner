@@ -4,12 +4,16 @@ use crate::listener::Listener;
 use crate::sender::Sender;
 use crate::print_error;
 use crate::settings::INTERNAL_CHANNEL_TOPIC;
+use crate::status::{
+    StatusCbackIntern, StatusEmitter, LNR_PEER_CONNECTED, LNR_PEER_DISCONNECTED,
+    LNR_PEER_SUBSCRIBED, LNR_PEER_UNSUBSCRIBED,
+};
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::ffi::CStr;
 use mio::net::TcpListener;
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct Client{
     unique_name: String,
@@ -22,11 +26,14 @@ pub struct Client{
     is_run: bool,
     mtx: Mutex<()>,
     address_topic: HashMap<String, Vec<String>>,
+    /// Topics this client has sent to, subscribed to, or explicitly refreshed (status filter).
+    related_topics: HashSet<String>,
     subscriptions: HashMap<i32, String>,
     /// Actual `SocketAddr` after `run` binds `localhost` (e.g. when port is `0`).
     bound_listen_addr: Option<String>,
     user_receive_cb: Option<UCbackIntern>,
     user_receive_udata: UData,
+    status_emitter: StatusEmitter,
 }
 
 impl Client {
@@ -51,10 +58,12 @@ impl Client {
             is_run: false,
             mtx: Mutex::new(()),
             address_topic: HashMap::new(),
+            related_topics: HashSet::new(),
             subscriptions: HashMap::new(),
             bound_listen_addr: None,
             user_receive_cb: None,
             user_receive_udata: UData::null(),
+            status_emitter: StatusEmitter::new(),
         })
     }
 
@@ -100,10 +109,12 @@ impl Client {
             is_run: false,
             mtx: Mutex::new(()),
             address_topic: HashMap::new(),
+            related_topics: HashSet::new(),
             subscriptions: HashMap::new(),
             bound_listen_addr: None,
             user_receive_cb: None,
             user_receive_udata: UData::null(),
+            status_emitter: StatusEmitter::new(),
         })
     }
 
@@ -138,10 +149,12 @@ impl Client {
             is_run: false,
             mtx: Mutex::new(()),
             address_topic: HashMap::new(),
+            related_topics: HashSet::new(),
             subscriptions: HashMap::new(),
             bound_listen_addr: None,
             user_receive_cb: None,
             user_receive_udata: UData::null(),
+            status_emitter: StatusEmitter::new(),
         })
     }
 
@@ -152,6 +165,13 @@ impl Client {
     /// After [`Client::run`], the resolved bind address if `localhost` used port `0`.
     pub fn bound_listen_addr(&self) -> Option<&str> {
         self.bound_listen_addr.as_deref()
+    }
+
+    /// Set or clear the status / background-error callback. Pass `None` to clear.
+    pub fn set_status_cb(&mut self, cb: Option<StatusCbackIntern>, udata: UData) {
+        let _lock = self.mtx.lock();
+        self.status_emitter
+            .set_callback(cb, udata);
     }
 
     /// Backward compatible: same as [`Client::new_redis`].
@@ -200,8 +220,13 @@ impl Client {
             &self.subscriptions,
             client_receive_wrapper,
             UData(client_ptr as *mut libc::c_void),
+            self.status_emitter.clone(),
         ));
-        self.sender = Some(Sender::new(self.db.clone(), &self.source_topic));
+        self.sender = Some(Sender::new(
+            self.db.clone(),
+            &self.source_topic,
+            self.status_emitter.clone(),
+        ));
         if let Some(sender) = self.sender.as_mut() {
             sender.load_prev_connects(&mut *self.db.lock().unwrap());
         }
@@ -270,6 +295,7 @@ impl Client {
         if addr_len == 0 {
             return false;
         }
+        mark_related_topic(&mut self.related_topics, topic);
         let index = if let Some(slot) = self.last_send_index.get_mut(topic) {
             let i = *slot % addr_len;
             *slot = (i + 1) % addr_len;
@@ -318,6 +344,7 @@ impl Client {
             };
             address.to_vec()
         };
+        mark_related_topic(&mut self.related_topics, topic);
         let sender = self.sender.as_mut().unwrap();
         let mut warm_ok = vec![true; addrs.len()];
         if addrs
@@ -364,6 +391,7 @@ impl Client {
         ) {
             return false;
         }
+        mark_related_topic(&mut self.related_topics, topic);
         if self.is_run {
             emit_internal_event(
                 self.is_run,
@@ -418,7 +446,12 @@ impl Client {
 
     pub fn refresh_address_topic(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        refresh_address_topic_cache(&mut self.address_topic, &mut *self.db.lock().unwrap(), topic)
+        let ok =
+            refresh_address_topic_cache(&mut self.address_topic, &mut *self.db.lock().unwrap(), topic);
+        if ok {
+            mark_related_topic(&mut self.related_topics, topic);
+        }
+        ok
     }
 
     pub fn clear_stored_messages(&mut self) -> bool {
@@ -610,12 +643,27 @@ fn apply_internal_channel_event(client: &mut Client, data: &[u8]) {
     let Some(event) = value.get("event").and_then(|v| v.as_str()) else {
         return;
     };
-    if let Some(t) = value.get("topic").and_then(|v| v.as_str()) {
-        if t != INTERNAL_CHANNEL_TOPIC {
-            refresh_address_topic_cache(&mut client.address_topic, &mut *client.db.lock().unwrap(), t);
-            if event == "unsubscribed" {
-                let _ = client.db.lock().unwrap().remove_sender_listeners_on_topic(t);
-            }
+    let topic = value
+        .get("topic")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let peer = value
+        .get("client")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let related = is_related_topic(topic, &client.related_topics);
+    if !topic.is_empty() && topic != INTERNAL_CHANNEL_TOPIC {
+        refresh_address_topic_cache(
+            &mut client.address_topic,
+            &mut *client.db.lock().unwrap(),
+            topic,
+        );
+        if event == "unsubscribed" {
+            let _ = client
+                .db
+                .lock()
+                .unwrap()
+                .remove_sender_listeners_on_topic(topic);
         }
     }
     if matches!(event, "client_connected" | "client_disconnected") {
@@ -624,6 +672,34 @@ fn apply_internal_channel_event(client: &mut Client, data: &[u8]) {
             &mut *client.db.lock().unwrap(),
             INTERNAL_CHANNEL_TOPIC,
         );
+    }
+    if related {
+        let kind = match event {
+            "client_connected" => Some(LNR_PEER_CONNECTED),
+            "client_disconnected" => Some(LNR_PEER_DISCONNECTED),
+            "subscribed" => Some(LNR_PEER_SUBSCRIBED),
+            "unsubscribed" => Some(LNR_PEER_UNSUBSCRIBED),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            client
+                .status_emitter
+                .emit(kind, topic, peer, event);
+        }
+    }
+}
+
+fn is_related_topic(topic: &str, related_topics: &HashSet<String>) -> bool {
+    !topic.is_empty()
+        && topic != INTERNAL_CHANNEL_TOPIC
+        && related_topics.contains(topic)
+}
+
+/// Mark topic as related for status filtering. No alloc when already present.
+#[inline]
+fn mark_related_topic(related_topics: &mut HashSet<String>, topic: &str) {
+    if !related_topics.contains(topic) {
+        related_topics.insert(topic.to_owned());
     }
 }
 
@@ -1277,5 +1353,201 @@ mod tests {
         unsafe {
             drop(Box::from_raw(raw_flag));
         }
+    }
+
+    struct StatusCapture {
+        kinds: Mutex<Vec<(i32, String, String)>>,
+    }
+
+    extern "C" fn status_capture_cb(
+        kind: i32,
+        topic: *const i8,
+        peer: *const i8,
+        _message: *const i8,
+        udata: *mut libc::c_void,
+    ) {
+        if udata.is_null() {
+            return;
+        }
+        let topic = if topic.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(topic).to_string_lossy().into_owned() }
+        };
+        let peer = if peer.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(peer).to_string_lossy().into_owned() }
+        };
+        let cap = unsafe { &*(udata as *const StatusCapture) };
+        if let Ok(mut g) = cap.kinds.lock() {
+            g.push((kind, topic, peer));
+        }
+    }
+
+    #[test]
+    fn status_cb_skips_unrelated_peer_events() {
+        let _run_lock = client_run_test_lock();
+        let pid = std::process::id();
+        let topic = format!("st_unrel_{pid}");
+        let mut client = Client::new_sqlite(
+            &format!("st_unrel_{pid}"),
+            &topic,
+            "127.0.0.1:0",
+            ":memory:",
+            "",
+        )
+        .expect("client");
+        let capture = Box::new(StatusCapture {
+            kinds: Mutex::new(Vec::new()),
+        });
+        let raw = Box::into_raw(capture);
+        client.set_status_cb(
+            Some(status_capture_cb),
+            UData(raw as *mut libc::c_void),
+        );
+        assert!(client.run(recv_noop, UData::null()));
+
+        let payload = br#"{"event":"client_disconnected","client":"other","topic":"not_related_topic"}"#;
+        apply_internal_channel_event(&mut client, payload);
+        assert!(
+            unsafe { (*raw).kinds.lock().unwrap().is_empty() },
+            "unrelated peer events must not reach status callback"
+        );
+
+        drop(client);
+        unsafe {
+            drop(Box::from_raw(raw));
+        }
+    }
+
+    #[test]
+    fn status_cb_emits_related_peer_disconnect() {
+        let _run_lock = client_run_test_lock();
+        let pid = std::process::id();
+        let topic = format!("st_rel_{pid}");
+        let peer_topic = format!("st_peer_{pid}");
+        let mut client = Client::new_sqlite(
+            &format!("st_rel_{pid}"),
+            &topic,
+            "127.0.0.1:0",
+            ":memory:",
+            "",
+        )
+        .expect("client");
+        let capture = Box::new(StatusCapture {
+            kinds: Mutex::new(Vec::new()),
+        });
+        let raw = Box::into_raw(capture);
+        client.set_status_cb(
+            Some(status_capture_cb),
+            UData(raw as *mut libc::c_void),
+        );
+        assert!(client.run(recv_noop, UData::null()));
+        client.related_topics.insert(peer_topic.clone());
+
+        let payload = format!(
+            r#"{{"event":"client_disconnected","client":"peer_x","topic":"{peer_topic}"}}"#
+        );
+        apply_internal_channel_event(&mut client, payload.as_bytes());
+        let events = unsafe { (*raw).kinds.lock().unwrap().clone() };
+        assert!(
+            events.iter().any(|(k, t, p)| {
+                *k == crate::LNR_PEER_DISCONNECTED && t == &peer_topic && p == "peer_x"
+            }),
+            "expected PEER_DISCONNECTED for related topic, got {:?}",
+            events
+        );
+
+        drop(client);
+        unsafe {
+            drop(Box::from_raw(raw));
+        }
+    }
+
+    #[test]
+    fn status_cb_route_lost_on_unreachable_peer() {
+        let _run_lock = client_run_test_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "liner_route_lost_{}_{}",
+            std::process::id(),
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("shared.sqlite");
+        let db = db_path.to_str().unwrap();
+        let pid = std::process::id();
+        let listener_topic = format!("rl_l_{pid}");
+        let sender_topic = format!("rl_s_{pid}");
+
+        let mut listener = Client::new_sqlite(
+            &format!("rl_listener_{pid}"),
+            &listener_topic,
+            "127.0.0.1:0",
+            db,
+            "",
+        )
+        .expect("listener");
+        assert!(listener.run(recv_noop, UData::null()));
+        let peer_addr = listener.bound_listen_addr().unwrap().to_string();
+
+        let mut sender = Client::new_sqlite(
+            &format!("rl_sender_{pid}"),
+            &sender_topic,
+            "127.0.0.1:0",
+            db,
+            "",
+        )
+        .expect("sender");
+        let capture = Box::new(StatusCapture {
+            kinds: Mutex::new(Vec::new()),
+        });
+        let raw = Box::into_raw(capture);
+        sender.set_status_cb(
+            Some(status_capture_cb),
+            UData(raw as *mut libc::c_void),
+        );
+        assert!(sender.run(recv_noop, UData::null()));
+
+        assert!(sender.refresh_address_topic(&listener_topic));
+        assert!(sender.send_to(&listener_topic, b"hi", false));
+        // Let the TCP stream establish before killing the peer.
+        std::thread::sleep(Duration::from_millis(50));
+
+        drop(listener);
+        // Keep a cached route so send still enqueues to the dead TCP peer (Drop clears the store
+        // catalog; without this, send_to fails before any write/reconnect → no SENDER_ROUTE_LOST).
+        sender
+            .address_topic
+            .insert(listener_topic.clone(), vec![peer_addr.clone()]);
+        mark_related_topic(&mut sender.related_topics, &listener_topic);
+
+        for _ in 0..80 {
+            let _ = sender.send_to(&listener_topic, b"again", false);
+            let hit = unsafe {
+                (*raw).kinds.lock().unwrap().iter().any(|(k, _, _)| {
+                    *k == crate::LNR_SENDER_ROUTE_LOST || *k == crate::LNR_SENDER_SEND_ERROR
+                })
+            };
+            if hit {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let events = unsafe { (*raw).kinds.lock().unwrap().clone() };
+        assert!(
+            events.iter().any(|(k, _, _)| {
+                *k == crate::LNR_SENDER_ROUTE_LOST || *k == crate::LNR_SENDER_SEND_ERROR
+            }),
+            "expected SENDER_ROUTE_LOST/SENDER_SEND_ERROR after peer drop, got {:?}; peer was {}",
+            events,
+            peer_addr
+        );
+
+        drop(sender);
+        unsafe {
+            drop(Box::from_raw(raw));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

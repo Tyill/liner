@@ -39,6 +39,26 @@ typedef enum BOOL{ FALSE = 0, TRUE = 1}BOOL;
 typedef void* lnr_uData;
 typedef void(*lnr_receive_cb)(const char* to, const char* from, const char* data, size_t data_size, lnr_uData);
 
+/// Status / background-error callback kinds (passed as `kind` to `lnr_status_cb`).
+enum {
+    LNR_PEER_CONNECTED = 1,
+    LNR_PEER_DISCONNECTED = 2,
+    LNR_PEER_SUBSCRIBED = 3,
+    LNR_PEER_UNSUBSCRIBED = 4,
+    /** Sender: TCP connect fail or stream close. */
+    LNR_SENDER_ROUTE_LOST = 5,
+    /** Sender: background store error (reconnect / persist). */
+    LNR_SENDER_STORE_ERROR = 6,
+    /** Sender: write/flush failure after an accepted send. */
+    LNR_SENDER_SEND_ERROR = 7,
+    /** Listener: background store error (ack / lookup). */
+    LNR_LISTENER_STORE_ERROR = 8
+};
+
+/// Asynchronous status and background errors. Pointers are valid only for the duration of the call.
+/// Peer events are filtered to topics this client has sent to, subscribed to, or refreshed.
+typedef void(*lnr_status_cb)(int kind, const char* topic, const char* peer, const char* message, lnr_uData);
+
 typedef void* lnr_hClient;
 
 /// Create new client backed by Redis.
@@ -77,6 +97,11 @@ LINER_API lnr_hClient lnr_new_client_postgres(const char* unique_name, const cha
 /// @param redis_path - Redis connection URL
 /// @return lnr_hClient
 LINER_API LINER_DEPRECATED lnr_hClient lnr_new_client(const char* unique_name, const char* topic, const char* localhost, const char* redis_path);
+
+/// Set or clear the status / background-error callback (additive; does not change `lnr_run`).
+/// Pass `cb == NULL` to clear. Safe before or after `lnr_run`.
+/// @return true - ok
+LINER_API BOOL lnr_set_status_cb(lnr_hClient client, lnr_status_cb cb, lnr_uData);
 
 /// Run transfer data
 /// @param lnr_hClient

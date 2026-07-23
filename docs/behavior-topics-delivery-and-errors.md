@@ -62,6 +62,7 @@ The receive callback receives **pointers valid only for the duration of the call
 - **Creation**: If the store cannot be opened or parameters are invalid, Rust returns **`None`**; C returns **`NULL`**. Creation is otherwise silent on stderr for a plain open failure (see [errors-and-logging.md](errors-and-logging.md)).
 - **`run`**: Returns **`false`** if topic registration fails, the bind address is invalid, or TCP bind fails. Returns **`true`** if the client was **already running** (idempotent). Internal listener/sender startup may still **panic** on rare store failures—see [store-startup-failure-semantics.md](store-startup-failure-semantics.md).
 - **Sends / subscribe / refresh**: Return **`false`** on validation errors, missing addresses, or store errors; details are usually printed to **stderr** via `print_error!`.
+- **Status callback** (`lnr_set_status_cb`): asynchronous peer up/down (related topics only) and background route/store/send failures — see [using-the-api.md](using-the-api.md) and [errors-and-logging.md](errors-and-logging.md). Does not replace sync return codes.
 - **Clearing stored data**: **`clear_stored_messages`** and **`clear_addresses_of_topic`** only succeed when the client is **not** running.
 
 For a full matrix (Rust `Client`, `Liner`, C, mutex poison), use [errors-and-logging.md](errors-and-logging.md).
@@ -74,4 +75,4 @@ For a full matrix (Rust `Client`, `Liner`, C, mutex poison), use [errors-and-log
 2. **Source topic** = your published name and bind address.  
 3. **`send_to` / `send_all`** = look up peers by topic string, then TCP + optional persistence.  
 4. **`subscribe`** = which incoming logical topics your callback accepts.  
-5. **Errors** = mostly **boolean / null** failure plus **stderr** lines, not structured error codes.
+5. **Errors** = sync **boolean / null** failure plus **stderr**; async peer/route issues optionally via **status callback**.

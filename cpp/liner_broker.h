@@ -18,6 +18,7 @@ public:
       }
   }
   using ReceiveCBack = std::function<void(const std::string& to, const std::string& from, const std::string& data)>;
+  using StatusCBack = std::function<void(int kind, const std::string& topic, const std::string& peer, const std::string& message)>;
   
   bool run(ReceiveCBack cb){
       if (m_hClient){
@@ -25,6 +26,18 @@ public:
           return lnr_run(m_hClient, receiveCb, this);
       }
       return false;
+  }
+
+  /// Status / background-error callback. Pass empty function or call with nullptr-equivalent via clear.
+  bool setStatusCallback(StatusCBack cb){
+      if (!m_hClient){
+          return false;
+      }
+      m_statusCBack = std::move(cb);
+      if (m_statusCBack){
+          return lnr_set_status_cb(m_hClient, statusCb, this);
+      }
+      return lnr_set_status_cb(m_hClient, nullptr, nullptr);
   }
 
   /// Matches C `lnr_send_to` last argument. Default `true` (at-least-once). Use `false` when peers
@@ -89,7 +102,20 @@ public:
             }
         }   
     }
+    static void statusCb(int kind, const char* topic, const char* peer, const char* message, void* udata){
+        if (udata){
+            auto clt = static_cast<LinerBroker*>(udata);
+            if (clt->m_statusCBack){
+                clt->m_statusCBack(
+                    kind,
+                    topic ? topic : "",
+                    peer ? peer : "",
+                    message ? message : "");
+            }
+        }
+    }
     lnr_hClient m_hClient{};
     ReceiveCBack m_receiveCBack{};
+    StatusCBack m_statusCBack{};
 
 };

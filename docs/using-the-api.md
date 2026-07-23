@@ -4,9 +4,10 @@
 
 1. **Create** a client with store parameters and local identity (`unique_name`, initial `topic`, `localhost` bind address, Redis URL or SQLite path).
 2. Optionally call **`subscribe` / `unsubscribe`** before `run` (subscriptions are queued and applied when the listener starts).
-3. Call **`run`** (C: `lnr_run`) to start the internal listener and sender loops. Until then, **`send_to` / `send_all`** return failure (“client not is running”).
-4. Send and receive on the **same thread or different threads** only according to your binding’s thread-safety rules (see below).
-5. **Destroy** the client (C: `lnr_delete_client`) when finished so connections and threads are torn down cleanly.
+3. Optionally call **`lnr_set_status_cb`** / `Client::set_status_cb` / `Liner::set_status_callback` (before or after `run`) for peer and background-error notifications.
+4. Call **`run`** (C: `lnr_run`) to start the internal listener and sender loops. Until then, **`send_to` / `send_all`** return failure (“client not is running”).
+5. Send and receive on the **same thread or different threads** only according to your binding’s thread-safety rules (see below).
+6. **Destroy** the client (C: `lnr_delete_client`) when finished so connections and threads are torn down cleanly.
 
 ## Threading
 
@@ -59,7 +60,30 @@ C functions **`lnr_send_to`** and **`lnr_send_all`** take **`at_least_once_deliv
 
 ## Callbacks (receive path)
 
-The receive callback receives **pointers into transient buffers** valid only for the duration of the callback. **Copy** data if you need it after returning.
+The receive callback receives **pointers into transient buffers** valid only for the duration of the callback. **Copy** data if you need them after returning.
+
+## Status / background-error callback
+
+Additive API: **`lnr_set_status_cb`** (C), **`Client::set_status_cb`**, **`Liner::set_status_callback`**, Python **`set_status_callback`**. Pass a null/empty callback to clear. Safe before or after **`run`**.
+
+Signature (C): `void (*)(int kind, const char* topic, const char* peer, const char* message, lnr_uData)`. Pointers are valid **only during the call**.
+
+| Kind | Meaning |
+|------|---------|
+| `LNR_PEER_CONNECTED` (1) | Peer `run` / internal `client_connected` |
+| `LNR_PEER_DISCONNECTED` (2) | Peer teardown / `client_disconnected` |
+| `LNR_PEER_SUBSCRIBED` (3) | Peer `subscribe` |
+| `LNR_PEER_UNSUBSCRIBED` (4) | Peer `unsubscribe` |
+| `LNR_SENDER_ROUTE_LOST` (5) | **Sender:** TCP connect fail or stream close |
+| `LNR_SENDER_STORE_ERROR` (6) | **Sender:** background store error (reconnect / persist) |
+| `LNR_SENDER_SEND_ERROR` (7) | **Sender:** write/flush failure after an accepted send |
+| `LNR_LISTENER_STORE_ERROR` (8) | **Listener:** background store error (ack / lookup) |
+
+**Related filter (peer kinds only):** `LNR_PEER_*` events are delivered only for topics this client has previously **sent to**, **subscribed to**, or **refreshed** via `refresh_address_topic`. The internal channel still fans out control events to all peers for cache refresh; the filter applies only to the user status callback. Local sender/listener error kinds are not filtered that way.
+
+**Threading:** status callbacks may run on **listener** or **sender** background threads (same caution as the receive callback — do not re-enter the same client without care).
+
+Synchronous API failures still return **`false` / `NULL`** and may log to **stderr**; they are not redirected exclusively into the status callback.
 
 ## Checklist for integrators
 

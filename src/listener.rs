@@ -5,6 +5,7 @@ use crate::settings;
 use crate::common;
 use crate::{UCbackIntern, UData};
 use crate::{print_error, print_debug};
+use crate::status::{StatusEmitter, StatusMsg, LNR_LISTENER_STORE_ERROR};
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -55,7 +56,8 @@ pub struct Listener{
 
 impl Listener {
     pub fn new(mut listener: TcpListener,
-               db: Arc<Mutex<dyn Store>>, source_topic: &str, subscriptions: &HashMap<i32, String>, receive_cb: UCbackIntern, udata: UData)->Listener{
+               db: Arc<Mutex<dyn Store>>, source_topic: &str, subscriptions: &HashMap<i32, String>, receive_cb: UCbackIntern, udata: UData,
+               status_emitter: StatusEmitter)->Listener{
         let mut poll = Poll::new().expect("couldn't create poll queue");
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let mut messages_ = messages.clone();
@@ -65,6 +67,8 @@ impl Listener {
         let senders_ = senders.clone();
         db.lock().unwrap().set_source_topic(source_topic);
         let db_ = db.clone();
+        let status_emitter_stream = status_emitter.clone();
+        let status_emitter_recv = status_emitter;
       
         let listener_topic: Arc<Mutex<HashMap<i32, String>>> = Arc::new(Mutex::new(HashMap::new())); // key listener_topic, value key
         let topic_key = db.lock().unwrap().get_topic_key(source_topic).expect("couldn't db.get_topic_key");
@@ -109,7 +113,8 @@ impl Listener {
                         client =>{
                             if let Some(stream) = streams.get(client.0){
                                 read_stream(client, stream, &senders,
-                                            db.clone(), &mempools, &messages_, &receive_thread_cvar_);
+                                            db.clone(), &mempools, &messages_, &receive_thread_cvar_,
+                                            status_emitter_stream.clone());
                             }
                         }                        
                     }
@@ -119,7 +124,7 @@ impl Listener {
                     break;
                 }
             }
-            update_last_mess_number(&senders, &db);       
+            update_last_mess_number(&senders, &db, &status_emitter_stream);       
         });
 
         let receive_thread_cvar_ = receive_thread_cvar.clone();
@@ -145,7 +150,7 @@ impl Listener {
                 } 
                 let ctime = common::current_time_ms();
                 if timeout_update_last_mess_number(ctime, &mut prev_time[0]){                    
-                    update_last_mess_number(&senders_, &db_);
+                    update_last_mess_number(&senders_, &db_, &status_emitter_recv);
                 }
             }
         });        
@@ -329,7 +334,8 @@ fn read_stream(token: Token,
                db: Arc<Mutex<dyn Store>>,
                mempools: &Arc<Mutex<MempoolList>>,
                messages: &Arc<Mutex<MessList>>,
-               receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>){
+               receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>,
+               status_emitter: StatusEmitter){
     if let Ok(mut stream) = stream.lock(){
         if !stream.is_active && !stream.is_close{
             stream.is_active = true;
@@ -393,13 +399,15 @@ fn read_stream(token: Token,
             while let Some(mess) = Message::from_stream(&mempool, reader.by_ref(), &mut is_shutdown){
                 if last_mess_num == 0{
                     let mut connection_key = None;
+                    let mut sender_topic = String::new();
                     if let Ok(mut senders) = senders.lock() {
                         if let Some(sender) = senders.get_mut(token.0) {
                             if sender.connection_key == -1{
                                 sender.connection_key = mess.connection_key(&mempool);
-                                sender.sender_topic = get_sender_topic(&db, sender.connection_key);
+                                sender.sender_topic = get_sender_topic(&db, sender.connection_key, &status_emitter);
                             }
                             connection_key = Some(sender.connection_key);
+                            sender_topic = sender.sender_topic.clone();
                         } else {
                             print_error!(&format!("read_stream: sender index out of bounds for token {}", token.0));
                         }
@@ -407,7 +415,13 @@ fn read_stream(token: Token,
                         print_error!("read_stream: senders lock poisoned (init)");
                     }
                     if let Some(connection_key) = connection_key {
-                        last_mess_num = get_last_mess_number(&db, connection_key, 0);
+                        last_mess_num = get_last_mess_number(
+                            &db,
+                            connection_key,
+                            0,
+                            &sender_topic,
+                            &status_emitter,
+                        );
                     }
                 }
                 if mess.number_mess > last_mess_num{
@@ -487,13 +501,19 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
 }
 
 fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
-                           db: &Arc<Mutex<dyn Store>>){
-    let updates: Vec<(usize, i32, u64)> = {
+                           db: &Arc<Mutex<dyn Store>>,
+                           status_emitter: &StatusEmitter){
+    let updates: Vec<(usize, i32, u64, String)> = {
         let senders = senders.lock().unwrap();
         let mut out = Vec::new();
         for (ix, sender) in senders.iter().enumerate() {
             if sender.connection_key >= 0 && sender.last_mess_num_saved < sender.last_mess_num {
-                out.push((ix, sender.connection_key, sender.last_mess_num));
+                out.push((
+                    ix,
+                    sender.connection_key,
+                    sender.last_mess_num,
+                    sender.sender_topic.clone(),
+                ));
             }
         }
         out
@@ -504,11 +524,22 @@ fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
     let mut succeeded: Vec<(usize, u64)> = Vec::with_capacity(updates.len());
     {
         let mut db = db.lock().unwrap();
-        for (ix, connection_key, last_mess_num) in updates {
+        for (ix, connection_key, last_mess_num, sender_topic) in updates {
             match db.set_last_mess_number_from_listener(connection_key, last_mess_num) {
                 Ok(()) => succeeded.push((ix, last_mess_num)),
                 Err(err) => {
                     print_error!(&format!("couldn't db.set_last_mess_number: {}", err));
+                    if status_emitter.is_enabled() {
+                        let ck = connection_key.to_string();
+                        let err_s = err.to_string();
+                        status_emitter.emit_msg(
+                            LNR_LISTENER_STORE_ERROR,
+                            &sender_topic,
+                            "",
+                            StatusMsg::SetLastMessNumberFromListener,
+                            &[&ck, &err_s],
+                        );
+                    }
                 }
             }
         }
@@ -526,25 +557,48 @@ fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
     }
 }
 
-fn get_last_mess_number(db: &Arc<Mutex<dyn Store>>, connection_key: i32, default_mess_number: u64)->u64{
+fn get_last_mess_number(db: &Arc<Mutex<dyn Store>>, connection_key: i32, default_mess_number: u64,
+                        sender_topic: &str, status_emitter: &StatusEmitter)->u64{
     match db.lock().unwrap().get_last_mess_number_for_listener(connection_key){
         Ok(num)=>{
             num
         },
         Err(err)=>{
             print_error!(&format!("couldn't get_last_mess_number_for_listener: {}", err));
+            if status_emitter.is_enabled() {
+                let err_s = err.to_string();
+                status_emitter.emit_msg(
+                    LNR_LISTENER_STORE_ERROR,
+                    sender_topic,
+                    "",
+                    StatusMsg::GetLastMessNumberForListener,
+                    &[&err_s],
+                );
+            }
             default_mess_number
         }
     }
 }
 
-fn get_sender_topic(db: &Arc<Mutex<dyn Store>>, connection_key: i32)->String{
+fn get_sender_topic(db: &Arc<Mutex<dyn Store>>, connection_key: i32,
+                    status_emitter: &StatusEmitter)->String{
     match db.lock().unwrap().get_sender_topic_by_connection_key(connection_key){
         Ok(v)=>{
             v
         },
         Err(err)=>{
             print_error!(&format!("couldn't get_sender_topic, conn_key {}, err {}", connection_key, err));
+            if status_emitter.is_enabled() {
+                let ck = connection_key.to_string();
+                let err_s = err.to_string();
+                status_emitter.emit_msg(
+                    LNR_LISTENER_STORE_ERROR,
+                    "",
+                    "",
+                    StatusMsg::GetSenderTopicByConnectionKey,
+                    &[&ck, &err_s],
+                );
+            }
             "".to_string()
         }
     }

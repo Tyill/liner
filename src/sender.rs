@@ -4,6 +4,9 @@ use crate::store::Store;
 use crate::{print_error, print_debug};
 use crate::settings;
 use crate::common;
+use crate::status::{
+    StatusEmitter, StatusMsg, LNR_SENDER_ROUTE_LOST, LNR_SENDER_SEND_ERROR, LNR_SENDER_STORE_ERROR,
+};
 
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -18,6 +21,7 @@ struct WriteStream{
     ix: usize,
     connection_key: i32,
     address: String,
+    topic: String,
     stream: Arc<Option<TcpStream>>,
     last_send_mess_number: u64,
     last_mess_number: u64,
@@ -31,6 +35,7 @@ impl WriteStream {
             ix: 0,
             connection_key: 0,
             address: "".to_string(),
+            topic: "".to_string(),
             stream: Arc::new(None),
             last_send_mess_number: 0,
             last_mess_number: 0,
@@ -46,6 +51,7 @@ struct Address{
     ix: usize,
     connection_key: i32,
     address: String,
+    topic: String,
 }
 
 type MempoolList = Vec<Arc<Mutex<Mempool>>>;
@@ -69,7 +75,7 @@ pub struct Sender{
 }
 
 impl Sender {
-    pub fn new(db: Arc<Mutex<dyn Store>>, source_topic: &str)->Sender{
+    pub fn new(db: Arc<Mutex<dyn Store>>, source_topic: &str, status_emitter: StatusEmitter)->Sender{
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let messages_ = messages.clone();
         let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(Vec::new()));
@@ -79,6 +85,7 @@ impl Sender {
         let mut addrs_new_ = addrs_new.clone();
         db.lock().unwrap().set_source_topic(source_topic);
         let db_thread = db.clone();
+        let status_emitter_thread = status_emitter.clone();
         
         let delay_write_cvar = Arc::new((Mutex::new(false), Condvar::new()));
         let delay_write_cvar_ = delay_write_cvar.clone();
@@ -125,7 +132,13 @@ impl Sender {
                 }
                 ppl_wait = can_write;
                 if can_write{
-                    send_mess_to_listener(&streams, &messages_, &mempools_, &delay_write_cvar_);
+                    send_mess_to_listener(
+                        &streams,
+                        &messages_,
+                        &mempools_,
+                        &delay_write_cvar_,
+                        &status_emitter_thread,
+                    );
                 }
                 let ctime = common::current_time_ms();
                 if check_available_stream(&is_new_addr_, ctime, &mut prev_time[0]) {
@@ -137,14 +150,35 @@ impl Sender {
                         &mempools_,
                         &failed_addrs_,
                         &has_failed_addrs_,
+                        &status_emitter_thread,
                     );
                 }
                 if timeout_update_last_mess_number(ctime, &mut prev_time[1]){
-                    update_last_mess_number(&mut streams, &db_thread, &messages_, &mempools_);
+                    update_last_mess_number(
+                        &mut streams,
+                        &db_thread,
+                        &messages_,
+                        &mempools_,
+                        &status_emitter_thread,
+                    );
                 }
-                check_streams_close(&mut streams, &addrs_new_, &db_thread, &messages_, &mempools_);
+                check_streams_close(
+                    &mut streams,
+                    &addrs_new_,
+                    &db_thread,
+                    &messages_,
+                    &mempools_,
+                    &status_emitter_thread,
+                );
             }
-            close_streams(&streams, &addrs_new_, &db_thread, &messages_, &mempools_);
+            close_streams(
+                &streams,
+                &addrs_new_,
+                &db_thread,
+                &messages_,
+                &mempools_,
+                &status_emitter_thread,
+            );
         });
         Self{
             addrs_for,
@@ -214,6 +248,7 @@ impl Sender {
                 ix,
                 connection_key,
                 address: addr_to.to_string(),
+                topic: listener_topic.to_string(),
             });
             self.is_new_addr.store(true, Ordering::Relaxed);
         }
@@ -422,7 +457,8 @@ impl Sender {
                         let connection_key = self.connection_key[ix];
                         self.addrs_new.lock().unwrap().push(Address{ix, 
                                                                     connection_key,
-                                                                    address: t.0.clone()});
+                                                                    address: t.0.clone(),
+                                                                    topic: t.1.clone()});
                         self.addrs_for.insert(t.0, ix);
                     }
                 }
@@ -446,7 +482,8 @@ fn wdelay_thread_notify(delay_write_cvar: &Arc<(Mutex<bool>, Condvar)>) {
 fn send_mess_to_listener(streams: &WriteStreamList, 
                          messages: &Arc<Mutex<MessList>>,
                          mempools: &Arc<Mutex<MempoolList>>,
-                         delay_write_cvar: &Arc<(Mutex<bool>, Condvar)>){
+                         delay_write_cvar: &Arc<(Mutex<bool>, Condvar)>,
+                         status_emitter: &StatusEmitter){
     // Snapshot writable indices under the messages lock, then spawn writes without
     // holding it (enqueue / other peers must not stall on this).
     let to_write: Vec<usize> = {
@@ -469,7 +506,7 @@ fn send_mess_to_listener(streams: &WriteStreamList,
     };
     for ix in to_write {
         if let Some(stream) = streams.get(ix) {
-            write_stream(stream, messages, mempools, delay_write_cvar.clone());
+            write_stream(stream, messages, mempools, delay_write_cvar.clone(), status_emitter.clone());
         }
     }
 }
@@ -516,7 +553,8 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
 fn update_last_mess_number(streams: &mut WriteStreamList,
                            db: &Arc<Mutex<dyn Store>>,
                            messages: &Arc<Mutex<MessList>>,
-                           mempools: &Arc<Mutex<MempoolList>>){
+                           mempools: &Arc<Mutex<MempoolList>>,
+                           status_emitter: &StatusEmitter){
     let mut connection_keys: Vec<i32> = Vec::new();
     for stream_lock in streams.iter(){
         if let Ok(stream) = stream_lock.lock(){
@@ -584,6 +622,13 @@ fn update_last_mess_number(streams: &mut WriteStreamList,
             },
             Err(err)=>{
                 print_error!(&format!("get_last_mess_number_for_sender from db, {}", err));
+                status_emitter.emit_msg(
+                    LNR_SENDER_STORE_ERROR,
+                    "",
+                    "",
+                    StatusMsg::GetLastMessNumber,
+                    &[&err],
+                );
             }
         }
     }
@@ -595,7 +640,8 @@ fn append_streams(streams: &mut WriteStreamList,
                   messages: &Arc<Mutex<MessList>>,
                   mempools: &Arc<Mutex<MempoolList>>,
                   failed_addrs: &Arc<Mutex<HashSet<String>>>,
-                  has_failed_addrs: &Arc<AtomicBool>){
+                  has_failed_addrs: &Arc<AtomicBool>,
+                  status_emitter: &StatusEmitter){
     // Take the queue so we don't hold `addrs` across connect/db (ensure_send_route also pushes here).
     let pending: Vec<Address> = std::mem::take(&mut *addrs.lock().unwrap());
     let mut addrs_lost: Vec<Address> = Vec::new();
@@ -637,6 +683,16 @@ fn append_streams(streams: &mut WriteStreamList,
                     },
                     Err(err)=>{
                         print_error!(&format!("db.load_messages_for_sender, {} {}", addr.address, err));
+                        if status_emitter.is_enabled() {
+                            let err_s = err.to_string();
+                            status_emitter.emit_msg(
+                                LNR_SENDER_STORE_ERROR,
+                                &addr.topic,
+                                "",
+                                StatusMsg::LoadMessagesForSender,
+                                &[&addr.address, &err_s],
+                            );
+                        }
                     }
                 }
                 let mut last_ack_mess_number: u64 = 0;
@@ -669,6 +725,7 @@ fn append_streams(streams: &mut WriteStreamList,
                 let wstream = WriteStream{ix: addr.ix,
                                                        connection_key: addr.connection_key,  
                                                        address: addr.address.clone(),
+                                                       topic: addr.topic.clone(),
                                                        stream: Arc::new(Some(stream)), 
                                                        last_send_mess_number: last_ack_mess_number,
                                                        last_mess_number: last_ack_mess_number,
@@ -684,12 +741,22 @@ fn append_streams(streams: &mut WriteStreamList,
                 }
                 has_failed_addrs.store(true, Ordering::Relaxed);
                 print_debug!(&format!("tcp connect, {} {}", _err, addr.address));
+                if status_emitter.is_enabled() {
+                    let err_s = _err.to_string();
+                    status_emitter.emit_msg(
+                        LNR_SENDER_ROUTE_LOST,
+                        &addr.topic,
+                        "",
+                        StatusMsg::TcpConnectFailed,
+                        &[&err_s, &addr.address],
+                    );
+                }
                 if let Ok(mut mess_lock) = messages.lock() {
                     if let Some(slot) = mess_lock.get_mut(addr.ix) {
                         if let Some(mess) = slot.take() {
                             // Release messages before db — append_new_state/emit hold db then messages.
                             drop(mess_lock);
-                            save_mess_to_db(mess, db, addr.ix, addr.connection_key, mempools);
+                            save_mess_to_db(mess, db, addr.ix, addr.connection_key, mempools, status_emitter);
                         }
                     } else {
                         print_error!(&format!("append_streams: messages index out of bounds on connect fail {}", addr.ix));
@@ -710,7 +777,8 @@ fn append_streams(streams: &mut WriteStreamList,
 fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 messages: &Arc<Mutex<MessList>>,
                 mempools: &Arc<Mutex<MempoolList>>,
-                delay_write_cvar: Arc<(Mutex<bool>, Condvar)>){
+                delay_write_cvar: Arc<(Mutex<bool>, Condvar)>,
+                status_emitter: StatusEmitter){
     if let Ok(mut stream) = stream.lock(){
         if !stream.is_active && !stream.has_close_request{
             stream.is_active = true;
@@ -729,10 +797,14 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
         let mut ix = 0;
         let mut last_send_mess_number = 0;
         let mut arc_stream = Arc::new(None);
+        let mut topic = String::new();
+        let mut address = String::new();
         if let Ok(stream) = stream.lock(){
             ix = stream.ix;
             last_send_mess_number = stream.last_send_mess_number;
             arc_stream = stream.stream.clone();
+            topic = stream.topic.clone();
+            address = stream.address.clone();
         }
         if let Some(tcp_stream) = arc_stream.as_ref(){
             let mut buff: Vec<Message> = Vec::new();
@@ -779,6 +851,13 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                         last_send_mess_number = num_mess;
                         if !mess.to_stream(&mempool, &mut writer){
                             is_shutdown = true;
+                            status_emitter.emit_msg(
+                                LNR_SENDER_SEND_ERROR,
+                                &topic,
+                                "",
+                                StatusMsg::WriteFailed,
+                                &[&address],
+                            );
                         }
                     }
                     buff.push(mess);
@@ -788,6 +867,17 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 print_error!(&format!("writer.flush, {}, {}", err, err.kind()));
                 if err.kind() == std::io::ErrorKind::Interrupted {
                     continue;
+                }
+                if status_emitter.is_enabled() {
+                    let err_s = err.to_string();
+                    let kind_s = err.kind().to_string();
+                    status_emitter.emit_msg(
+                        LNR_SENDER_SEND_ERROR,
+                        &topic,
+                        "",
+                        StatusMsg::FlushFailed,
+                        &[&address, &err_s, &kind_s],
+                    );
                 }
                 is_shutdown = true;
                 break;
@@ -846,7 +936,8 @@ fn check_streams_close(streams: &mut WriteStreamList,
                        addrs_new: &Arc<Mutex<Vec<Address>>>,
                        db: &Arc<Mutex<dyn Store>>,
                        messages: &Arc<Mutex<MessList>>,
-                       mempools: &Arc<Mutex<MempoolList>>){
+                       mempools: &Arc<Mutex<MempoolList>>,
+                       status_emitter: &StatusEmitter){
     for stream in streams.iter(){
         if let Ok(mut stream) = stream.lock(){
             if stream.has_close_request && !stream.is_closed && !stream.is_active {
@@ -856,12 +947,13 @@ fn check_streams_close(streams: &mut WriteStreamList,
                 let ix = stream.ix;
                 let connection_key = stream.connection_key;
                 let address = stream.address.clone();
+                let topic = stream.topic.clone();
                
                 if let Ok(mut ml) = messages.lock() {
                     if let Some(slot) = ml.get_mut(ix) {
                         if let Some(mess) = slot.take() {
                             drop(ml);
-                            save_mess_to_db(mess, db, ix, connection_key, mempools);
+                            save_mess_to_db(mess, db, ix, connection_key, mempools, status_emitter);
                         }
                     } else {
                         print_error!(&format!("check_streams_close: messages index out of bounds {}", ix));
@@ -869,7 +961,14 @@ fn check_streams_close(streams: &mut WriteStreamList,
                 } else {
                     print_error!("check_streams_close: messages lock poisoned");
                 }
-                addrs_new.lock().unwrap().push(Address{ix, connection_key, address});
+                status_emitter.emit_msg(
+                    LNR_SENDER_ROUTE_LOST,
+                    &topic,
+                    "",
+                    StatusMsg::StreamClosed,
+                    &[&address],
+                );
+                addrs_new.lock().unwrap().push(Address{ix, connection_key, address, topic});
             
                 stream.is_closed = true;
             }
@@ -878,12 +977,23 @@ fn check_streams_close(streams: &mut WriteStreamList,
 }
 
 fn save_mess_to_db(mess: Vec<Message>, db: &Arc<Mutex<dyn Store>>,
-                   ix: usize, connection_key: i32, mempools: &Arc<Mutex<MempoolList>>){                    
+                   ix: usize, connection_key: i32, mempools: &Arc<Mutex<MempoolList>>,
+                   status_emitter: &StatusEmitter){                    
     let mut last_send_mess_number: u64 = 0;
     if let Ok(num) = db.lock().unwrap().get_last_mess_number_for_sender(connection_key){
         last_send_mess_number = num;
     }else{
         print_error!(format!("couldn't db.get_last_mess_number_for_sender, connection_key {}", connection_key));
+        if status_emitter.is_enabled() {
+            let ck = connection_key.to_string();
+            status_emitter.emit_msg(
+                LNR_SENDER_STORE_ERROR,
+                "",
+                "",
+                StatusMsg::GetLastMessNumberConnKey,
+                &[&ck],
+            );
+        }
     }
     let mempool = match mempools.lock() {
         Ok(mps) => match mps.get(ix) {
@@ -921,6 +1031,17 @@ fn save_mess_to_db(mess: Vec<Message>, db: &Arc<Mutex<dyn Store>>,
                 "db.save_messages_from_sender, connection_key {}, err {}",
                 connection_key, err
             ));
+            if status_emitter.is_enabled() {
+                let ck = connection_key.to_string();
+                let err_s = err.to_string();
+                status_emitter.emit_msg(
+                    LNR_SENDER_STORE_ERROR,
+                    "",
+                    "",
+                    StatusMsg::SaveMessagesFromSender,
+                    &[&ck, &err_s],
+                );
+            }
         }
     }
 
@@ -933,7 +1054,8 @@ fn close_streams(streams: &WriteStreamList,
                  addrs_new: &Arc<Mutex<Vec<Address>>>,
                  db: &Arc<Mutex<dyn Store>>,
                  messages: &Arc<Mutex<MessList>>,
-                 mempools: &Arc<Mutex<MempoolList>>){
+                 mempools: &Arc<Mutex<MempoolList>>,
+                 status_emitter: &StatusEmitter){
     for stream in streams.iter(){
         if let Ok(mut stream) = stream.lock(){
             stream.has_close_request = true;
@@ -963,7 +1085,7 @@ fn close_streams(streams: &WriteStreamList,
         }
     }
     for (ix, connection_key, mess_for_send) in pending {
-        save_mess_to_db(mess_for_send, db, ix, connection_key, mempools);
+        save_mess_to_db(mess_for_send, db, ix, connection_key, mempools, status_emitter);
     }
 }
 
@@ -1016,6 +1138,7 @@ mod tests {
             ix: 0,
             connection_key: 777,
             address: addr.to_string(),
+            topic: "test_topic".to_string(),
             stream: Arc::new(Some(server)),
             last_send_mess_number: 0,
             last_mess_number: 0,
@@ -1026,7 +1149,7 @@ mod tests {
         let stream = Arc::new(Mutex::new(ws));
 
         let cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
-        write_stream(&stream, &messages, &mempools, cvar);
+        write_stream(&stream, &messages, &mempools, cvar, StatusEmitter::new());
 
         assert!(
             wait_until(Duration::from_secs(1), || {
@@ -1077,6 +1200,7 @@ mod tests {
             ix: 0,
             connection_key: 888,
             address: addr.to_string(),
+            topic: "test_topic".to_string(),
             stream: Arc::new(Some(server)),
             last_send_mess_number: 0,
             // Not yet confirmed by receiver (db update would set this later).
@@ -1088,7 +1212,7 @@ mod tests {
         let stream = Arc::new(Mutex::new(ws));
 
         let cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
-        write_stream(&stream, &messages, &mempools, cvar);
+        write_stream(&stream, &messages, &mempools, cvar, StatusEmitter::new());
 
         assert!(
             wait_until(Duration::from_secs(1), || {
@@ -1132,6 +1256,7 @@ mod tests {
             ix: 0,
             connection_key: 999,
             address: addr.to_string(),
+            topic: "test_topic".to_string(),
             stream: Arc::new(Some(server)),
             last_send_mess_number: 0,
             last_mess_number: 0,
@@ -1143,7 +1268,7 @@ mod tests {
 
         // First attempt sends the message but keeps it queued (at-least-once, not yet confirmed).
         let cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
-        write_stream(&stream, &messages, &mempools, cvar);
+        write_stream(&stream, &messages, &mempools, cvar, StatusEmitter::new());
         assert!(
             wait_until(Duration::from_secs(1), || {
                 let s = stream.lock().unwrap();
@@ -1167,7 +1292,7 @@ mod tests {
 
         // Second call should free + clear the queued message without re-sending (last_send already 1).
         let cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
-        write_stream(&stream, &messages, &mempools, cvar);
+        write_stream(&stream, &messages, &mempools, cvar, StatusEmitter::new());
         assert!(
             wait_until(Duration::from_secs(1), || !stream.lock().unwrap().is_active),
             "second write_stream didn't finish in time"
@@ -1187,6 +1312,7 @@ mod tests {
             ix: 0,
             connection_key: 0,
             address: "127.0.0.1:0".to_string(),
+            topic: String::new(),
             stream: Arc::new(None),
             last_send_mess_number: 0,
             last_mess_number: 0,

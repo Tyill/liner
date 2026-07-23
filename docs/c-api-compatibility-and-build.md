@@ -6,7 +6,7 @@ The C surface is defined by **`include/liner.h`** and **`#[no_mangle] pub extern
 
 The project **does not currently publish a separate ABI stability policy** (for example “patch-only symbol compatibility”). **Semantic versioning of the Rust crate** (`Cargo.toml` / crates.io) tracks the **library as a whole**, not a formally tested C ABI matrix. In practice:
 
-- **Additive** changes (new functions) are backward compatible for callers that only use older symbols.
+- **Additive** changes (new functions) are backward compatible for callers that only use older symbols. Example: **`lnr_set_status_cb`** and status kinds in `liner.h` (crate **1.4.0**).
 - **Renames, signature changes, or removals** of C functions, or **behavioral changes** documented in release notes, require **rebuilding and retesting** all native bindings.
 - Changes to **`liner.h`** (types, callbacks, constants) should be treated as **potentially breaking** for C/C++ consumers until you verify otherwise.
 

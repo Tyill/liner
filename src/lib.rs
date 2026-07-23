@@ -33,6 +33,13 @@ mod store;
 pub use store::{open_store, open_store_mutex, ReceiverSeedEntry, Store, StoreBackend};
 pub use store::redis;
 
+mod status;
+pub use status::{
+    StatusCbackIntern, StatusEmitter, StatusMsg, LNR_LISTENER_STORE_ERROR, LNR_PEER_CONNECTED,
+    LNR_PEER_DISCONNECTED, LNR_PEER_SUBSCRIBED, LNR_PEER_UNSUBSCRIBED, LNR_SENDER_ROUTE_LOST,
+    LNR_SENDER_SEND_ERROR, LNR_SENDER_STORE_ERROR,
+};
+
 mod client;
 pub use client::Client;
 mod message;
@@ -49,6 +56,7 @@ use std::ffi::CString;
 use std::sync::{Mutex, OnceLock};
 
 type UCback = Box<dyn FnMut(&str, &str, &[u8])>;
+type StatusUCback = Box<dyn FnMut(i32, &str, &str, &str)>;
 
 fn live_clients() -> &'static Mutex<HashSet<usize>> {
     static LIVE_CLIENTS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
@@ -90,9 +98,41 @@ extern "C" fn cb_(to: *const i8, from: *const i8,  data: *const u8, dsize: usize
     }
 }
 
+extern "C" fn status_cb_(
+    kind: i32,
+    topic: *const i8,
+    peer: *const i8,
+    message: *const i8,
+    udata: *mut libc::c_void,
+) {
+    unsafe {
+        if let Some(liner) = udata.cast::<Liner>().as_mut() {
+            if let Some(cb) = liner.status_ucback.as_mut() {
+                let topic = if topic.is_null() {
+                    ""
+                } else {
+                    CStr::from_ptr(topic).to_str().unwrap_or("")
+                };
+                let peer = if peer.is_null() {
+                    ""
+                } else {
+                    CStr::from_ptr(peer).to_str().unwrap_or("")
+                };
+                let message = if message.is_null() {
+                    ""
+                } else {
+                    CStr::from_ptr(message).to_str().unwrap_or("")
+                };
+                (cb)(kind, topic, peer, message);
+            }
+        }
+    }
+}
+
 pub struct Liner{
     hclient: *mut Client,
     ucback: Option<UCback>,
+    status_ucback: Option<StatusUCback>,
 }
 
 impl Liner {
@@ -170,6 +210,21 @@ impl Liner {
         Self {
             hclient,
             ucback: None,
+            status_ucback: None,
+        }
+    }
+
+    /// Register a status / background-error callback. Pass `None` to clear.
+    /// Peer events are filtered to topics this client has sent to, subscribed to, or refreshed.
+    pub fn set_status_callback(&mut self, cb: Option<Box<dyn FnMut(i32, &str, &str, &str)>>) {
+        unsafe {
+            self.status_ucback = cb;
+            if self.status_ucback.is_some() {
+                let ud = self as *const Self as *mut libc::c_void;
+                lnr_set_status_cb(self.hclient, Some(status_cb_), ud);
+            } else {
+                lnr_set_status_cb(self.hclient, None, std::ptr::null_mut());
+            }
         }
     }
 
@@ -407,6 +462,10 @@ pub unsafe extern "C" fn lnr_new_client(
     localhost: *const i8,
     redis_path: *const i8,
 ) -> *mut Client {
+    // Keep additive C symbols in the cdylib export table (linker GC otherwise drops them).
+    std::hint::black_box(lnr_new_client_redis);
+    std::hint::black_box(lnr_new_client_sqlite);
+    std::hint::black_box(lnr_set_status_cb);
     #[cfg(feature = "postgres")]
     {
         std::hint::black_box(lnr_new_client_postgres);
@@ -424,6 +483,29 @@ impl UData {
     pub fn null() -> Self {
         UData(std::ptr::null_mut())
     }
+}
+
+/// Set or clear the status / background-error callback.
+///
+/// Peer events (`LNR_PEER_*`) are delivered only for topics this client has previously
+/// sent to, subscribed to, or refreshed via `lnr_refresh_address_topic`.
+/// Local `LNR_SENDER_ROUTE_LOST` / `LNR_SENDER_SEND_ERROR` / `LNR_SENDER_STORE_ERROR` and
+/// `LNR_LISTENER_STORE_ERROR` are not filtered that way.
+///
+/// Pass `cb == NULL` to clear. Safe before or after `lnr_run`.
+///
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_set_status_cb(
+    client: *mut Client,
+    cb: Option<StatusCbackIntern>,
+    udata: *mut libc::c_void,
+) -> bool {
+    if !has_client(client) {
+        return false;
+    }
+    (*client).set_status_cb(cb, UData(udata));
+    true
 }
 
 /// Launching a client to send messages and listen for incoming messages. 
@@ -599,6 +681,7 @@ mod tests {
             assert!(!lnr_clear_stored_messages(ptr::null_mut()));
             assert!(!lnr_clear_addresses_of_topic(ptr::null_mut()));
             assert!(!lnr_delete_client(ptr::null_mut()));
+            assert!(!lnr_set_status_cb(ptr::null_mut(), None, ptr::null_mut()));
         }
     }
 
