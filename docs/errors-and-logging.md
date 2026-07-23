@@ -17,9 +17,20 @@ There is no separate error code enum exposed to C beyond **success vs failure** 
 | `lnr_new_client_sqlite` | `NULL` for the same pointer/empty-string rules, **SQLite open failure**, **invalid non-empty `receivers_json`**, or **`seed_receivers`** / DB errors. **`NULL` or empty `receivers_json`**, or JSON **`[]`**, is **not** an error (no seeding). |
 | `lnr_new_client_postgres` | `NULL` on failure (requires build with **`postgres`** feature): null/invalid pointers, empty strings, or **PostgreSQL connection / schema errors** |
 | `lnr_run` | `TRUE` if the client was already marked running; `FALSE` if registration or bind failed (see below); **may panic** if listener/sender store startup fails internally (see [store-startup-failure-semantics.md](store-startup-failure-semantics.md)) |
+| `lnr_set_status_cb` | `TRUE` if the client handle is valid; `FALSE` on null/unknown handle. Registers or clears (`cb == NULL`) the status callback |
 | `lnr_send_to`, `lnr_send_all`, … | `FALSE` on logical or I/O errors; see individual operations in [using-the-api.md](using-the-api.md) |
 
-Creation helpers validate pointers and C strings; invalid input returns `NULL` without necessarily printing every case.
+### Sync return vs status callback
+
+| Concern | Where it surfaces |
+|---------|-------------------|
+| Create / `run` / `send_*` / subscribe validation | Immediate **`NULL` / `false`** (+ often stderr) |
+| Peer connect/disconnect/sub/unsub (related topics only) | Status callback `LNR_PEER_*` |
+| TCP connect fail / stream close / write flush fail (**sender**) | Status callback `LNR_SENDER_ROUTE_LOST` / `LNR_SENDER_SEND_ERROR` (+ stderr) |
+| Background store errors on reconnect/persist (**sender**) | Status callback `LNR_SENDER_STORE_ERROR` (+ stderr) |
+| Background store errors on ack/lookup (**listener**) | Status callback `LNR_LISTENER_STORE_ERROR` (+ stderr) |
+
+See [using-the-api.md](using-the-api.md) (*Status / background-error callback*) for kinds and the related-topic filter.
 
 ## Rust `Client` (`liner_broker::client::Client`)
 
@@ -29,6 +40,7 @@ Creation helpers validate pointers and C strings; invalid input returns `NULL` w
 | `Client::new_sqlite` | `Some(Client)` | `None` if the store cannot be opened (silent), **`receivers_json` cannot be parsed** as a JSON array of seed entries (logs), **`seed_receivers`** fails (logs), or invalid UTF-8 would only arise from Rust `&str` callers |
 | `Client::new_postgres` | `Some(Client)` | `None` if PostgreSQL cannot be opened (**`postgres`** feature required at compile time) |
 | `run` | `true` if the event loop can start | `false` if `regist_topic` fails, `localhost` does not resolve, or TCP bind fails; logs reason. Returns `true` if the client **was already running** (idempotent success) |
+| `set_status_cb` | always succeeds for a live client (registers or clears) | N/A (invalid handle only via C `lnr_set_status_cb`) |
 | `send_to` / `send_all` | `true` if the send path reports success | `false` if not running, self-topic, unknown topic addresses, or sender failure |
 | `subscribe` / `unsubscribe` | `true` | `false` on store errors or invalid topic |
 | `refresh_address_topic` | `true` if addresses were found | `false` if none or store error |
@@ -46,6 +58,6 @@ A few paths use `Mutex::lock().unwrap()` on the client’s internal mutex. If an
 
 ## Summary for production
 
-1. Treat **`NULL` / `None` / `FALSE`** as normal failure modes; read **stderr** for context.
+1. Treat **`NULL` / `None` / `FALSE`** as normal failure modes; read **stderr** for context. Optionally register **`lnr_set_status_cb`** for peer and background operational events.
 2. Do not assume `lnr_run` returning `TRUE` guarantees the process will never abort later — listener/sender threads can still panic on unexpected store failure at their startup (documented separately).
 3. For maximum control over construction errors, use **`Client::new_*` in Rust** instead of `Liner::new` / `Liner::new_sqlite`.

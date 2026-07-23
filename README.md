@@ -233,7 +233,7 @@ LINER_TEST_REDIS_PORT=16379 LINER_TEST_REDIS_CONTAINER=liner-test-redis \
 - [Using Redis](docs/using-redis.md) — `new_redis`, shared URL, `test/redis/`
 - [Using SQLite](docs/using-sqlite.md) — `new_sqlite`, `receivers_json`, isolated DB limits
 - [Using PostgreSQL](docs/using-postgres.md) — `--features postgres`, shared database
-- [Crate API on docs.rs](https://docs.rs/liner_broker/1.3.1/liner_broker/)
+- [Crate API on docs.rs](https://docs.rs/liner_broker/)
 - [Developer notes](docs/README.md) — errors, backends, C API, lifecycle
 - [C API compatibility and build](docs/c-api-compatibility-and-build.md)
 
