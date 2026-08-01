@@ -397,6 +397,48 @@ impl Store for Sqlite {
         Err(DbError::new("!unique_name_cache.contains_key"))
     }
 
+    fn get_topic_directory(&mut self, topic: &str) -> DbResult<Vec<(String, String)>> {
+        let mut stmt = map_sql(self.conn.prepare(
+            "SELECT addr, client_name FROM topic_addr WHERE topic = ?1 ORDER BY addr ASC",
+        ))?;
+        let rows = map_sql(stmt.query_map(params![topic], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        }))?;
+        let mut out = Vec::new();
+        let mut addrs = Vec::new();
+        for row in rows {
+            let (addr, name) = map_sql(row)?;
+            self.unique_name_cache
+                .insert(cache_name_key(topic, &addr), name.clone());
+            addrs.push(addr.clone());
+            out.push((addr, name));
+        }
+        self.topic_addr_cache.insert(topic.to_string(), addrs);
+        Ok(out)
+    }
+
+    fn count_pending_messages(&mut self, connection_key: i32) -> DbResult<usize> {
+        let n: i64 = map_sql(self.conn.query_row(
+            "SELECT COUNT(*) FROM conn_messages WHERE connection_key = ?1",
+            params![connection_key],
+            |r| r.get(0),
+        ))?;
+        Ok(usize::try_from(n).unwrap_or(0))
+    }
+
+    fn find_connection_key_for_sender(&mut self, listener_name: &str) -> DbResult<Option<i32>> {
+        let composite = connection_composite(&self.unique_name, &self.source_topic, listener_name);
+        map_sql(
+            self.conn
+                .query_row(
+                    "SELECT connection_key FROM conn_key_map WHERE composite = ?1",
+                    params![composite],
+                    |r| r.get(0),
+                )
+                .optional(),
+        )
+    }
+
     fn get_connection_key_for_sender(&mut self, listener_name: &str) -> DbResult<i32> {
         let composite = connection_composite(&self.unique_name, &self.source_topic, listener_name);
         let existing: Option<i32> = map_sql(
@@ -763,6 +805,19 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_get_topic_directory_pairs() {
+        let mut db = Sqlite::new("u1", ":memory:").unwrap();
+        db.set_source_topic("t1");
+        db.set_source_localhost("127.0.0.1:1");
+        db.regist_topic("t1").unwrap();
+        let rows = db.get_topic_directory("t1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "127.0.0.1:1");
+        assert_eq!(rows[0].1, "u1");
+        assert!(db.get_topic_directory("missing").unwrap().is_empty());
+    }
+
+    #[test]
     fn sqlite_topic_roundtrip_and_order() {
         let mut db = Sqlite::new("u1", ":memory:").unwrap();
         db.set_source_topic("t1");
@@ -796,6 +851,8 @@ mod tests {
         let m2 = Message::new(pool.clone(), ck, 10, 2, b"b", true).unwrap();
         db.save_messages_from_sender(&pool, ck, vec![m1, m2]).unwrap();
 
+        assert_eq!(db.count_pending_messages(ck).unwrap(), 2);
+
         let peek = db
             .load_last_message_for_sender(&pool, ck)
             .unwrap()
@@ -806,6 +863,8 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].number_mess, 1);
         assert_eq!(loaded[1].number_mess, 2);
+
+        assert_eq!(db.count_pending_messages(ck).unwrap(), 0);
 
         let empty = db.load_messages_for_sender(&pool, ck).unwrap();
         assert!(empty.is_empty());

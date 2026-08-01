@@ -59,11 +59,11 @@ where
     }
 
     msg_len = u32::from_be_bytes(len_hdr) as usize;
-    if msg_len == 0 || msg_len > settings::BYTESTREAM_MAX_MESSAGE_SIZE {
+    if msg_len == 0 || msg_len > settings::max_message_size() {
         print_error!(&format!(
             "invalid bytestream length: {} (max {})",
             msg_len,
-            settings::BYTESTREAM_MAX_MESSAGE_SIZE
+            settings::max_message_size()
         ));
         return (0, 0, true);
     }
@@ -407,12 +407,26 @@ mod tests {
 
     #[test]
     fn read_rejects_too_large_message_length() {
+        let _lock = settings::test_limits_lock();
         let mp = mp();
-        let too_big = (settings::BYTESTREAM_MAX_MESSAGE_SIZE as u32).saturating_add(1);
+        let too_big = (settings::max_message_size() as u32).saturating_add(1);
         let msg = too_big.to_be_bytes().to_vec(); // header only; should be rejected immediately
         let mut cur = Cursor::new(msg);
         let (p, l, s) = read_stream(&mut cur, &mp);
         assert_eq!((p, l, s), (0, 0, true));
+    }
+
+    #[test]
+    fn read_rejects_when_runtime_max_message_size_lowered() {
+        let _lock = settings::test_limits_lock();
+        let prev = settings::max_message_size();
+        assert!(settings::set_max_message_size(64));
+        let mp = mp();
+        let msg = 65u32.to_be_bytes().to_vec();
+        let mut cur = Cursor::new(msg);
+        let (p, l, s) = read_stream(&mut cur, &mp);
+        assert_eq!((p, l, s), (0, 0, true));
+        assert!(settings::set_max_message_size(prev));
     }
 
     #[test]

@@ -14,6 +14,8 @@ pub enum ErrorCode {
     Store = 7,
     InvalidArg = 8,
     ClearWhileRunning = 9,
+    /// Listener startup after TCP bind (mio poll/register/waker or topic_key).
+    Startup = 10,
 }
 
 impl ErrorCode {

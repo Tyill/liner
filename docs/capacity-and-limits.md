@@ -6,13 +6,13 @@ All numeric constants live in **`src/settings.rs`** unless stated otherwise. Thi
 
 ## Hard cap: single framed message on the wire
 
-**`BYTESTREAM_MAX_MESSAGE_SIZE`** (default **1 GiB**, `1024 * 1024 * 1024`)
+**Default** **`BYTESTREAM_MAX_MESSAGE_SIZE`** (**1 GiB**, `1024 * 1024 * 1024`). Runtime value is **`settings::max_message_size()`** / C **`lnr_get_max_message_size`**, changeable with **`lnr_set_max_message_size`** (`FALSE` if `bytes == 0`). Prefer set **before `run`**; changing later only affects new frames.
 
 - Each TCP frame starts with a **4-byte big-endian `u32` length**, then payload (`bytestream::read_stream`).
-- If the declared length is **0** or **greater than `BYTESTREAM_MAX_MESSAGE_SIZE`**, the reader logs an error and treats the stream as **shut down** (`is_shutdown` path): no message is returned.
+- If the declared length is **0** or **greater than the runtime max**, the reader logs an error and treats the stream as **shut down** (`is_shutdown` path): no message is returned.
 - Payload is allocated in the connection’s **mempool** (`mempool.alloc(msg_len)`). A malicious or buggy peer advertising a length close to the cap can force a **very large RAM reservation** on the receiver.
 
-**Practical limit:** treat **~1 GiB per framed read** as the library’s configured ceiling; the **`u32` header** allows up to 4 GiB in principle, but this constant is the enforced bound.
+**Practical limit:** treat **~1 GiB per framed read** as the default ceiling; the **`u32` header** allows up to 4 GiB in principle, but the runtime max is the enforced bound.
 
 Smaller internal I/O buffers (**`BYTESTREAM_READ_BUFFER_SIZE`** / **`BYTESTREAM_WRITE_BUFFER_SIZE`**, default **8 KiB**) only control **chunking** of reads/writes, not the maximum message size.
 
@@ -20,11 +20,11 @@ Smaller internal I/O buffers (**`BYTESTREAM_READ_BUFFER_SIZE`** / **`BYTESTREAM_
 
 ## Optional payload compression (zstd)
 
-**`MIN_SIZE_DATA_FOR_COMPRESS_BYTE`** (default **1 MiB**, `1024 * 1024`)
+**Default** **`MIN_SIZE_DATA_FOR_COMPRESS_BYTE`** (**1 MiB**, `1024 * 1024`). Runtime value is **`settings::compress_threshold()`** / C **`lnr_get_compress_threshold`**, changeable with **`lnr_set_compress_threshold`** (`FALSE` if `bytes == 0`). Prefer set **before `run`**.
 
-- In **`Message::new`**, if **`data.len() > MIN_SIZE_DATA_FOR_COMPRESS_BYTE`** (strictly **greater than** 1 MiB), the implementation tries **`zstd::stream::encode_all`**.
+- In **`Message::new`**, if **`data.len() > compress_threshold()`** (strictly greater), the implementation tries **`zstd::stream::encode_all`**.
 - On success, the wire message stores **compressed bytes** and sets a **`COMPRESS`** flag so **`get_data`** decompresses on the listener.
-- Payloads **≤ 1 MiB** are sent **uncompressed** regardless of compressibility.
+- Payloads **≤ threshold** are sent **uncompressed** regardless of compressibility.
 
 **`DATA_COMPRESS_LEVEL`** (default **`0`**) — passed to zstd; level **`0`** means “use zstd’s default” (documented in-code as currently similar to level **3**).
 
@@ -66,11 +66,11 @@ These affect syscall batching, not the logical max message size.
 
 ## Short sizing checklist
 
-1. **Per message:** application payload ≤ **1 MiB** → no zstd attempt; **> 1 MiB** → zstd may run (CPU cost, smaller wire if data is compressible).
-2. **Per framed TCP message:** declared length must be **≤ `BYTESTREAM_MAX_MESSAGE_SIZE`** (1 GiB default) or the connection is aborted for that read path.
+1. **Per message:** application payload ≤ **compress threshold** (1 MiB default) → no zstd attempt; **above threshold** → zstd may run (CPU cost, smaller wire if data is compressible).
+2. **Per framed TCP message:** declared length must be **≤ runtime `max_message_size`** (1 GiB default) or the connection is aborted for that read path.
 3. **RAM:** plan for **peak concurrent messages × mempool footprint** per active connection (listener + sender each use mempools for their worklists). Add headroom for **fragmentation** (allocator may keep extra chunks when the 20% rule blocks merging).
-4. **Disk / Redis memory:** **at-least-once** offline queues store **encoded** message blobs; size ≈ wire size (compressed if compression was used).
-5. **DoS / untrusted peers:** the length header is untrusted; cap expectations at the network boundary or use a smaller maximum at the application layer if 1 GiB is unacceptable.
+4. **Disk / Redis memory:** **at-least-once** offline queues store **encoded** message blobs; size ≈ wire size (compressed if compression was used). Use **`lnr_pending_count`** to inspect offline depth for this sender.
+5. **DoS / untrusted peers:** the length header is untrusted; lower **`lnr_set_max_message_size`** before `run` if 1 GiB is unacceptable.
 
 ---
 

@@ -5,11 +5,12 @@
 1. **Create** a client with store parameters and local identity (`unique_name`, initial `topic`, `localhost` bind address, Redis URL or SQLite path).
 2. Optionally call **`set_advertise_addr`** / `lnr_set_advertise_addr` before `run` so the store catalog lists a reachable address (e.g. when binding `0.0.0.0` or an ephemeral port).
 3. Optionally call **`subscribe` / `unsubscribe`** before `run` (subscriptions are queued and applied when the listener starts).
-4. Optionally call **`lnr_set_status_cb`** / `Client::set_status_cb` / `Liner::set_status_callback` (before or after `run`) for peer and background-error notifications.
-5. Call **`run`** (C: `lnr_run`) to start the internal listener and sender loops. Until then, **`send_to` / `send_all`** return failure (`LNR_ERR_NOT_RUNNING`). Calling **`run` again while already running** returns **`true`** and sets **`LNR_OK`** (idempotent).
-6. Send and receive on the **same thread or different threads** only according to your binding’s thread-safety rules (see below).
-7. Optionally **`stop`** / `lnr_stop` to unregister and join threads without destroying the handle — then **`clear_*`** and a fresh **`run`** are allowed. **`bound_listen_addr`** remains (last bind); **`published_addr`** is cleared (`NULL`) because the client is no longer in the store catalog.
-8. **Destroy** the client (C: `lnr_delete_client`) when finished (`Drop` / delete also stop if still running).
+4. Optionally call **`lnr_set_status_cb`** / `Client::set_status_cb` / `Liner::set_status_callback` (before or after `run`) for peer and background-error notifications. Optionally call **`lnr_set_log_cb`** once per process to redirect `print_error!` away from stderr.
+5. Optionally tune **`lnr_set_max_message_size`** / **`lnr_set_compress_threshold`** before `run`.
+6. Call **`run`** (C: `lnr_run`) to start the internal listener and sender loops. Until then, **`send_to` / `send_all`** return failure (`LNR_ERR_NOT_RUNNING`). Calling **`run` again while already running** returns **`true`** and sets **`LNR_OK`** (idempotent). Listener startup failure after bind returns **`false`** + **`LNR_ERR_STARTUP`** (no panic).
+7. Send and receive on the **same thread or different threads** only according to your binding’s thread-safety rules (see below).
+8. Optionally **`stop`** / `lnr_stop` to unregister and join threads without destroying the handle — then **`clear_*`** and a fresh **`run`** are allowed. **`bound_listen_addr`** remains (last bind); **`published_addr`** is cleared (`NULL`) because the client is no longer in the store catalog.
+9. **Destroy** the client (C: `lnr_delete_client`) when finished (`Drop` / delete also stop if still running).
 
 ## Threading
 
@@ -27,7 +28,16 @@
 
 ## Last error code
 
-Sync failures still return **`false` / `NULL`** and log to **stderr**. Additionally, **`lnr_last_error_code`** / `Client::last_error` / Python **`last_error_code`** returns a stable `LNR_OK` / `LNR_ERR_*` code for the last sync call on that client (see [errors-and-logging.md](errors-and-logging.md)). There is **no** public error-message getter.
+Sync failures still return **`false` / `NULL`** and log to **stderr** (or the process-global **log hook**). Additionally, **`lnr_last_error_code`** / `Client::last_error` / Python **`last_error_code`** returns a stable `LNR_OK` / `LNR_ERR_*` code for the last sync call on that client (see [errors-and-logging.md](errors-and-logging.md)). There is **no** public error-message getter.
+
+## Introspection
+
+- **`lnr_list_addresses` / `Client::list_addresses`**: topic directory from the store as `(addr, unique_name)` rows. Empty topic ⇒ success with zero callbacks / empty `Vec`. DB errors ⇒ `false` / `None` + `LNR_ERR_STORE`. Also refreshes the in-memory address cache like a successful refresh.
+- **`lnr_pending_count` / `Client::pending_count`**: sum of offline queued blobs for this sender identity (`0` if none; `-1` / `None` on error). Depth may lag until the sender flushes in-memory at-least-once queues (e.g. after peer loss or `stop`).
+
+## Runtime limits
+
+Process-global **`lnr_set_max_message_size`** / **`lnr_set_compress_threshold`** (and getters). `0` is rejected (`FALSE`). Prefer set **before `run`**. Details: [capacity-and-limits.md](capacity-and-limits.md).
 
 ## Topics and addresses
 
@@ -93,11 +103,11 @@ Signature (C): `void (*)(int kind, const char* topic, const char* peer, const ch
 
 **Threading:** status callbacks may run on **listener** or **sender** background threads (same caution as the receive callback — do not re-enter the same client without care).
 
-Synchronous API failures still return **`false` / `NULL`** and may log to **stderr**; they are not redirected exclusively into the status callback.
+Synchronous API failures still return **`false` / `NULL`** and may log to **stderr** (or the log hook); they are not redirected exclusively into the status callback.
 
 ## Checklist for integrators
 
 1. Verify **store connectivity** before relying on `run` (create client already opens the store once).
-2. After **`run`**, expect **stderr** for non-fatal store issues during steady operation.
-3. Plan for **rare panic** on listener/sender store startup if the store fails between client creation and internal `open_store_mutex` (see [store-startup-failure-semantics.md](store-startup-failure-semantics.md)).
+2. After **`run`**, expect **stderr** / log hook for non-fatal store issues during steady operation.
+3. Treat **`LNR_ERR_STARTUP`** on `run` as a recoverable setup failure (see [store-startup-failure-semantics.md](store-startup-failure-semantics.md)).
 4. For SQLite on a shared file, expect **`SQLITE_BUSY`** under contention; tune workload or timeout at the SQLite/OS level if needed ([backends.md](backends.md)).

@@ -57,21 +57,29 @@ pub struct Listener{
 impl Listener {
     pub fn new(mut listener: TcpListener,
                db: Arc<Mutex<dyn Store>>, source_topic: &str, subscriptions: &HashMap<i32, String>, receive_cb: UCbackIntern, udata: UData,
-               status_emitter: StatusEmitter)->Listener{
-        let mut poll = Poll::new().expect("couldn't create poll queue");
+               status_emitter: StatusEmitter)->Result<Listener, String>{
+        #[cfg(test)]
+        if test_force_listener_new_error_load() {
+            return Err("test inject: listener new failed".to_string());
+        }
+        let mut poll = Poll::new().map_err(|e| format!("couldn't create poll queue: {}", e))?;
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
         let mut messages_ = messages.clone();
         let mut mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(Vec::new()));
         let mempools_= mempools.clone();
         let mut senders: Arc<Mutex<SenderList>> = Arc::new(Mutex::new(Vec::new()));
         let senders_ = senders.clone();
-        db.lock().unwrap().set_source_topic(source_topic);
+        db.lock().map_err(|_| "db lock poisoned".to_string())?.set_source_topic(source_topic);
         let db_ = db.clone();
         let status_emitter_stream = status_emitter.clone();
         let status_emitter_recv = status_emitter;
       
         let listener_topic: Arc<Mutex<HashMap<i32, String>>> = Arc::new(Mutex::new(HashMap::new())); // key listener_topic, value key
-        let topic_key = db.lock().unwrap().get_topic_key(source_topic).expect("couldn't db.get_topic_key");
+        let topic_key = db
+            .lock()
+            .map_err(|_| "db lock poisoned".to_string())?
+            .get_topic_key(source_topic)
+            .map_err(|e| format!("couldn't db.get_topic_key: {}", e))?;
         if let Ok(mut lr) = listener_topic.lock(){ 
             lr.insert(topic_key, source_topic.to_owned());
             for s in subscriptions.iter(){
@@ -84,8 +92,12 @@ impl Listener {
       
         const SERVER: Token = Token(usize::MAX);
         const WAKER: Token = Token(usize::MAX - 1);
-        poll.registry().register(&mut listener, SERVER, Interest::READABLE).expect("couldn't register listener");
-        let waker = Arc::new(Waker::new(poll.registry(), WAKER).expect("couldn't create Waker"));
+        poll.registry()
+            .register(&mut listener, SERVER, Interest::READABLE)
+            .map_err(|e| format!("couldn't register listener: {}", e))?;
+        let waker = Arc::new(
+            Waker::new(poll.registry(), WAKER).map_err(|e| format!("couldn't create Waker: {}", e))?,
+        );
         let stream_thread = thread::spawn(move|| {            
             let mut streams: ReadStreamList = Vec::new();
             // Sticky SocketAddr → slot index. Kept across TCP close so reconnect reuses the
@@ -154,14 +166,14 @@ impl Listener {
                 }
             }
         });        
-        Self{            
+        Ok(Self{            
             stream_thread: Some(stream_thread),
             receive_thread: Some(receive_thread),
             receive_thread_cvar,
             listener_topic,
             is_close,
             waker
-        }
+        })
     }
     pub fn subscribe(&mut self, topic: &str, topic_key: i32){
         self.listener_topic.lock().unwrap().insert(topic_key, topic.to_owned());
@@ -169,6 +181,33 @@ impl Listener {
     pub fn unsubscribe(&mut self, topic_key: i32){
         self.listener_topic.lock().unwrap().remove(&topic_key);
     }
+}
+
+#[cfg(test)]
+static FORCE_LISTENER_NEW_ERR: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+fn test_force_listener_new_error_load() -> bool {
+    FORCE_LISTENER_NEW_ERR.load(Ordering::SeqCst)
+}
+
+/// Clears the inject flag on drop (use with [`CLIENT_RUN_TEST_LOCK`] / `client_run_test_lock`).
+#[cfg(test)]
+pub struct ForceListenerNewErrorGuard;
+
+#[cfg(test)]
+impl Drop for ForceListenerNewErrorGuard {
+    fn drop(&mut self) {
+        FORCE_LISTENER_NEW_ERR.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Test-only: force [`Listener::new`] to return `Err` until the guard is dropped.
+/// Caller must hold the shared client-run test lock so other `run` tests cannot race.
+#[cfg(test)]
+pub fn test_force_listener_new_error() -> ForceListenerNewErrorGuard {
+    FORCE_LISTENER_NEW_ERR.store(true, Ordering::SeqCst);
+    ForceListenerNewErrorGuard
 }
 
 fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,

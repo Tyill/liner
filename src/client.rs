@@ -318,7 +318,7 @@ impl Client {
         }
         self.user_receive_cb = Some(receive_cb);
         self.user_receive_udata = udata;
-        self.listener = Some(Listener::new(
+        let listener = match Listener::new(
             tcp_listener,
             self.db.clone(),
             &self.source_topic,
@@ -326,7 +326,16 @@ impl Client {
             client_receive_wrapper,
             UData(client_ptr as *mut libc::c_void),
             self.status_emitter.clone(),
-        ));
+        ) {
+            Ok(l) => l,
+            Err(err) => {
+                self.published_addr = None;
+                self.c_published_addr = None;
+                let _ = self.db.lock().unwrap().unregist_topic(&self.source_topic);
+                return set_fail(&mut self.last_error, ErrorCode::Startup, &err);
+            }
+        };
+        self.listener = Some(listener);
         self.sender = Some(Sender::new(
             self.db.clone(),
             &self.source_topic,
@@ -720,6 +729,65 @@ impl Client {
         }
         set_ok(&mut self.last_error);
         true
+    }
+
+    /// Topic directory from the store: `(addr, unique_name)` pairs (empty vec is success).
+    pub fn list_addresses(&mut self, topic: &str) -> Option<Vec<(String, String)>> {
+        let _lock = self.mtx.lock();
+        match self.db.lock().unwrap().get_topic_directory(topic) {
+            Ok(rows) => {
+                let addrs: Vec<String> = rows.iter().map(|(a, _)| a.clone()).collect();
+                if addrs.is_empty() {
+                    self.address_topic.remove(topic);
+                } else {
+                    self.address_topic.insert(topic.to_string(), addrs);
+                }
+                set_ok(&mut self.last_error);
+                Some(rows)
+            }
+            Err(err) => {
+                set_fail(&mut self.last_error, ErrorCode::Store, &format!("{}", err));
+                None
+            }
+        }
+    }
+
+    /// Sum of offline queued message blobs for this sender identity.
+    pub fn pending_count(&mut self) -> Option<u64> {
+        let _lock = self.mtx.lock();
+        let mut db = self.db.lock().unwrap();
+        let listeners = match db.get_listeners_of_sender() {
+            Ok(l) => l,
+            Err(err) => {
+                set_fail(&mut self.last_error, ErrorCode::Store, &format!("{}", err));
+                return None;
+            }
+        };
+        let mut total: u64 = 0;
+        for (addr, listener_topic) in listeners {
+            let name = match db.get_listener_unique_name(&listener_topic, &addr) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let Some(ck) = (match db.find_connection_key_for_sender(&name) {
+                Ok(v) => v,
+                Err(err) => {
+                    set_fail(&mut self.last_error, ErrorCode::Store, &format!("{}", err));
+                    return None;
+                }
+            }) else {
+                continue;
+            };
+            match db.count_pending_messages(ck) {
+                Ok(n) => total = total.saturating_add(n as u64),
+                Err(err) => {
+                    set_fail(&mut self.last_error, ErrorCode::Store, &format!("{}", err));
+                    return None;
+                }
+            }
+        }
+        set_ok(&mut self.last_error);
+        Some(total)
     }
 }
 
@@ -1173,6 +1241,18 @@ mod tests {
     }
 
     #[test]
+    fn run_maps_listener_startup_err_to_startup_code() {
+        let _run_lock = client_run_test_lock();
+        let mut c = Client::new_sqlite("u_startup", "t_startup", "127.0.0.1:0", ":memory:", "")
+            .expect("sqlite client");
+        let _force = crate::listener::test_force_listener_new_error();
+        let ok = c.run(recv_noop, UData::null());
+        assert!(!ok);
+        assert_eq!(c.last_error(), ErrorCode::Startup);
+        assert!(!c.is_running());
+    }
+
+    #[test]
     fn send_to_not_running_sets_last_error() {
         let mut c = Client::new_sqlite("u_err", "t", "127.0.0.1:0", ":memory:", "")
             .expect("sqlite client");
@@ -1182,6 +1262,7 @@ mod tests {
 
     #[test]
     fn advertise_while_running_sets_already_running() {
+        let _run_lock = client_run_test_lock();
         let mut c = Client::new_sqlite("u_adv", "t_adv", "127.0.0.1:0", ":memory:", "")
             .expect("sqlite client");
         assert!(c.run(recv_noop, UData::null()));
@@ -1192,6 +1273,7 @@ mod tests {
 
     #[test]
     fn run_idempotent_clears_last_error_to_ok() {
+        let _run_lock = client_run_test_lock();
         let mut c = Client::new_sqlite("u_idemp", "t_idemp", "127.0.0.1:0", ":memory:", "")
             .expect("sqlite client");
         assert!(c.run(recv_noop, UData::null()));
@@ -1204,6 +1286,7 @@ mod tests {
 
     #[test]
     fn stop_clears_published_keeps_bound_allows_clear_and_rerun() {
+        let _run_lock = client_run_test_lock();
         let path = format!(
             "{}/liner_stop_test_{}.sqlite",
             std::env::temp_dir().display(),
@@ -1236,6 +1319,7 @@ mod tests {
 
     #[test]
     fn advertise_host_with_ephemeral_port_published() {
+        let _run_lock = client_run_test_lock();
         let path = format!(
             "{}/liner_adv_test_{}.sqlite",
             std::env::temp_dir().display(),
@@ -1884,6 +1968,109 @@ mod tests {
         unsafe {
             drop(Box::from_raw(raw));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shared_sqlite_list_addresses_sees_peer() {
+        let _run_lock = client_run_test_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "liner_list_addr_{}_{}",
+            std::process::id(),
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("shared.sqlite");
+        let db = db.to_str().unwrap();
+        let pid = std::process::id();
+        let topic_a = format!("list_a_{pid}");
+        let topic_b = format!("list_b_{pid}");
+        let name_a = format!("list_peer_a_{pid}");
+
+        let mut a = Client::new_sqlite(&name_a, &topic_a, "127.0.0.1:0", db, "").expect("a");
+        assert!(a.run(recv_noop, UData::null()));
+
+        let mut b = Client::new_sqlite(
+            &format!("list_peer_b_{pid}"),
+            &topic_b,
+            "127.0.0.1:0",
+            db,
+            "",
+        )
+        .expect("b");
+        assert!(b.run(recv_noop, UData::null()));
+
+        let rows = b.list_addresses(&topic_a).expect("list");
+        assert!(
+            rows.iter().any(|(addr, name)| name == &name_a && !addr.is_empty()),
+            "expected peer in directory, got {:?}",
+            rows
+        );
+        assert_eq!(b.last_error(), ErrorCode::Ok);
+        let empty = b.list_addresses("topic_does_not_exist_xyz").expect("empty ok");
+        assert!(empty.is_empty());
+
+        drop(b);
+        drop(a);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shared_sqlite_pending_count_after_offline_enqueue() {
+        let _run_lock = client_run_test_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "liner_pending_{}_{}",
+            std::process::id(),
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("shared.sqlite");
+        let db = db_path.to_str().unwrap();
+        let pid = std::process::id();
+        let listener_topic = format!("pend_l_{pid}");
+        let sender_topic = format!("pend_s_{pid}");
+
+        let mut listener = Client::new_sqlite(
+            &format!("pend_listener_{pid}"),
+            &listener_topic,
+            "127.0.0.1:0",
+            db,
+            "",
+        )
+        .expect("listener");
+        assert!(listener.run(recv_noop, UData::null()));
+        let peer_addr = listener.bound_listen_addr().unwrap().to_string();
+
+        let mut sender = Client::new_sqlite(
+            &format!("pend_sender_{pid}"),
+            &sender_topic,
+            "127.0.0.1:0",
+            db,
+            "",
+        )
+        .expect("sender");
+        assert!(sender.run(recv_noop, UData::null()));
+        assert!(sender.refresh_address_topic(&listener_topic));
+        assert!(sender.send_to(&listener_topic, b"warm", true));
+        std::thread::sleep(Duration::from_millis(80));
+
+        drop(listener);
+        sender
+            .address_topic
+            .insert(listener_topic.clone(), vec![peer_addr]);
+        assert!(sender.send_to(&listener_topic, b"offline-1", true));
+        assert!(sender.send_to(&listener_topic, b"offline-2", true));
+        // Flush in-memory at-least-once queues into the store (Sender Drop → save_mess_to_db).
+        assert!(sender.stop());
+
+        let pending = sender.pending_count().expect("pending");
+        assert!(
+            pending > 0,
+            "expected offline queue depth > 0 after stop flush, got {pending}"
+        );
+        assert_eq!(sender.last_error(), ErrorCode::Ok);
+
+        drop(sender);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

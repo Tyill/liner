@@ -2,19 +2,19 @@
 
 ## Client vs internal tasks
 
-The **client** path is written to handle store errors without panicking: operations that touch the backing store can fail (for example Redis timeouts, SQLite `SQLITE_BUSY` after the configured busy wait, or I/O errors). Those failures surface as errors or a controlled shutdown from the client API rather than aborting the whole process.
+The **client** path handles store errors without panicking: operations that touch the backing store can fail (Redis timeouts, SQLite `SQLITE_BUSY`, I/O). Those surface as **`false` / `NULL`** plus **`lnr_last_error_code`** (`LNR_ERR_STORE`, …) and stderr / the optional log hook.
 
-The **listener** and **sender** tasks open their own store handle (same `unique_name` and `StoreBackend` as the client) when `run` starts them. On that startup path, opening the store or resolving the topic key uses fail-fast checks: if the store cannot be opened or an early query fails, the process may **panic** with an explicit message. That is intentional.
+**Listener** and **sender** share the client’s store handle (`Arc<Mutex<dyn Store>>`) — they do **not** open a second independent store connection at `run` time.
 
-## Why listener startup is stricter
+## Listener startup inside `run`
 
-After the client has initialized successfully, it is **uncommon** for the listener’s store open to fail while the client’s store still works. Both sides use the same logical resource (Redis URL or SQLite path). A mismatch usually means something abnormal: a race (permissions, disk space), another process holding an exclusive SQLite lock, or infrastructure flapping between the two opens.
+After TCP **bind** and catalog **regist_topic**, `run` constructs the **listener** (mio poll / register / waker, and `get_topic_key` for the source topic). If that startup fails, **`run` returns `false`** and sets **`LNR_ERR_STARTUP`**. The process does **not** panic on this path. Partial state is cleaned up (unregister topic when needed; listener/sender not left running).
 
-In those cases, a half-started broker (network up, store down only on the listener side) is harder to reason about than failing immediately. The library therefore assumes: **if you call `run`, the store must be reachable for listener/sender startup**, not only for the client object you constructed first.
+TCP bind / resolve failures still use **`LNR_ERR_BIND`**. Store errors during regist use **`LNR_ERR_STORE`**.
 
 ## Operational takeaway
 
-- Expect **graceful** handling of store errors on **ongoing client** operations.
-- Expect **fail-fast** (possible panic) if the store is unavailable when **listener or sender** spins up inside `run`, even though the client was created successfully.
+- Ongoing client ops: graceful failure codes + stderr/log hook.
+- Listener startup failure after a successful client create: **`run` → false + `LNR_ERR_STARTUP`**, not process abort.
 
-If you need the process to stay alive when the second open fails, that would require a deliberate API change (propagating `Result` from internal startup instead of `expect`), which is not the current design.
+Sender construction does not use the old fail-fast `expect` path on the store.

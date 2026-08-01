@@ -5,11 +5,12 @@
 1. **Создайте** клиент с параметрами хранилища и локальной идентичностью (`unique_name`, начальный `topic`, адрес привязки `localhost`, URL Redis или путь SQLite).
 2. По желанию вызовите **`set_advertise_addr`** / `lnr_set_advertise_addr` до `run`, чтобы в каталоге store был достижимый адрес (например при bind на `0.0.0.0` или эфемерный порт).
 3. По желанию вызовите **`subscribe` / `unsubscribe`** до `run` (подписки ставятся в очередь и применяются при старте listener).
-4. По желанию вызовите **`lnr_set_status_cb`** / `Client::set_status_cb` / `Liner::set_status_callback` (до или после `run`) для уведомлений о пирах и фоновых ошибках.
-5. Вызовите **`run`** (C: `lnr_run`), чтобы запустить внутренние циклы listener и sender. До этого **`send_to` / `send_all`** возвращают неуспех (`LNR_ERR_NOT_RUNNING`). Повторный **`run` при уже running** возвращает **`true`** и **`LNR_OK`** (идемпотентно).
-6. Отправляйте и принимайте на **одном потоке или разных** только согласно правилам потокобезопасности вашей привязки (см. ниже).
-7. По желанию **`stop`** / `lnr_stop` — снять регистрацию и дождаться потоков без уничтожения handle; затем снова можно **`clear_*`** и **`run`**. **`bound_listen_addr`** сохраняется (последний bind); **`published_addr`** очищается (`NULL`) — клиента уже нет в каталоге store.
-8. **Уничтожьте** клиент (C: `lnr_delete_client`) по завершении (`Drop` / delete также делают stop, если ещё running).
+4. По желанию вызовите **`lnr_set_status_cb`** / `Client::set_status_cb` / `Liner::set_status_callback` (до или после `run`) для уведомлений о пирах и фоновых ошибках. По желанию один раз на процесс — **`lnr_set_log_cb`**, чтобы увести `print_error!` со stderr.
+5. По желанию настройте **`lnr_set_max_message_size`** / **`lnr_set_compress_threshold`** до `run`.
+6. Вызовите **`run`** (C: `lnr_run`), чтобы запустить внутренние циклы listener и sender. До этого **`send_to` / `send_all`** возвращают неуспех (`LNR_ERR_NOT_RUNNING`). Повторный **`run` при уже running** возвращает **`true`** и **`LNR_OK`** (идемпотентно). Сбой старта listener после bind → **`false`** + **`LNR_ERR_STARTUP`** (без паники).
+7. Отправляйте и принимайте на **одном потоке или разных** только согласно правилам потокобезопасности вашей привязки (см. ниже).
+8. По желанию **`stop`** / `lnr_stop` — снять регистрацию и дождаться потоков без уничтожения handle; затем снова можно **`clear_*`** и **`run`**. **`bound_listen_addr`** сохраняется (последний bind); **`published_addr`** очищается (`NULL`) — клиента уже нет в каталоге store.
+9. **Уничтожьте** клиент (C: `lnr_delete_client`) по завершении (`Drop` / delete также делают stop, если ещё running).
 
 ## Потоки
 
@@ -27,7 +28,16 @@
 
 ## Код последней ошибки
 
-Синхронные сбои по-прежнему дают **`false` / `NULL`** и пишут в **stderr**. Дополнительно **`lnr_last_error_code`** / `Client::last_error` / Python **`last_error_code`** возвращает стабильный код `LNR_OK` / `LNR_ERR_*` для последнего sync-вызова на этом клиенте (см. [errors-and-logging.md](errors-and-logging.md)). Публичного getter’а текста ошибки **нет**.
+Синхронные сбои по-прежнему дают **`false` / `NULL`** и пишут в **stderr** (или процессно-глобальный **log hook**). Дополнительно **`lnr_last_error_code`** / `Client::last_error` / Python **`last_error_code`** возвращает стабильный код `LNR_OK` / `LNR_ERR_*` для последнего sync-вызова на этом клиенте (см. [errors-and-logging.md](errors-and-logging.md)). Публичного getter’а текста ошибки **нет**.
+
+## Интроспекция
+
+- **`lnr_list_addresses` / `Client::list_addresses`**: каталог топика из store как пары `(addr, unique_name)`. Пустой топик ⇒ успех без колбэков / пустой `Vec`. Ошибки БД ⇒ `false` / `None` + `LNR_ERR_STORE`. Также обновляет in-memory кэш адресов.
+- **`lnr_pending_count` / `Client::pending_count`**: сумма офлайн-блобов этого sender (`0` если нет; `-1` / `None` при ошибке). Глубина может отставать, пока sender не сбросит in-memory at-least-once очереди (например после потери пира или `stop`).
+
+## Runtime-лимиты
+
+Процессно-глобальные **`lnr_set_max_message_size`** / **`lnr_set_compress_threshold`** (и геттеры). `0` отвергается (`FALSE`). Лучше задавать **до `run`**. Подробности: [capacity-and-limits.md](capacity-and-limits.md).
 
 ## Топики и адреса
 
@@ -93,11 +103,11 @@ C-функции **`lnr_send_to`** и **`lnr_send_all`** принимают **`a
 
 **Потоки:** status-колбэк может вызываться с фоновых потоков **listener** или **sender** (та же осторожность, что и для receive — не реентрить тот же клиент без синхронизации).
 
-Синхронные сбои API по-прежнему возвращают **`false` / `NULL`** и могут писать в **stderr**; они не переносятся целиком в status callback.
+Синхронные сбои API по-прежнему возвращают **`false` / `NULL`** и могут писать в **stderr** (или log hook); они не переносятся целиком в status callback.
 
 ## Чеклист для интеграторов
 
 1. Убедитесь в **доступности хранилища** до того, как полагаться на `run` (создание клиента уже один раз открывает хранилище).
-2. После **`run`** ожидайте **stderr** при нефатальных проблемах с хранилищем в стационарной работе.
-3. Заложите **редкую панику** при старте listener/sender по хранилищу, если оно «ломается» между созданием клиента и внутренним `open_store_mutex` (см. [store-startup-failure-semantics.md](store-startup-failure-semantics.md)).
+2. После **`run`** ожидайте **stderr** / log hook при нефатальных проблемах с хранилищем в стационарной работе.
+3. Считайте **`LNR_ERR_STARTUP`** на `run` восстанавливаемым сбоем настройки (см. [store-startup-failure-semantics.md](store-startup-failure-semantics.md)).
 4. Для SQLite на **общем** файле ожидайте **`SQLITE_BUSY`** при конкуренции; настройте нагрузку или таймаут на уровне SQLite/ОС при необходимости ([backends.md](backends.md)).

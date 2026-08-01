@@ -6,7 +6,7 @@ The C surface is defined by **`include/liner.h`** and **`#[no_mangle] pub extern
 
 The project **does not currently publish a separate ABI stability policy** (for example “patch-only symbol compatibility”). **Semantic versioning of the Rust crate** (`Cargo.toml` / crates.io) tracks the **library as a whole**, not a formally tested C ABI matrix. In practice:
 
-- **Additive** changes (new functions) are backward compatible for callers that only use older symbols. Example (crate **1.4.0**): **`lnr_set_status_cb`**, **`lnr_last_error_code`**, **`lnr_set_advertise_addr`**, **`lnr_stop`**, **`lnr_is_running`**, **`lnr_unique_name`**, **`lnr_bound_listen_addr`**, **`lnr_published_addr`**, and the `LNR_OK` / `LNR_ERR_*` / status kind enums in `liner.h`.
+- **Additive** changes (new functions) are backward compatible for callers that only use older symbols. Example (crate **1.4.0**): **`lnr_set_status_cb`**, **`lnr_last_error_code`**, **`lnr_set_advertise_addr`**, **`lnr_stop`**, **`lnr_is_running`**, **`lnr_unique_name`**, **`lnr_bound_listen_addr`**, **`lnr_published_addr`**, **`lnr_set_log_cb`**, **`lnr_list_addresses`**, **`lnr_pending_count`**, **`lnr_set_max_message_size`** / **`lnr_get_max_message_size`**, **`lnr_set_compress_threshold`** / **`lnr_get_compress_threshold`**, and the `LNR_OK` / `LNR_ERR_*` (including **`LNR_ERR_STARTUP`**) / status kind enums in `liner.h`.
 - **Renames, signature changes, or removals** of C functions, or **behavioral changes** documented in release notes, require **rebuilding and retesting** all native bindings.
 - Changes to **`liner.h`** (types, callbacks, constants) should be treated as **potentially breaking** for C/C++ consumers until you verify otherwise.
 

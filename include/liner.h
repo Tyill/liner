@@ -66,7 +66,9 @@ enum {
     LNR_ERR_BIND = 6,
     LNR_ERR_STORE = 7,
     LNR_ERR_INVALID_ARG = 8,
-    LNR_ERR_CLEAR_WHILE_RUNNING = 9
+    LNR_ERR_CLEAR_WHILE_RUNNING = 9,
+    /** Listener startup after TCP bind (mio / topic_key). */
+    LNR_ERR_STARTUP = 10
 };
 
 /// Asynchronous status and background errors. Pointers are valid only for the duration of the call.
@@ -116,6 +118,27 @@ LINER_API LINER_DEPRECATED lnr_hClient lnr_new_client(const char* unique_name, c
 /// Pass `cb == NULL` to clear. Safe before or after `lnr_run`.
 /// @return true - ok
 LINER_API BOOL lnr_set_status_cb(lnr_hClient client, lnr_status_cb cb, lnr_uData);
+
+/// Process-global error log callback. Pass `cb == NULL` to restore stderr. Not per-client.
+typedef void(*lnr_log_cb)(const char* message, lnr_uData);
+LINER_API BOOL lnr_set_log_cb(lnr_log_cb cb, lnr_uData);
+
+/// Callback for [`lnr_list_addresses`]: one call per (addr, unique_name) row.
+typedef void(*lnr_addr_cb)(const char* addr, const char* unique_name, lnr_uData);
+
+/// List topic directory from the store (empty topic → success with zero callbacks).
+LINER_API BOOL lnr_list_addresses(lnr_hClient client, const char* topic, lnr_addr_cb cb, lnr_uData);
+
+/// Sum of offline queued messages for this sender identity. `-1` on error (see `lnr_last_error_code`).
+LINER_API long long lnr_pending_count(lnr_hClient client);
+
+/// Max framed TCP message size in bytes (default 1GiB). Prefer before `lnr_run`.
+LINER_API BOOL lnr_set_max_message_size(size_t bytes);
+LINER_API size_t lnr_get_max_message_size(void);
+
+/// Min payload size (bytes) before zstd is attempted (default 1MiB). Prefer before `lnr_run`.
+LINER_API BOOL lnr_set_compress_threshold(size_t bytes);
+LINER_API size_t lnr_get_compress_threshold(void);
 
 /// Last sync-API error code for this client (`LNR_OK` after success). See `LNR_ERR_*`.
 LINER_API int lnr_last_error_code(lnr_hClient client);

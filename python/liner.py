@@ -25,6 +25,68 @@ ERR_BIND = 6
 ERR_STORE = 7
 ERR_INVALID_ARG = 8
 ERR_CLEAR_WHILE_RUNNING = 9
+ERR_STARTUP = 10
+
+def set_log_callback(log_cback):
+    """Process-global log callback: ``fn(message: str)``. Pass ``None`` to restore stderr."""
+    global lib_, _logCBack
+    if not lib_:
+        raise Exception('lib not load')
+    LogCb = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_void_p)
+    pfun = lib_.lnr_set_log_cb
+    pfun.restype = ctypes.c_bool
+    pfun.argtypes = (LogCb, ctypes.c_void_p)
+    if log_cback is None:
+        _logCBack = None
+        pfun.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
+        return pfun(None, None)
+
+    def c_cb(msg, _udata):
+        m = msg.decode("utf-8") if msg else ""
+        log_cback(m)
+
+    _logCBack = LogCb(c_cb)
+    return pfun(_logCBack, None)
+
+
+def set_max_message_size(bytes_: int) -> bool:
+    if not lib_:
+        raise Exception('lib not load')
+    pfun = lib_.lnr_set_max_message_size
+    pfun.restype = ctypes.c_bool
+    pfun.argtypes = (ctypes.c_size_t,)
+    return pfun(bytes_)
+
+
+def get_max_message_size() -> int:
+    if not lib_:
+        raise Exception('lib not load')
+    pfun = lib_.lnr_get_max_message_size
+    pfun.restype = ctypes.c_size_t
+    pfun.argtypes = ()
+    return int(pfun())
+
+
+def set_compress_threshold(bytes_: int) -> bool:
+    if not lib_:
+        raise Exception('lib not load')
+    pfun = lib_.lnr_set_compress_threshold
+    pfun.restype = ctypes.c_bool
+    pfun.argtypes = (ctypes.c_size_t,)
+    return pfun(bytes_)
+
+
+def get_compress_threshold() -> int:
+    if not lib_:
+        raise Exception('lib not load')
+    pfun = lib_.lnr_get_compress_threshold
+    pfun.restype = ctypes.c_size_t
+    pfun.argtypes = ()
+    return int(pfun())
+
+
+_logCBack = None
+
 
 def loadLib(path : str):
   global lib_
@@ -172,9 +234,34 @@ class Client:
         return pfun(self.hClient_, self.statusCBack_, ctypes.c_void_p())
 
     def last_error_code(self) -> int:
-        """Last sync API error code (``OK`` / ``ERR_*``). Detail text is on stderr."""
+        """Last sync API error code (``OK`` / ``ERR_*``). Detail text is on stderr / log callback."""
         pfun = lib_.lnr_last_error_code
         pfun.restype = ctypes.c_int
+        pfun.argtypes = (ctypes.c_void_p,)
+        return int(pfun(self.hClient_))
+
+    def list_addresses(self, topic: str):
+        """Return ``[(addr, unique_name), ...]`` from the store catalog for ``topic``."""
+        out = []
+        AddrCb = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p)
+
+        def c_cb(addr, name, _udata):
+            a = addr.decode("utf-8") if addr else ""
+            n = name.decode("utf-8") if name else ""
+            out.append((a, n))
+
+        cb = AddrCb(c_cb)
+        pfun = lib_.lnr_list_addresses
+        pfun.restype = ctypes.c_bool
+        pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p, AddrCb, ctypes.c_void_p)
+        if not pfun(self.hClient_, topic.encode("utf-8"), cb, None):
+            return None
+        return out
+
+    def pending_count(self) -> int:
+        """Offline queue depth for this sender; ``-1`` on error."""
+        pfun = lib_.lnr_pending_count
+        pfun.restype = ctypes.c_longlong
         pfun.argtypes = (ctypes.c_void_p,)
         return int(pfun(self.hClient_))
 
