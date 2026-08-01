@@ -521,23 +521,23 @@ impl Client {
             return set_fail(&mut self.last_error, ErrorCode::SelfTopic, "you can't send on your own topic");
         }
         apply_failed_routes(&mut self.address_topic, self.sender.as_mut());
-        let addrs = if let Some(cached) = self
+        // Populate cache without retaining a borrow across the sender loop.
+        if !self
             .address_topic
             .get(topic)
-            .filter(|a| !a.is_empty())
+            .is_some_and(|a| !a.is_empty())
         {
-            cached.to_vec()
-        } else {
             match resolve_send_addresses(
                 topic,
                 at_least_once_delivery,
                 &mut self.address_topic,
                 &mut *self.db.lock().unwrap(),
             ) {
-                ResolveAddrs::Ok(address) => address.to_vec(),
+                ResolveAddrs::Ok(_) => {}
                 ResolveAddrs::NoAddr => {
                     self.address_topic.remove(topic);
-                    return set_fail(&mut self.last_error, 
+                    return set_fail(
+                        &mut self.last_error,
                         ErrorCode::NoAddr,
                         &format!("not found addr for topic {}", topic),
                     );
@@ -547,10 +547,20 @@ impl Client {
                     return set_fail(&mut self.last_error, ErrorCode::Store, &err);
                 }
             }
-        };
+        }
+        let addr_len = self.address_topic.get(topic).map(|a| a.len()).unwrap_or(0);
+        if addr_len == 0 {
+            return set_fail(
+                &mut self.last_error,
+                ErrorCode::NoAddr,
+                &format!("not found addr for topic {}", topic),
+            );
+        }
         mark_related_topic(&mut self.related_topics, topic);
+        // Disjoint field borrows: addresses from cache, mutable sender — no addr Vec clone.
+        let addrs = self.address_topic.get(topic).unwrap().as_slice();
         let sender = self.sender.as_mut().unwrap();
-        let mut warm_ok = vec![true; addrs.len()];
+        let mut warm_ok = vec![true; addr_len];
         if addrs
             .iter()
             .any(|addr| sender.needs_store_for_send(addr, topic))
