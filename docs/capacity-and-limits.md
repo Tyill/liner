@@ -28,6 +28,8 @@ Related:
 
 Prefer setting the limit **before** `run`. Changing it later is allowed, but only **new** framed reads/writes observe the new value; in-flight frames are unaffected.
 
+**Send path:** `send_to` / `send_all` reject early with **`LNR_ERR_INVALID_ARG`** if the payload is **empty**, or if the **uncompressed** framed message body (message header + payload length + payload) would exceed the runtime max. Compression can only shrink the body, so the size check is conservative before routing or enqueue.
+
 ### How enforcement works
 
 - Each TCP frame starts with a **4-byte big-endian `u32` length**, then the payload (`bytestream::read_stream`).

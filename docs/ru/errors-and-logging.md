@@ -47,7 +47,7 @@ Error <file>:<line>: <message>
 | 5 | `LNR_ERR_NO_ADDR` | У целевого топика нет адресов в кэше/store. |
 | 6 | `LNR_ERR_BIND` | Не удалось разрешить строку bind или выполнить TCP `bind`. |
 | 7 | `LNR_ERR_STORE` | Сбой операции Redis / SQLite / PostgreSQL. |
-| 8 | `LNR_ERR_INVALID_ARG` | Некорректный advertise-адрес (или связанная валидация аргумента). |
+| 8 | `LNR_ERR_INVALID_ARG` | Некорректный advertise-адрес; пустой send payload; или send с payload, у которого несжатое кадрированное тело превысило бы `max_message_size` |
 | 9 | `LNR_ERR_CLEAR_WHILE_RUNNING` | `clear_stored_messages` / `clear_addresses_of_topic` во время running. |
 | 10 | `LNR_ERR_STARTUP` | Сбой старта listener после TCP bind и регистрации в каталоге (mio poll/register/waker или `get_topic_key`). |
 
@@ -107,7 +107,7 @@ Status callback **не** заменяет sync-коды возврата. Вид
 | `set_status_cb` | для живого клиента всегда успешен (регистрация или сброс) | N/A (невалидный handle только через C `lnr_set_status_cb`) |
 | `list_addresses` | `Some(rows)`, в том числе пустой | `None` + `Store` |
 | `pending_count` | `Some(n)` (`0`, если пусто) | `None` + `Store` |
-| `send_to` / `send_all` | `true`, если путь отправки сообщил успех | `false` + last error (`NotRunning`, `SelfTopic`, `NoAddr`, `Store`, …) |
+| `send_to` / `send_all` | `true`, если путь отправки сообщил успех | `false` + last error (`NotRunning`, `SelfTopic`, `InvalidArg` если payload превышает max framed size, `NoAddr`, `Store`, …) |
 | `subscribe` / `unsubscribe` | `true` | `false` + last error |
 | `refresh_address_topic` | `true`, если адреса найдены | `false` + `NoAddr` / `Store` |
 | `clear_stored_messages` / `clear_addresses_of_topic` | `true` только когда клиент **не** running | `false` + `ClearWhileRunning` или `Store` |

@@ -783,11 +783,12 @@ pub unsafe extern "C" fn lnr_send_to(client: *mut Client,
         print_error!("topic name empty");
         return false;
     }
-    if data_size == 0{
-        print_error!("data_size empty");
-        return false;
-    }
-    let data = std::slice::from_raw_parts(data, data_size);
+    // Empty payload is rejected inside Client (`LNR_ERR_INVALID_ARG`); allow null `data` when size is 0.
+    let data = if data_size == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(data, data_size)
+    };
     (*client).send_to(topic, data, at_least_once_delivery)
 }
 
@@ -816,11 +817,11 @@ pub unsafe extern "C" fn lnr_send_all(client: *mut Client,
         print_error!("topic.is_empty()");
         return false;
     }
-    if data_size == 0{
-        print_error!("data_size == 0");
-        return false;
-    }
-    let data = std::slice::from_raw_parts(data, data_size);
+    let data = if data_size == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(data, data_size)
+    };
     (*client).send_all(topic, data, at_least_once_delivery)
 }
 

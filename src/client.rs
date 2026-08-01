@@ -2,6 +2,7 @@ use crate::store::Store;
 use crate::{UCbackIntern, UData};
 use crate::error::ErrorCode;
 use crate::listener::Listener;
+use crate::message;
 use crate::sender::Sender;
 use crate::print_error;
 use crate::settings::INTERNAL_CHANNEL_TOPIC;
@@ -458,6 +459,25 @@ impl Client {
         if topic == self.source_topic {
             return set_fail(&mut self.last_error, ErrorCode::SelfTopic, "you can't send on your own topic");
         }
+        if data.is_empty() {
+            return set_fail(
+                &mut self.last_error,
+                ErrorCode::InvalidArg,
+                "payload empty",
+            );
+        }
+        if message::payload_exceeds_max_message_size(data.len()) {
+            return set_fail(
+                &mut self.last_error,
+                ErrorCode::InvalidArg,
+                &format!(
+                    "payload too large for max_message_size (payload {}, framed body {}, max {})",
+                    data.len(),
+                    message::framed_body_size_raw(data.len()),
+                    crate::settings::max_message_size()
+                ),
+            );
+        }
         apply_failed_routes(&mut self.address_topic, self.sender.as_mut());
         // Resolve routes first so round-robin can borrow the address without cloning.
         if self
@@ -528,6 +548,25 @@ impl Client {
         }
         if topic == self.source_topic {
             return set_fail(&mut self.last_error, ErrorCode::SelfTopic, "you can't send on your own topic");
+        }
+        if data.is_empty() {
+            return set_fail(
+                &mut self.last_error,
+                ErrorCode::InvalidArg,
+                "payload empty",
+            );
+        }
+        if message::payload_exceeds_max_message_size(data.len()) {
+            return set_fail(
+                &mut self.last_error,
+                ErrorCode::InvalidArg,
+                &format!(
+                    "payload too large for max_message_size (payload {}, framed body {}, max {})",
+                    data.len(),
+                    message::framed_body_size_raw(data.len()),
+                    crate::settings::max_message_size()
+                ),
+            );
         }
         apply_failed_routes(&mut self.address_topic, self.sender.as_mut());
         // Populate cache without retaining a borrow across the sender loop.
@@ -1258,6 +1297,26 @@ mod tests {
             .expect("sqlite client");
         assert!(!c.send_to("other", b"x", false));
         assert_eq!(c.last_error(), ErrorCode::NotRunning);
+    }
+
+    #[test]
+    fn send_rejects_empty_or_oversized_payload() {
+        let mut c = Client::new_sqlite("u_max", "t_max", "127.0.0.1:0", ":memory:", "")
+            .expect("sqlite client");
+        assert!(c.run(recv_noop, UData::null()));
+        assert!(!c.send_to("other", b"", false));
+        assert_eq!(c.last_error(), ErrorCode::InvalidArg);
+        assert!(!c.send_all("other", b"", false));
+        assert_eq!(c.last_error(), ErrorCode::InvalidArg);
+        let prev = crate::settings::max_message_size();
+        assert!(crate::settings::set_max_message_size(64));
+        let too_big = vec![0u8; 128];
+        assert!(!c.send_to("other", &too_big, false));
+        assert_eq!(c.last_error(), ErrorCode::InvalidArg);
+        assert!(!c.send_all("other", &too_big, false));
+        assert_eq!(c.last_error(), ErrorCode::InvalidArg);
+        assert!(crate::settings::set_max_message_size(prev));
+        assert!(c.stop());
     }
 
     #[test]

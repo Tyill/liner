@@ -47,7 +47,7 @@ Each client keeps a **last error code** updated by synchronous API calls. Succes
 | 5 | `LNR_ERR_NO_ADDR` | Destination topic has no addresses in cache/store. |
 | 6 | `LNR_ERR_BIND` | Bind string could not be resolved, or TCP `bind` failed. |
 | 7 | `LNR_ERR_STORE` | Redis / SQLite / PostgreSQL operation failed. |
-| 8 | `LNR_ERR_INVALID_ARG` | Invalid advertise address (or related argument validation). |
+| 8 | `LNR_ERR_INVALID_ARG` | Invalid advertise address; empty send payload; or send payload whose uncompressed framed body would exceed `max_message_size` |
 | 9 | `LNR_ERR_CLEAR_WHILE_RUNNING` | `clear_stored_messages` / `clear_addresses_of_topic` while running. |
 | 10 | `LNR_ERR_STARTUP` | Listener startup failed after TCP bind and catalog registration (mio poll/register/waker, or `get_topic_key`). |
 
@@ -107,7 +107,7 @@ The status callback does **not** replace sync return codes. See [using-the-api.m
 | `set_status_cb` | always succeeds for a live client (registers or clears) | N/A (invalid handle only via C `lnr_set_status_cb`) |
 | `list_addresses` | `Some(rows)` including empty | `None` + `Store` |
 | `pending_count` | `Some(n)` (`0` if none) | `None` + `Store` |
-| `send_to` / `send_all` | `true` if the send path reports success | `false` + last error (`NotRunning`, `SelfTopic`, `NoAddr`, `Store`, …) |
+| `send_to` / `send_all` | `true` if the send path reports success | `false` + last error (`NotRunning`, `SelfTopic`, `InvalidArg` if payload exceeds max framed size, `NoAddr`, `Store`, …) |
 | `subscribe` / `unsubscribe` | `true` | `false` + last error |
 | `refresh_address_topic` | `true` if addresses were found | `false` + `NoAddr` / `Store` |
 | `clear_stored_messages` / `clear_addresses_of_topic` | `true` only when **not** running | `false` + `ClearWhileRunning` or `Store` |

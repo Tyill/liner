@@ -11,6 +11,21 @@ const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
 /// Wire header: u64 number + i32 connection_key + i32 topic_key + u8 flags.
 const HEADER_LEN: usize = 8 + 4 + 4 + 1;
 
+/// Uncompressed framed message body size for a raw application payload
+/// (what the bytestream `u32` length header carries — excludes that outer length itself).
+/// Compression can only shrink the body; use this for early send-side rejection.
+pub fn framed_body_size_raw(payload_len: usize) -> usize {
+    HEADER_LEN
+        .saturating_add(std::mem::size_of::<u32>())
+        .saturating_add(payload_len)
+}
+
+/// `true` if an uncompressed encoding of `payload_len` would exceed [`settings::max_message_size`].
+pub fn payload_exceeds_max_message_size(payload_len: usize) -> bool {
+    let body = framed_body_size_raw(payload_len);
+    body == 0 || body > settings::max_message_size()
+}
+
 pub struct Message{
     pub number_mess: u64,
     pub listener_topic_key: i32,
