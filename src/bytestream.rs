@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 fn would_block_timeout() -> Duration {
-    Duration::from_millis(settings::BYTESTREAM_WOULD_BLOCK_TIMEOUT_MS)
+    Duration::from_millis(settings::would_block_timeout_ms())
 }
 
 // return: mem_pos, mem_alloc_length, is_shutdown

@@ -13,6 +13,7 @@ SENDER_ROUTE_LOST = 5
 SENDER_STORE_ERROR = 6
 SENDER_SEND_ERROR = 7
 LISTENER_STORE_ERROR = 8
+SENDER_BUSY = 9
 
 # Sync last-error codes (match include/liner.h)
 OK = 0
@@ -26,6 +27,16 @@ ERR_STORE = 7
 ERR_INVALID_ARG = 8
 ERR_CLEAR_WHILE_RUNNING = 9
 ERR_STARTUP = 10
+ERR_BUSY = 11
+
+def version() -> str:
+    if not lib_:
+        raise Exception('lib not load')
+    pfun = lib_.lnr_version
+    pfun.restype = ctypes.c_char_p
+    pfun.argtypes = ()
+    raw = pfun()
+    return raw.decode("utf-8") if raw else ""
 
 def set_log_callback(log_cback):
     """Process-global log callback: ``fn(message: str)``. Pass ``None`` to restore stderr."""
@@ -81,6 +92,60 @@ def get_compress_threshold() -> int:
         raise Exception('lib not load')
     pfun = lib_.lnr_get_compress_threshold
     pfun.restype = ctypes.c_size_t
+    pfun.argtypes = ()
+    return int(pfun())
+
+
+def set_max_send_queue(n: int) -> bool:
+    if not lib_:
+        raise Exception('lib not load')
+    pfun = lib_.lnr_set_max_send_queue
+    pfun.restype = ctypes.c_bool
+    pfun.argtypes = (ctypes.c_size_t,)
+    return pfun(n)
+
+
+def get_max_send_queue() -> int:
+    if not lib_:
+        raise Exception('lib not load')
+    pfun = lib_.lnr_get_max_send_queue
+    pfun.restype = ctypes.c_size_t
+    pfun.argtypes = ()
+    return int(pfun())
+
+
+def set_stream_check_timeout_ms(ms: int) -> bool:
+    if not lib_:
+        raise Exception('lib not load')
+    pfun = lib_.lnr_set_stream_check_timeout_ms
+    pfun.restype = ctypes.c_bool
+    pfun.argtypes = (ctypes.c_ulonglong,)
+    return pfun(ms)
+
+
+def get_stream_check_timeout_ms() -> int:
+    if not lib_:
+        raise Exception('lib not load')
+    pfun = lib_.lnr_get_stream_check_timeout_ms
+    pfun.restype = ctypes.c_ulonglong
+    pfun.argtypes = ()
+    return int(pfun())
+
+
+def set_would_block_timeout_ms(ms: int) -> bool:
+    if not lib_:
+        raise Exception('lib not load')
+    pfun = lib_.lnr_set_would_block_timeout_ms
+    pfun.restype = ctypes.c_bool
+    pfun.argtypes = (ctypes.c_ulonglong,)
+    return pfun(ms)
+
+
+def get_would_block_timeout_ms() -> int:
+    if not lib_:
+        raise Exception('lib not load')
+    pfun = lib_.lnr_get_would_block_timeout_ms
+    pfun.restype = ctypes.c_ulonglong
     pfun.argtypes = ()
     return int(pfun())
 
@@ -234,11 +299,19 @@ class Client:
         return pfun(self.hClient_, self.statusCBack_, ctypes.c_void_p())
 
     def last_error_code(self) -> int:
-        """Last sync API error code (``OK`` / ``ERR_*``). Detail text is on stderr / log callback."""
+        """Last sync API error code (``OK`` / ``ERR_*``). Detail text via stderr / log callback / ``last_error_message``."""
         pfun = lib_.lnr_last_error_code
         pfun.restype = ctypes.c_int
         pfun.argtypes = (ctypes.c_void_p,)
         return int(pfun(self.hClient_))
+
+    def last_error_message(self) -> str:
+        """Bare detail string for the last sync failure (empty when OK)."""
+        pfun = lib_.lnr_last_error_message
+        pfun.restype = ctypes.c_char_p
+        pfun.argtypes = (ctypes.c_void_p,)
+        raw = pfun(self.hClient_)
+        return raw.decode("utf-8") if raw else ""
 
     def list_addresses(self, topic: str):
         """Return ``[(addr, unique_name), ...]`` from the store catalog for ``topic``."""
@@ -264,6 +337,61 @@ class Client:
         pfun.restype = ctypes.c_longlong
         pfun.argtypes = (ctypes.c_void_p,)
         return int(pfun(self.hClient_))
+
+    def pending_by_peer(self):
+        """Return ``[(addr, topic, unique_name, count), ...]`` or ``None`` on error."""
+        out = []
+        PendingCb = ctypes.CFUNCTYPE(
+            None, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_longlong, ctypes.c_void_p
+        )
+
+        def c_cb(addr, topic, name, count, _udata):
+            out.append((
+                addr.decode("utf-8") if addr else "",
+                topic.decode("utf-8") if topic else "",
+                name.decode("utf-8") if name else "",
+                int(count),
+            ))
+
+        cb = PendingCb(c_cb)
+        pfun = lib_.lnr_pending_by_peer
+        pfun.restype = ctypes.c_bool
+        pfun.argtypes = (ctypes.c_void_p, PendingCb, ctypes.c_void_p)
+        if not pfun(self.hClient_, cb, None):
+            return None
+        return out
+
+    def list_subscriptions(self):
+        """App-facing subscription topics (excludes internal channel)."""
+        out = []
+        TopicCb = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_void_p)
+
+        def c_cb(topic, _udata):
+            out.append(topic.decode("utf-8") if topic else "")
+
+        cb = TopicCb(c_cb)
+        pfun = lib_.lnr_list_subscriptions
+        pfun.restype = ctypes.c_bool
+        pfun.argtypes = (ctypes.c_void_p, TopicCb, ctypes.c_void_p)
+        if not pfun(self.hClient_, cb, None):
+            return None
+        return out
+
+    def list_related_topics(self):
+        """Topics this client has sent to / subscribed / refreshed."""
+        out = []
+        TopicCb = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_void_p)
+
+        def c_cb(topic, _udata):
+            out.append(topic.decode("utf-8") if topic else "")
+
+        cb = TopicCb(c_cb)
+        pfun = lib_.lnr_list_related_topics
+        pfun.restype = ctypes.c_bool
+        pfun.argtypes = (ctypes.c_void_p, TopicCb, ctypes.c_void_p)
+        if not pfun(self.hClient_, cb, None):
+            return None
+        return out
 
     def set_advertise_addr(self, addr)->bool:
         """Publish ``addr`` to the store catalog instead of the bind string. Call before ``run``.

@@ -52,10 +52,12 @@ enum {
     /** Sender: write/flush failure after an accepted send. */
     LNR_SENDER_SEND_ERROR = 7,
     /** Listener: background store error (ack / lookup). */
-    LNR_LISTENER_STORE_ERROR = 8
+    LNR_LISTENER_STORE_ERROR = 8,
+    /** Sender: in-memory send queue full for a peer (`max_send_queue`). */
+    LNR_SENDER_BUSY = 9
 };
 
-/// Sync API last-error codes (`lnr_last_error_code`). Detail text still goes to stderr.
+/// Sync API last-error codes (`lnr_last_error_code`). Detail text still goes to stderr / log hook / `lnr_last_error_message`.
 enum {
     LNR_OK = 0,
     LNR_ERR_NOT_RUNNING = 1,
@@ -68,7 +70,9 @@ enum {
     LNR_ERR_INVALID_ARG = 8,
     LNR_ERR_CLEAR_WHILE_RUNNING = 9,
     /** Listener startup after TCP bind (mio / topic_key). */
-    LNR_ERR_STARTUP = 10
+    LNR_ERR_STARTUP = 10,
+    /** Sender in-memory queue full for a peer. */
+    LNR_ERR_BUSY = 11
 };
 
 /// Asynchronous status and background errors. Pointers are valid only for the duration of the call.
@@ -76,6 +80,9 @@ enum {
 typedef void(*lnr_status_cb)(int kind, const char* topic, const char* peer, const char* message, lnr_uData);
 
 typedef void* lnr_hClient;
+
+/// Crate / shared-library version string (e.g. "1.4.0"), static storage.
+LINER_API const char* lnr_version(void);
 
 /// Create new client backed by Redis.
 /// @param unique_name
@@ -132,6 +139,15 @@ LINER_API BOOL lnr_list_addresses(lnr_hClient client, const char* topic, lnr_add
 /// Sum of offline queued messages for this sender identity. `-1` on error (see `lnr_last_error_code`).
 LINER_API long long lnr_pending_count(lnr_hClient client);
 
+/// Per-peer offline queue rows for this sender. Empty → success with zero callbacks.
+typedef void(*lnr_pending_cb)(const char* addr, const char* topic, const char* unique_name, long long count, lnr_uData);
+LINER_API BOOL lnr_pending_by_peer(lnr_hClient client, lnr_pending_cb cb, lnr_uData);
+
+/// App subscriptions (excludes internal channel) / related topics (status filter set).
+typedef void(*lnr_topic_cb)(const char* topic, lnr_uData);
+LINER_API BOOL lnr_list_subscriptions(lnr_hClient client, lnr_topic_cb cb, lnr_uData);
+LINER_API BOOL lnr_list_related_topics(lnr_hClient client, lnr_topic_cb cb, lnr_uData);
+
 /// Max framed TCP message size in bytes (default 1GiB). Prefer before `lnr_run`.
 LINER_API BOOL lnr_set_max_message_size(size_t bytes);
 LINER_API size_t lnr_get_max_message_size(void);
@@ -140,8 +156,23 @@ LINER_API size_t lnr_get_max_message_size(void);
 LINER_API BOOL lnr_set_compress_threshold(size_t bytes);
 LINER_API size_t lnr_get_compress_threshold(void);
 
+/// Max in-memory sender messages per peer (`0` = unlimited, default). Prefer before `lnr_run`.
+LINER_API BOOL lnr_set_max_send_queue(size_t n);
+LINER_API size_t lnr_get_max_send_queue(void);
+
+/// Stream availability poll interval (ms). Prefer before `lnr_run`. `0` rejected.
+LINER_API BOOL lnr_set_stream_check_timeout_ms(unsigned long long ms);
+LINER_API unsigned long long lnr_get_stream_check_timeout_ms(void);
+
+/// Bytestream would-block wait (ms). Prefer before `lnr_run`. `0` rejected.
+LINER_API BOOL lnr_set_would_block_timeout_ms(unsigned long long ms);
+LINER_API unsigned long long lnr_get_would_block_timeout_ms(void);
+
 /// Last sync-API error code for this client (`LNR_OK` after success). See `LNR_ERR_*`.
 LINER_API int lnr_last_error_code(lnr_hClient client);
+
+/// Detail for last sync failure. Empty when OK. NULL if bad handle. Valid until next sync call or delete.
+LINER_API const char* lnr_last_error_message(lnr_hClient client);
 
 /// Optional address published to the store catalog instead of the bind string.
 /// Call before `lnr_run`. `NULL` or `""` clears. Fails with `LNR_ERR_ALREADY_RUNNING` while running.

@@ -16,6 +16,8 @@ pub enum ErrorCode {
     ClearWhileRunning = 9,
     /// Listener startup after TCP bind (mio poll/register/waker or topic_key).
     Startup = 10,
+    /// Sender in-memory queue for a peer is at `max_send_queue`.
+    Busy = 11,
 }
 
 impl ErrorCode {

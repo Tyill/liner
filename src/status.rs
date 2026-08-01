@@ -22,6 +22,8 @@ pub const LNR_SENDER_STORE_ERROR: i32 = 6;
 pub const LNR_SENDER_SEND_ERROR: i32 = 7;
 /// Listener: background store / DB error on ack / lookup paths.
 pub const LNR_LISTENER_STORE_ERROR: i32 = 8;
+/// Sender: sync enqueue rejected because peer send queue is full (`max_send_queue`).
+pub const LNR_SENDER_BUSY: i32 = 9;
 
 /// Keys into the status detail message map ([`status_msg_templates`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -37,6 +39,7 @@ pub enum StatusMsg {
     SetLastMessNumberFromListener,
     GetLastMessNumberForListener,
     GetSenderTopicByConnectionKey,
+    SendQueueFull,
 }
 
 /// Template strings for [`StatusMsg`]. Placeholders are `{}` in order of `args`.
@@ -79,6 +82,7 @@ fn status_msg_templates() -> &'static HashMap<StatusMsg, &'static str> {
                 StatusMsg::GetSenderTopicByConnectionKey,
                 "get_sender_topic conn_key {}: {}",
             ),
+            (StatusMsg::SendQueueFull, "send queue full"),
         ])
     })
 }

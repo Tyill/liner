@@ -50,6 +50,7 @@ Error <file>:<line>: <message>
 | 8 | `LNR_ERR_INVALID_ARG` | Некорректный advertise-адрес; пустой send payload; или send с payload, у которого несжатое кадрированное тело превысило бы `max_message_size` |
 | 9 | `LNR_ERR_CLEAR_WHILE_RUNNING` | `clear_stored_messages` / `clear_addresses_of_topic` во время running. |
 | 10 | `LNR_ERR_STARTUP` | Сбой старта listener после TCP bind и регистрации в каталоге (mio poll/register/waker или `get_topic_key`). |
+| 11 | `LNR_ERR_BUSY` | In-memory очередь sender на пира заполнена (`max_send_queue`). |
 
 **Доступ**
 

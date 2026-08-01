@@ -100,6 +100,8 @@
 
 **`lnr_pending_count` / `Client::pending_count` / Python `pending_count`** суммирует офлайн-блобы **этого sender** в store.
 
+**`lnr_pending_by_peer`** — те же маршруты по пирам `(addr, topic, unique_name, count)`. **`lnr_list_subscriptions`** / **`lnr_list_related_topics`** — in-memory списки (подписки без internal channel).
+
 - Возвращает **`0`**, если очереди пусты.
 - Возвращает **`-1`** (C) или **`None`** (Rust) при ошибке store; смотрите `lnr_last_error_code`.
 - Глубина может **отставать**, пока at-least-once полезные нагрузки ещё лежат в in-memory очередях sender. Типичные моменты, когда store догоняет: после потери пира или после **`stop`** (teardown sender сбрасывает в store).
@@ -113,6 +115,8 @@
 | Параметр | По умолчанию | Setters / getters |
 |----------|--------------|-------------------|
 | Максимальный размер кадрированного TCP-сообщения | 1 ГиБ | `lnr_set_max_message_size` / `lnr_get_max_message_size` |
+| Max in-memory send queue **на пира** | unlimited (`0`) | `lnr_set_max_send_queue` |
+| Stream-check / would-block timeout | 10 с | `lnr_set_stream_check_timeout_ms` / `lnr_set_would_block_timeout_ms` |
 | Минимальный размер payload, с которого пробуется zstd | 1 МиБ | `lnr_set_compress_threshold` / `lnr_get_compress_threshold` |
 
 - Значение **`0`** отвергается (`FALSE` / `false`).

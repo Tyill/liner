@@ -104,20 +104,33 @@ Full code table and per-function outcomes: [errors-and-logging.md](errors-and-lo
 - Returns **`-1`** (C) or **`None`** (Rust) on store error; check `lnr_last_error_code`.
 - Depth can **lag** while at-least-once payloads still sit in the sender’s in-memory queues. Typical moments when the store catches up: after a peer is lost, or after **`stop`** (sender teardown flushes to the store).
 
+**`lnr_pending_by_peer` / `Client::pending_by_peer`** walks the same routes and reports **per peer** `(addr, topic, unique_name, count)`. Sum of counts matches `pending_count` when both succeed.
+
+### Subscriptions and related topics
+
+- **`lnr_list_subscriptions`**: app-facing subscriptions (excludes `__#internal_channel`).
+- **`lnr_list_related_topics`**: topics this client has sent to, subscribed to, or refreshed — same set as the status peer-event filter.
+
+Both are in-memory only (no store round-trip); empty → success with zero callbacks.
+
 ---
 
 ## Runtime limits
 
-Two process-global tunables affect framing and compression:
+Process-global tunables:
 
 | Tunable | Default | Setters / getters |
 |---------|---------|-------------------|
 | Max framed TCP message size | 1 GiB | `lnr_set_max_message_size` / `lnr_get_max_message_size` |
 | Min payload size before zstd is attempted | 1 MiB | `lnr_set_compress_threshold` / `lnr_get_compress_threshold` |
+| Max in-memory sender messages **per peer** | unlimited (`0`) | `lnr_set_max_send_queue` / `lnr_get_max_send_queue` |
+| Stream availability poll interval | 10 s | `lnr_set_stream_check_timeout_ms` / getter |
+| Bytestream would-block wait | 10 s | `lnr_set_would_block_timeout_ms` / getter |
 
-- Setting **`0`** is rejected (`FALSE` / `false`).
-- Prefer setting values **before** `run`. Changing them later is allowed, but only **new** frames / new `Message::new` calls see the new values.
-- Details and DoS notes: [capacity-and-limits.md](capacity-and-limits.md).
+- Size / timeout setters reject **`0`** (`FALSE`), except **`max_send_queue`** where **`0` means unlimited**.
+- Prefer setting values **before** `run`. Changing later is allowed, but only **new** frames / waits / enqueues see the new values.
+- When `max_send_queue > 0` and a peer’s in-memory worklist is full, `send_to` / `send_all` return **`FALSE`** + **`LNR_ERR_BUSY`** (and may emit **`LNR_SENDER_BUSY`**). Other peers are unaffected.
+- Details: [capacity-and-limits.md](capacity-and-limits.md).
 
 ---
 

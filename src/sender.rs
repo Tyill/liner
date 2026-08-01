@@ -74,6 +74,14 @@ pub struct Sender{
     wdelay_thread: Option<JoinHandle<()>>,
 }
 
+/// Result of enqueueing a message on the sender worklist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnqueueResult {
+    Ok,
+    Busy,
+    Fail,
+}
+
 impl Sender {
     pub fn new(db: Arc<Mutex<dyn Store>>, source_topic: &str, status_emitter: StatusEmitter)->Sender{
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
@@ -276,10 +284,10 @@ impl Sender {
         listener_topic: &str,
         data: &[u8],
         at_least_once_delivery: bool,
-    ) -> bool {
+    ) -> EnqueueResult {
         let Some(&ix) = self.addrs_for.get(addr_to) else {
             print_error!(&format!("send_to: address not prepared: {}", addr_to));
-            return false;
+            return EnqueueResult::Fail;
         };
         let connection_key = match self.connection_key.get(ix) {
             Some(v) => *v,
@@ -288,7 +296,7 @@ impl Sender {
                     "send_to: connection_key index out of bounds: ix={}, addr={}",
                     ix, addr_to
                 ));
-                return false;
+                return EnqueueResult::Fail;
             }
         };
         let Some(&listener_topic_key) = self.topic_keys.get(listener_topic) else {
@@ -296,7 +304,7 @@ impl Sender {
                 "send_to: topic_key not prepared: {}",
                 listener_topic
             ));
-            return false;
+            return EnqueueResult::Fail;
         };
         let number_mess = match self.last_mess_number.get(ix) {
             Some(slot) => {
@@ -309,9 +317,23 @@ impl Sender {
                     "send_to: last_mess_number index out of bounds: ix={}, addr={}",
                     ix, addr_to
                 ));
-                return false;
+                return EnqueueResult::Fail;
             }
         };
+
+        let cap = settings::max_send_queue();
+        if cap > 0 {
+            if let Ok(mess_lock) = self.messages.lock() {
+                let depth = mess_lock
+                    .get(ix)
+                    .and_then(|s| s.as_ref())
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+                if depth >= cap {
+                    return EnqueueResult::Busy;
+                }
+            }
+        }
 
         let mempool = match self.mempools.lock() {
             Ok(mps) => match mps.get(ix) {
@@ -321,12 +343,12 @@ impl Sender {
                         "send_to: mempool index out of bounds: ix={}, addr={}",
                         ix, addr_to
                     ));
-                    return false;
+                    return EnqueueResult::Fail;
                 }
             },
             Err(_) => {
                 print_error!("send_to: mempools lock poisoned");
-                return false;
+                return EnqueueResult::Fail;
             }
         };
         let Some(mess) = Message::new(
@@ -337,19 +359,28 @@ impl Sender {
             data,
             at_least_once_delivery,
         ) else {
-            return false;
+            return EnqueueResult::Fail;
         };
-        // Commit sequence only after encode succeeded.
-        self.last_mess_number[ix] = number_mess;
-        self.send_mess_notify(mess, ix);
-        true
+        match self.send_mess_notify(mess, ix, cap) {
+            EnqueueResult::Ok => {
+                // Commit sequence only after enqueue succeeded.
+                self.last_mess_number[ix] = number_mess;
+                EnqueueResult::Ok
+            }
+            other => other,
+        }
     }
     
-    fn send_mess_notify(&mut self, mess: Message, ix: usize){
+    fn send_mess_notify(&mut self, mess: Message, ix: usize, cap: usize) -> EnqueueResult {
         let (lock, cvar) = &*self.delay_write_cvar;
         if let Ok(mut _started) = lock.lock(){
             if let Ok(mut mess_lock) = self.messages.lock(){
                 if let Some(slot) = mess_lock.get_mut(ix) {
+                    let depth = slot.as_ref().map(|v| v.len()).unwrap_or(0);
+                    if cap > 0 && depth >= cap {
+                        drop(mess);
+                        return EnqueueResult::Busy;
+                    }
                     if let Some(mbuff) = slot.as_mut() {
                         mbuff.push(mess);
                     } else {
@@ -361,10 +392,12 @@ impl Sender {
                         ix
                     ));
                     drop(mess); // Drop → free_inner
+                    return EnqueueResult::Fail;
                 }
             } else {
                 print_error!("send_mess_notify: messages lock poisoned");
                 drop(mess);
+                return EnqueueResult::Fail;
             }
             // Skip notify when the writer is already awake/running: 10k notify_one calls
             // per batch stall send_to on this lock. write_stream still notifies on completion
@@ -373,9 +406,11 @@ impl Sender {
                 *_started = true;
                 cvar.notify_one();
             }
+            EnqueueResult::Ok
         } else {
             print_error!("send_mess_notify: delay_write_cvar lock poisoned");
             drop(mess);
+            EnqueueResult::Fail
         }
     }
      
@@ -532,7 +567,7 @@ fn check_writable_messages(streams: &WriteStreamList, messages: &Arc<Mutex<MessL
 }
 
 fn check_available_stream(is_new_addr: &Arc<AtomicBool>, ctime: u64, prev_time: &mut u64)->bool{
-    if is_new_addr.load(Ordering::Relaxed) || (ctime - *prev_time) > settings::CHECK_AVAILABLE_STREAM_TIMEOUT_MS{
+    if is_new_addr.load(Ordering::Relaxed) || (ctime - *prev_time) > settings::stream_check_timeout_ms(){
         is_new_addr.store(false, Ordering::Relaxed);
         *prev_time = ctime;
         true

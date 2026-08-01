@@ -29,7 +29,7 @@ Notes:
 - The hook is **one per process**, not per client. Daemons typically install it once at startup.
 - Calling `lnr_set_log_cb` again **replaces** the previous callback and userdata.
 - `lnr_set_log_cb` always returns **`TRUE`** for a valid call (install or clear).
-- There is **no** public API that returns the error message string to the caller. Use stderr or the log hook for text; use **`lnr_last_error_code`** for a stable machine-readable code.
+- There is a public **`lnr_last_error_message`** / `Client::last_error_message` snapshot of the **bare** detail string (no `Error file:line:` prefix). Empty when `LNR_OK`. Pointer valid until the next sync API call or client delete. Stderr / log hook still get the prefixed line.
 
 ---
 
@@ -50,12 +50,13 @@ Each client keeps a **last error code** updated by synchronous API calls. Succes
 | 8 | `LNR_ERR_INVALID_ARG` | Invalid advertise address; empty send payload; or send payload whose uncompressed framed body would exceed `max_message_size` |
 | 9 | `LNR_ERR_CLEAR_WHILE_RUNNING` | `clear_stored_messages` / `clear_addresses_of_topic` while running. |
 | 10 | `LNR_ERR_STARTUP` | Listener startup failed after TCP bind and catalog registration (mio poll/register/waker, or `get_topic_key`). |
+| 11 | `LNR_ERR_BUSY` | Sender in-memory queue for a peer is at `max_send_queue` (backpressure). |
 
 **Accessors**
 
-- C: `int lnr_last_error_code(lnr_hClient client)` — returns `LNR_OK` for a null handle
-- Rust: `Client::last_error() -> ErrorCode`
-- Python: `last_error_code() -> int`
+- C: `lnr_last_error_code` / `lnr_last_error_message` — code `LNR_OK` and empty message for a null handle (`message` returns `NULL`)
+- Rust: `Client::last_error()` / `Client::last_error_message()`
+- Python: `last_error_code()` / `last_error_message()`
 
 ---
 
@@ -71,12 +72,18 @@ Each client keeps a **last error code** updated by synchronous API calls. Succes
 | `lnr_stop` | `TRUE` (idempotent). Clears `published_addr`, keeps `bound_listen_addr`. Sets `LNR_OK`. |
 | `lnr_set_advertise_addr` | `TRUE` before `run` (including clear with `NULL`/`""`). `FALSE` + `LNR_ERR_ALREADY_RUNNING` while running; `FALSE` + `LNR_ERR_INVALID_ARG` for a bad address. |
 | `lnr_last_error_code` | Last sync code for that client; `LNR_OK` for null handle. |
+| `lnr_last_error_message` | Bare detail string; empty when OK; `NULL` for bad handle. |
+| `lnr_version` | Static `"x.y.z"` from the linked crate. |
 | `lnr_set_log_cb` | Always `TRUE`; installs or clears (`cb == NULL`) the process-global error log sink. |
 | `lnr_list_addresses` | `TRUE` and zero or more `lnr_addr_cb` invocations (empty topic ⇒ no callbacks). `FALSE` + `LNR_ERR_STORE` on DB error. |
 | `lnr_pending_count` | Non-negative depth of this sender’s offline blobs; `0` if none; `-1` on error (then check `lnr_last_error_code`). |
+| `lnr_pending_by_peer` | `TRUE` + zero or more `lnr_pending_cb` rows; `FALSE` + `STORE` on DB error. |
+| `lnr_list_subscriptions` / `lnr_list_related_topics` | `TRUE` + topic callbacks (subscriptions exclude internal channel). |
 | `lnr_set_max_message_size` / `lnr_set_compress_threshold` | Process-global. `FALSE` if `bytes == 0`. Prefer set before `run`. |
+| `lnr_set_max_send_queue` | Process-global per-peer in-memory queue cap; **`0` = unlimited** (default). |
+| `lnr_set_stream_check_timeout_ms` / `lnr_set_would_block_timeout_ms` | Process-global; `FALSE` if `ms == 0`. |
 | `lnr_set_status_cb` | `TRUE` if the client handle is valid; `FALSE` on null/unknown handle. Registers or clears (`cb == NULL`) the status callback. |
-| `lnr_send_to`, `lnr_send_all`, subscribe, refresh, clear, … | `FALSE` on logical or I/O errors; inspect **`lnr_last_error_code`** and stderr/log hook. |
+| `lnr_send_to`, `lnr_send_all`, subscribe, refresh, clear, … | `FALSE` on logical or I/O errors (including **`LNR_ERR_BUSY`**); inspect **`lnr_last_error_code`** / message and stderr/log hook. |
 
 ### Sync return vs status callback
 
@@ -87,6 +94,7 @@ These channels answer different questions:
 | Create / `run` / `send_*` / subscribe validation / clear / advertise | Immediate **`NULL` / `FALSE`** + **`lnr_last_error_code`**, often plus stderr / log hook |
 | Peer connect / disconnect / subscribe / unsubscribe (related topics only) | Status callback `LNR_PEER_*` |
 | TCP connect fail / stream close / write flush fail (**sender**) | Status callback `LNR_SENDER_ROUTE_LOST` / `LNR_SENDER_SEND_ERROR`, plus stderr / log hook |
+| Sync enqueue rejected because peer send queue is full | Sync **`LNR_ERR_BUSY`** and status **`LNR_SENDER_BUSY`** (when a status cb is set) |
 | Background store errors on reconnect/persist (**sender**) | Status callback `LNR_SENDER_STORE_ERROR`, plus stderr / log hook |
 | Background store errors on ack/lookup (**listener**) | Status callback `LNR_LISTENER_STORE_ERROR`, plus stderr / log hook |
 
