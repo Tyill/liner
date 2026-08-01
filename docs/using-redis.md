@@ -60,6 +60,8 @@ Rules match other backends: non-empty **`unique_name`**, **`topic`**, and **`loc
 
 Wire **`topic_key`** integers live under **`lnr_topic:{topic}:key`**. **`connection_key`** values are allocated from **`lnr_unique_key`** (see [routing-and-store-layout.md](routing-and-store-layout.md)).
 
+The **`localhost`** argument on client constructors is the **TCP bind address only**; it does not automatically become the address peers dial when you bind `0.0.0.0` or port `0`. Before **`run`**, call **`set_advertise_addr`** / `lnr_set_advertise_addr` to publish a reachable endpoint (advertise port `0` is rewritten from the actual bind). After **`run`**, use **`published_addr()`** for the catalog string and **`bound_listen_addr()`** for the local socket. Details: [using-the-api.md](using-the-api.md).
+
 ---
 
 ## Creating a client

@@ -6,15 +6,45 @@ C-интерфейс задаётся **`include/liner.h`** и точками в
 
 Проект **пока не публикует отдельную политику стабильности ABI** (например «совместимость символов только в патчах»). **Семантическое версионирование Rust-крейта** (`Cargo.toml` / crates.io) отслеживает **библиотеку целиком**, а не формально проверенную матрицу C ABI. На практике:
 
-- **Аддитивные** изменения (новые функции) обратно совместимы для вызывающего кода, который использует только старые символы. Пример (крейт **1.4.0**): **`lnr_set_status_cb`**, **`lnr_last_error_code`**, **`lnr_set_advertise_addr`**, **`lnr_stop`**, **`lnr_is_running`**, **`lnr_unique_name`**, **`lnr_bound_listen_addr`**, **`lnr_published_addr`**, **`lnr_set_log_cb`**, **`lnr_list_addresses`**, **`lnr_pending_count`**, **`lnr_set_max_message_size`** / **`lnr_get_max_message_size`**, **`lnr_set_compress_threshold`** / **`lnr_get_compress_threshold`**, а также `LNR_OK` / `LNR_ERR_*` (включая **`LNR_ERR_STARTUP`**) / status kinds в `liner.h`.
+- **Аддитивные** изменения (новые функции и enum’ы) обратно совместимы для вызывающего кода, который использует только старые символы.
 - **Переименования, смена сигнатур или удаление** C-функций либо **поведенческие изменения** из release notes требуют **пересборки и повторного тестирования** всех нативных привязок.
 - Изменения в **`liner.h`** (типы, колбэки, константы) следует считать **потенциально ломающими** для потребителей C/C++, пока не проверите иное.
 
 **Рекомендация:** закрепите **точную версию крейта / git-тег**, который поставляете, положите **`liner.h`** рядом с привязкой и прогоняйте интеграционные тесты при обновлении.
 
+### Аддитивные символы в крейте 1.4.0
+
+Следующие символы добавлены без изменения сигнатур существующих функций. Код, который на них не ссылается, продолжает работать с той же shared library:
+
+**Статус и логирование**
+
+- `lnr_set_status_cb`, `lnr_status_cb`, константы видов статуса (`LNR_PEER_*`, `LNR_SENDER_*`, `LNR_LISTENER_*`)
+- `lnr_set_log_cb`, `lnr_log_cb`
+
+**Ошибки и жизненный цикл**
+
+- `LNR_OK` / `LNR_ERR_*` (включая **`LNR_ERR_STARTUP`**)
+- `lnr_last_error_code`
+- `lnr_set_advertise_addr`
+- `lnr_stop`, `lnr_is_running`
+- `lnr_unique_name`, `lnr_bound_listen_addr`, `lnr_published_addr`
+
+**Интроспекция и лимиты**
+
+- `lnr_list_addresses`, `lnr_addr_cb`
+- `lnr_pending_count`
+- `lnr_set_max_message_size`, `lnr_get_max_message_size`
+- `lnr_set_compress_threshold`, `lnr_get_compress_threshold`
+
+Сигнатуры существующих конструкторов (`lnr_new_client_*`), `lnr_run` и `lnr_send_*` не менялись.
+
+---
+
 ## Канонический заголовок
 
 Поставляйте и компилируйте с **`include/liner.h`** (примеры на C++ подключают его через `cpp/liner_broker.h`). Держите заголовок **в синхроне** с артефактом `liner_broker`, который линкуете.
+
+---
 
 ## Сборка разделяемой библиотеки (Linux и Windows)
 
@@ -28,14 +58,19 @@ cargo build --release
 
 Примерный **`cpp/Makefile`** предполагает Unix-подобную строку линковки (`-L ../target/release -lliner_broker`). На **Windows** направьте тулчейн на пару **import library `.lib` / `.dll`** (или эквивалент вашей среды) для MSVC или GNU target; флаги отличаются от `g++` на Linux — следуйте документации MSVC или MinGW по линковке Rust-DLL.
 
+---
+
 ## Зависимости времени выполнения
 
 - **Бэкенд Redis:** доступный **Redis**, совместимый с версиями из [operations-redis-sqlite.md](operations-redis-sqlite.md).
 - **Бэкенд SQLite:** отдельного сервера нет; используется встроенный в бинарник Rust SQLite.
+- **Бэкенд PostgreSQL:** опционально; сборка с **`cargo build --features postgres`**. Нужен доступный **PostgreSQL** и символ **`lnr_new_client_postgres`** в слинкованном артефакте. См. [using-postgres.md](using-postgres.md).
 - **Платформа:** стандартная библиотека Rust и **libc** (на Unix), как у любой другой `cdylib`; сборки под Windows используют обычное MSVC или GNU runtime для вашего тулчейна Rust.
+
+---
 
 ## См. также
 
-- [errors-and-logging.md](errors-and-logging.md) — возвращаемые значения C и дескрипторы `NULL`.  
-- [using-the-api.md](using-the-api.md) — жизненный цикл и осторожность с потоками в FFI.  
+- [errors-and-logging.md](errors-and-logging.md) — возвращаемые значения C, коды ошибок и дескрипторы `NULL`.
+- [using-the-api.md](using-the-api.md) — жизненный цикл и осторожность с потоками в FFI.
 - [bindings.md](bindings.md) — примеры обёрток Python и C++ поверх этого API.

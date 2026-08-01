@@ -60,6 +60,8 @@ redis://127.0.0.1:6379/3
 
 Подробнее о ключах: [routing-and-store-layout.md](routing-and-store-layout.md).
 
+Аргумент **`localhost`** в конструкторах клиента — это **только адрес TCP bind**; он не становится автоматически адресом, по которому пиры подключаются, если вы bind’ите `0.0.0.0` или порт `0`. До **`run`** вызовите **`set_advertise_addr`** / `lnr_set_advertise_addr`, чтобы опубликовать достижимый endpoint (порт `0` в advertise подставляется из фактического bind). После **`run`** используйте **`published_addr()`** для строки в каталоге и **`bound_listen_addr()`** для локального сокета. Подробности: [using-the-api.md](using-the-api.md).
+
 ---
 
 ## Создание клиента

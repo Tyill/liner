@@ -57,6 +57,8 @@ On first connect, the store runs **`CREATE TABLE IF NOT EXISTS …`** for the li
 
 Internal **`seed_receivers`** exists on the `Store` trait for parity with SQLite (used in unit tests and store-level APIs). The **public client constructors do not take catalog JSON** for PostgreSQL.
 
+The **`localhost`** argument on client constructors is the **TCP bind address only**; it does not automatically become the address peers dial when you bind `0.0.0.0` or port `0`. Before **`run`**, call **`set_advertise_addr`** / `lnr_set_advertise_addr` to publish a reachable endpoint (advertise port `0` is rewritten from the actual bind). After **`run`**, use **`published_addr()`** for the catalog string and **`bound_listen_addr()`** for the local socket. Details: [using-the-api.md](using-the-api.md).
+
 ---
 
 ## Creating a client
