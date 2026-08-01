@@ -14,6 +14,18 @@ SENDER_STORE_ERROR = 6
 SENDER_SEND_ERROR = 7
 LISTENER_STORE_ERROR = 8
 
+# Sync last-error codes (match include/liner.h)
+OK = 0
+ERR_NOT_RUNNING = 1
+ERR_ALREADY_RUNNING = 2
+ERR_SELF_TOPIC = 3
+ERR_INTERNAL_TOPIC = 4
+ERR_NO_ADDR = 5
+ERR_BIND = 6
+ERR_STORE = 7
+ERR_INVALID_ARG = 8
+ERR_CLEAR_WHILE_RUNNING = 9
+
 def loadLib(path : str):
   global lib_
   lib_ = ctypes.CDLL(path)
@@ -158,7 +170,62 @@ class Client:
 
         self.statusCBack_ = StatusCBackType(c_scb)
         return pfun(self.hClient_, self.statusCBack_, ctypes.c_void_p())
-    
+
+    def last_error_code(self) -> int:
+        """Last sync API error code (``OK`` / ``ERR_*``). Detail text is on stderr."""
+        pfun = lib_.lnr_last_error_code
+        pfun.restype = ctypes.c_int
+        pfun.argtypes = (ctypes.c_void_p,)
+        return int(pfun(self.hClient_))
+
+    def set_advertise_addr(self, addr)->bool:
+        """Publish ``addr`` to the store catalog instead of the bind string. Call before ``run``.
+
+        Pass ``None`` or ``""`` to clear. Fails with ``ERR_ALREADY_RUNNING`` while running.
+        """
+        pfun = lib_.lnr_set_advertise_addr
+        pfun.restype = ctypes.c_bool
+        pfun.argtypes = (ctypes.c_void_p, ctypes.c_char_p)
+        if addr is None:
+            return pfun(self.hClient_, None)
+        return pfun(self.hClient_, addr.encode("utf-8"))
+
+    def stop(self)->bool:
+        """Stop listener/sender and unregister (idempotent). Allows ``clear_*`` / ``run`` again."""
+        pfun = lib_.lnr_stop
+        pfun.restype = ctypes.c_bool
+        pfun.argtypes = (ctypes.c_void_p,)
+        return pfun(self.hClient_)
+
+    def is_running(self)->bool:
+        pfun = lib_.lnr_is_running
+        pfun.restype = ctypes.c_bool
+        pfun.argtypes = (ctypes.c_void_p,)
+        return pfun(self.hClient_)
+
+    def unique_name(self):
+        pfun = lib_.lnr_unique_name
+        pfun.restype = ctypes.c_char_p
+        pfun.argtypes = (ctypes.c_void_p,)
+        raw = pfun(self.hClient_)
+        return raw.decode("utf-8") if raw else None
+
+    def bound_listen_addr(self):
+        """Last successful bind address (kept after ``stop``); ``None`` if never run."""
+        pfun = lib_.lnr_bound_listen_addr
+        pfun.restype = ctypes.c_char_p
+        pfun.argtypes = (ctypes.c_void_p,)
+        raw = pfun(self.hClient_)
+        return raw.decode("utf-8") if raw else None
+
+    def published_addr(self):
+        """Catalog address while registered; ``None`` after ``stop``."""
+        pfun = lib_.lnr_published_addr
+        pfun.restype = ctypes.c_char_p
+        pfun.argtypes = (ctypes.c_void_p,)
+        raw = pfun(self.hClient_)
+        return raw.decode("utf-8") if raw else None
+
     def send_to(self, to_topic: str, data: bytearray, at_least_once_delivery: bool = True) -> bool:
         """``at_least_once_delivery``: same as C API; default ``True``. Use ``False`` for isolated per-process SQLite."""
         c_to_topic = to_topic.encode("utf-8")

@@ -55,6 +55,20 @@ enum {
     LNR_LISTENER_STORE_ERROR = 8
 };
 
+/// Sync API last-error codes (`lnr_last_error_code`). Detail text still goes to stderr.
+enum {
+    LNR_OK = 0,
+    LNR_ERR_NOT_RUNNING = 1,
+    LNR_ERR_ALREADY_RUNNING = 2,
+    LNR_ERR_SELF_TOPIC = 3,
+    LNR_ERR_INTERNAL_TOPIC = 4,
+    LNR_ERR_NO_ADDR = 5,
+    LNR_ERR_BIND = 6,
+    LNR_ERR_STORE = 7,
+    LNR_ERR_INVALID_ARG = 8,
+    LNR_ERR_CLEAR_WHILE_RUNNING = 9
+};
+
 /// Asynchronous status and background errors. Pointers are valid only for the duration of the call.
 /// Peer events are filtered to topics this client has sent to, subscribed to, or refreshed.
 typedef void(*lnr_status_cb)(int kind, const char* topic, const char* peer, const char* message, lnr_uData);
@@ -102,6 +116,28 @@ LINER_API LINER_DEPRECATED lnr_hClient lnr_new_client(const char* unique_name, c
 /// Pass `cb == NULL` to clear. Safe before or after `lnr_run`.
 /// @return true - ok
 LINER_API BOOL lnr_set_status_cb(lnr_hClient client, lnr_status_cb cb, lnr_uData);
+
+/// Last sync-API error code for this client (`LNR_OK` after success). See `LNR_ERR_*`.
+LINER_API int lnr_last_error_code(lnr_hClient client);
+
+/// Optional address published to the store catalog instead of the bind string.
+/// Call before `lnr_run`. `NULL` or `""` clears. Fails with `LNR_ERR_ALREADY_RUNNING` while running.
+LINER_API BOOL lnr_set_advertise_addr(lnr_hClient client, const char* addr);
+
+/// Stop listener/sender and unregister from the store (idempotent). Allows `clear_*` / `run` again.
+LINER_API BOOL lnr_stop(lnr_hClient client);
+
+/// Whether the client is currently running (`lnr_run` succeeded and not yet stopped).
+LINER_API BOOL lnr_is_running(lnr_hClient client);
+
+/// Client `unique_name` (owned by client; valid until `lnr_delete_client`).
+LINER_API const char* lnr_unique_name(lnr_hClient client);
+
+/// Last successful bind address (kept after `lnr_stop`); NULL if never run.
+LINER_API const char* lnr_bound_listen_addr(lnr_hClient client);
+
+/// Address currently in the store catalog; NULL after `lnr_stop` / before first successful `lnr_run`.
+LINER_API const char* lnr_published_addr(lnr_hClient client);
 
 /// Run transfer data
 /// @param lnr_hClient

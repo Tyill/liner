@@ -3,11 +3,13 @@
 ## Lifecycle (typical order)
 
 1. **Create** a client with store parameters and local identity (`unique_name`, initial `topic`, `localhost` bind address, Redis URL or SQLite path).
-2. Optionally call **`subscribe` / `unsubscribe`** before `run` (subscriptions are queued and applied when the listener starts).
-3. Optionally call **`lnr_set_status_cb`** / `Client::set_status_cb` / `Liner::set_status_callback` (before or after `run`) for peer and background-error notifications.
-4. Call **`run`** (C: `lnr_run`) to start the internal listener and sender loops. Until then, **`send_to` / `send_all`** return failure (“client not is running”).
-5. Send and receive on the **same thread or different threads** only according to your binding’s thread-safety rules (see below).
-6. **Destroy** the client (C: `lnr_delete_client`) when finished so connections and threads are torn down cleanly.
+2. Optionally call **`set_advertise_addr`** / `lnr_set_advertise_addr` before `run` so the store catalog lists a reachable address (e.g. when binding `0.0.0.0` or an ephemeral port).
+3. Optionally call **`subscribe` / `unsubscribe`** before `run` (subscriptions are queued and applied when the listener starts).
+4. Optionally call **`lnr_set_status_cb`** / `Client::set_status_cb` / `Liner::set_status_callback` (before or after `run`) for peer and background-error notifications.
+5. Call **`run`** (C: `lnr_run`) to start the internal listener and sender loops. Until then, **`send_to` / `send_all`** return failure (`LNR_ERR_NOT_RUNNING`). Calling **`run` again while already running** returns **`true`** and sets **`LNR_OK`** (idempotent).
+6. Send and receive on the **same thread or different threads** only according to your binding’s thread-safety rules (see below).
+7. Optionally **`stop`** / `lnr_stop` to unregister and join threads without destroying the handle — then **`clear_*`** and a fresh **`run`** are allowed. **`bound_listen_addr`** remains (last bind); **`published_addr`** is cleared (`NULL`) because the client is no longer in the store catalog.
+8. **Destroy** the client (C: `lnr_delete_client`) when finished (`Drop` / delete also stop if still running).
 
 ## Threading
 
@@ -15,9 +17,17 @@
 - After **`run`**, background **listener** and **sender** tasks own their own store handles (`open_store_mutex`) and event loops; they do not replace the client’s main `db` instance.
 - **C / Python / other FFI**: assume **single-threaded use of a given `lnr_hClient`** unless you add your own synchronization. The Rust side will serialize if you call through from multiple threads, but your language bindings may not be safe across threads without care.
 
-## TCP `localhost` / bind address
+## TCP bind vs advertise
 
-`localhost` must be a string **`ToSocketAddrs`** can resolve (for example `127.0.0.1:2255` or `0.0.0.0:2255`). If resolution or **bind** fails, **`run`** returns **`false`** (and logs).
+- **`localhost` (constructor)** is the **bind** string (`ToSocketAddrs`, e.g. `127.0.0.1:2255` or `0.0.0.0:0`). If resolution or **bind** fails, **`run`** returns **`false`** and sets **`LNR_ERR_BIND`**.
+- **`set_advertise_addr(addr)`** (before `run` only): optional address written to the store catalog for peers to connect to. `NULL` / `""` / `None` clears it. While running → **`false`** + **`LNR_ERR_ALREADY_RUNNING`**. Invalid address → **`LNR_ERR_INVALID_ARG`**.
+- If advertise uses port **`0`**, **`run`** rewrites that port from the actual bound ephemeral port.
+- Without advertise, the catalog gets the bound address (same as before).
+- Getters: **`unique_name`**, **`bound_listen_addr`** (kept after `stop`), **`published_addr`** (catalog string while registered; `NULL` after `stop`).
+
+## Last error code
+
+Sync failures still return **`false` / `NULL`** and log to **stderr**. Additionally, **`lnr_last_error_code`** / `Client::last_error` / Python **`last_error_code`** returns a stable `LNR_OK` / `LNR_ERR_*` code for the last sync call on that client (see [errors-and-logging.md](errors-and-logging.md)). There is **no** public error-message getter.
 
 ## Topics and addresses
 
@@ -56,7 +66,7 @@ C functions **`lnr_send_to`** and **`lnr_send_all`** take **`at_least_once_deliv
 
 ## Clearing state
 
-- **`clear_stored_messages`** and **`clear_addresses_of_topic`** are only allowed when the client is **not** running (`run` not called or client torn down). If called while running, they return failure and log. For exactly which Redis keys / SQLite rows are affected, see [operations-redis-sqlite.md](operations-redis-sqlite.md).
+- **`clear_stored_messages`** and **`clear_addresses_of_topic`** are only allowed when the client is **not** running (`run` not called, after **`stop`**, or client torn down). If called while running, they return failure (`LNR_ERR_CLEAR_WHILE_RUNNING`) and log. For exactly which Redis keys / SQLite rows are affected, see [operations-redis-sqlite.md](operations-redis-sqlite.md).
 
 ## Callbacks (receive path)
 

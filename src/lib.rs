@@ -40,6 +40,9 @@ pub use status::{
     LNR_SENDER_SEND_ERROR, LNR_SENDER_STORE_ERROR,
 };
 
+mod error;
+pub use error::ErrorCode;
+
 mod client;
 pub use client::Client;
 mod message;
@@ -228,6 +231,31 @@ impl Liner {
         }
     }
 
+    pub fn last_error_code(&self) -> i32 {
+        unsafe { lnr_last_error_code(self.hclient) }
+    }
+
+    /// Address published to the store instead of the bind string. `None` clears.
+    pub fn set_advertise_addr(&mut self, addr: Option<&str>) -> bool {
+        unsafe {
+            match addr {
+                None => lnr_set_advertise_addr(self.hclient, std::ptr::null()),
+                Some(s) => {
+                    let c = cstring_or_empty(s);
+                    lnr_set_advertise_addr(self.hclient, c.as_ptr())
+                }
+            }
+        }
+    }
+
+    pub fn stop(&mut self) -> bool {
+        unsafe { lnr_stop(self.hclient) }
+    }
+
+    pub fn is_running(&self) -> bool {
+        unsafe { lnr_is_running(self.hclient) }
+    }
+
     pub fn run(&mut self, ucback: UCback)->bool{        
         unsafe{
             self.ucback = Some(ucback);
@@ -292,8 +320,14 @@ impl Liner {
     }
 
     /// After a successful [`Liner::run`], the resolved bind address (e.g. when `localhost` used port `0`).
+    /// Kept after [`Liner::stop`].
     pub fn bound_listen_addr(&self) -> Option<String> {
         unsafe { (*self.hclient).bound_listen_addr().map(|s| s.to_string()) }
+    }
+
+    /// Catalog address while registered; `None` after stop.
+    pub fn published_addr(&self) -> Option<String> {
+        unsafe { (*self.hclient).published_addr().map(|s| s.to_string()) }
     }
 
     pub fn unique_name(&self) -> String {
@@ -466,6 +500,13 @@ pub unsafe extern "C" fn lnr_new_client(
     std::hint::black_box(lnr_new_client_redis);
     std::hint::black_box(lnr_new_client_sqlite);
     std::hint::black_box(lnr_set_status_cb);
+    std::hint::black_box(lnr_last_error_code);
+    std::hint::black_box(lnr_set_advertise_addr);
+    std::hint::black_box(lnr_stop);
+    std::hint::black_box(lnr_is_running);
+    std::hint::black_box(lnr_unique_name);
+    std::hint::black_box(lnr_bound_listen_addr);
+    std::hint::black_box(lnr_published_addr);
     #[cfg(feature = "postgres")]
     {
         std::hint::black_box(lnr_new_client_postgres);
@@ -506,6 +547,81 @@ pub unsafe extern "C" fn lnr_set_status_cb(
     }
     (*client).set_status_cb(cb, UData(udata));
     true
+}
+
+/// Last sync-API error code (`LNR_OK` / `LNR_ERR_*`). Returns `LNR_OK` for a null handle.
+///
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_last_error_code(client: *mut Client) -> i32 {
+    if !has_client(client) {
+        return ErrorCode::Ok.as_i32();
+    }
+    (*client).last_error().as_i32()
+}
+
+/// Set advertise address before `lnr_run`. `addr == NULL` or empty clears.
+///
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_set_advertise_addr(client: *mut Client, addr: *const i8) -> bool {
+    if !has_client(client) {
+        return false;
+    }
+    if addr.is_null() {
+        return (*client).set_advertise_addr(None);
+    }
+    let Ok(addr) = CStr::from_ptr(addr).to_str() else {
+        return false;
+    };
+    (*client).set_advertise_addr(Some(addr))
+}
+
+/// Stop the client (unregister + join threads). Idempotent.
+///
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_stop(client: *mut Client) -> bool {
+    if !has_client(client) {
+        return false;
+    }
+    (*client).stop()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_is_running(client: *mut Client) -> bool {
+    if !has_client(client) {
+        return false;
+    }
+    (*client).is_running()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_unique_name(client: *mut Client) -> *const i8 {
+    if !has_client(client) {
+        return std::ptr::null();
+    }
+    (*client).unique_name_c_str()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_bound_listen_addr(client: *mut Client) -> *const i8 {
+    if !has_client(client) {
+        return std::ptr::null();
+    }
+    (*client).bound_listen_addr_c_str()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_published_addr(client: *mut Client) -> *const i8 {
+    if !has_client(client) {
+        return std::ptr::null();
+    }
+    (*client).published_addr_c_str()
 }
 
 /// Launching a client to send messages and listen for incoming messages. 
@@ -682,6 +798,13 @@ mod tests {
             assert!(!lnr_clear_addresses_of_topic(ptr::null_mut()));
             assert!(!lnr_delete_client(ptr::null_mut()));
             assert!(!lnr_set_status_cb(ptr::null_mut(), None, ptr::null_mut()));
+            assert_eq!(lnr_last_error_code(ptr::null_mut()), 0);
+            assert!(!lnr_set_advertise_addr(ptr::null_mut(), ptr::null()));
+            assert!(!lnr_stop(ptr::null_mut()));
+            assert!(!lnr_is_running(ptr::null_mut()));
+            assert!(lnr_unique_name(ptr::null_mut()).is_null());
+            assert!(lnr_bound_listen_addr(ptr::null_mut()).is_null());
+            assert!(lnr_published_addr(ptr::null_mut()).is_null());
         }
     }
 

@@ -1,5 +1,6 @@
 use crate::store::Store;
 use crate::{UCbackIntern, UData};
+use crate::error::ErrorCode;
 use crate::listener::Listener;
 use crate::sender::Sender;
 use crate::print_error;
@@ -10,15 +11,20 @@ use crate::status::{
 };
 
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use mio::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
 
 pub struct Client{
     unique_name: String,
+    /// NUL-terminated copy for C `lnr_unique_name`.
+    c_unique_name: CString,
     source_topic: String,
+    /// TCP bind string from the constructor (not overwritten by advertise / ephemeral port).
     localhost: String,
+    /// Optional address published to the store catalog (see [`Client::set_advertise_addr`]).
+    advertise: Option<String>,
     db: Arc<Mutex<dyn Store>>,
     listener: Option<Listener>,
     sender: Option<Sender>,
@@ -29,11 +35,63 @@ pub struct Client{
     /// Topics this client has sent to, subscribed to, or explicitly refreshed (status filter).
     related_topics: HashSet<String>,
     subscriptions: HashMap<i32, String>,
-    /// Actual `SocketAddr` after `run` binds `localhost` (e.g. when port is `0`).
+    /// Actual `SocketAddr` after `run` binds `localhost` (e.g. when port is `0`). Kept after `stop`.
     bound_listen_addr: Option<String>,
+    c_bound_listen_addr: Option<CString>,
+    /// Address written to the store while registered; cleared on `stop`.
+    published_addr: Option<String>,
+    c_published_addr: Option<CString>,
+    last_error: ErrorCode,
     user_receive_cb: Option<UCbackIntern>,
     user_receive_udata: UData,
     status_emitter: StatusEmitter,
+}
+
+fn cstring_lossy(s: &str) -> CString {
+    CString::new(s).unwrap_or_else(|_| CString::new("").unwrap_or_default())
+}
+
+fn client_fields(
+    unique_name: String,
+    source_topic: String,
+    localhost: String,
+    db: Arc<Mutex<dyn Store>>,
+) -> Client {
+    let c_unique_name = cstring_lossy(&unique_name);
+    Client {
+        unique_name,
+        c_unique_name,
+        source_topic,
+        localhost,
+        advertise: None,
+        db,
+        listener: None,
+        sender: None,
+        last_send_index: HashMap::new(),
+        is_run: false,
+        mtx: Mutex::new(()),
+        address_topic: HashMap::new(),
+        related_topics: HashSet::new(),
+        subscriptions: HashMap::new(),
+        bound_listen_addr: None,
+        c_bound_listen_addr: None,
+        published_addr: None,
+        c_published_addr: None,
+        last_error: ErrorCode::Ok,
+        user_receive_cb: None,
+        user_receive_udata: UData::null(),
+        status_emitter: StatusEmitter::new(),
+    }
+}
+
+fn set_ok(last_error: &mut ErrorCode) {
+    *last_error = ErrorCode::Ok;
+}
+
+fn set_fail(last_error: &mut ErrorCode, code: ErrorCode, msg: &str) -> bool {
+    *last_error = code;
+    print_error!(msg);
+    false
 }
 
 impl Client {
@@ -47,24 +105,12 @@ impl Client {
             db.set_source_topic(topic);
             db.set_source_localhost(localhost);
         }
-        Some(Self {
-            unique_name: unique_name.to_string(),
-            source_topic: topic.to_string(),
-            localhost: localhost.to_string(),
+        Some(client_fields(
+            unique_name.to_string(),
+            topic.to_string(),
+            localhost.to_string(),
             db,
-            listener: None,
-            sender: None,
-            last_send_index: HashMap::new(),
-            is_run: false,
-            mtx: Mutex::new(()),
-            address_topic: HashMap::new(),
-            related_topics: HashSet::new(),
-            subscriptions: HashMap::new(),
-            bound_listen_addr: None,
-            user_receive_cb: None,
-            user_receive_udata: UData::null(),
-            status_emitter: StatusEmitter::new(),
-        })
+        ))
     }
 
     pub fn new_sqlite(
@@ -98,24 +144,12 @@ impl Client {
                 }
             }
         }
-        Some(Self {
-            unique_name: unique_name.to_string(),
-            source_topic: topic.to_string(),
-            localhost: localhost.to_string(),
+        Some(client_fields(
+            unique_name.to_string(),
+            topic.to_string(),
+            localhost.to_string(),
             db,
-            listener: None,
-            sender: None,
-            last_send_index: HashMap::new(),
-            is_run: false,
-            mtx: Mutex::new(()),
-            address_topic: HashMap::new(),
-            related_topics: HashSet::new(),
-            subscriptions: HashMap::new(),
-            bound_listen_addr: None,
-            user_receive_cb: None,
-            user_receive_udata: UData::null(),
-            status_emitter: StatusEmitter::new(),
-        })
+        ))
     }
 
     /// PostgreSQL-backed client (requires Cargo feature **`postgres`**).
@@ -138,33 +172,88 @@ impl Client {
             db.set_source_topic(topic);
             db.set_source_localhost(localhost);
         }
-        Some(Self {
-            unique_name: unique_name.to_string(),
-            source_topic: topic.to_string(),
-            localhost: localhost.to_string(),
+        Some(client_fields(
+            unique_name.to_string(),
+            topic.to_string(),
+            localhost.to_string(),
             db,
-            listener: None,
-            sender: None,
-            last_send_index: HashMap::new(),
-            is_run: false,
-            mtx: Mutex::new(()),
-            address_topic: HashMap::new(),
-            related_topics: HashSet::new(),
-            subscriptions: HashMap::new(),
-            bound_listen_addr: None,
-            user_receive_cb: None,
-            user_receive_udata: UData::null(),
-            status_emitter: StatusEmitter::new(),
-        })
+        ))
+    }
+
+    pub fn last_error(&self) -> ErrorCode {
+        self.last_error
     }
 
     pub fn unique_name(&self) -> &str {
         &self.unique_name
     }
 
-    /// After [`Client::run`], the resolved bind address if `localhost` used port `0`.
+    /// C-compatible pointer owned by this client (stable until the client is dropped).
+    pub fn unique_name_c_str(&self) -> *const i8 {
+        self.c_unique_name.as_ptr()
+    }
+
+    /// After [`Client::run`], the resolved bind address if `localhost` used port `0`. Kept after [`Client::stop`].
     pub fn bound_listen_addr(&self) -> Option<&str> {
         self.bound_listen_addr.as_deref()
+    }
+
+    pub fn bound_listen_addr_c_str(&self) -> *const i8 {
+        self.c_bound_listen_addr
+            .as_ref()
+            .map(|c| c.as_ptr())
+            .unwrap_or(std::ptr::null())
+    }
+
+    /// Catalog address while registered; `None` after [`Client::stop`] or before the first successful `run`.
+    pub fn published_addr(&self) -> Option<&str> {
+        self.published_addr.as_deref()
+    }
+
+    pub fn published_addr_c_str(&self) -> *const i8 {
+        self.c_published_addr
+            .as_ref()
+            .map(|c| c.as_ptr())
+            .unwrap_or(std::ptr::null())
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.is_run
+    }
+
+    /// Address published to the store instead of the bind string. Call before [`Client::run`].
+    /// `None` or empty clears advertise (publish bind / bound address again).
+    pub fn set_advertise_addr(&mut self, addr: Option<&str>) -> bool {
+        let _lock = self.mtx.lock();
+        if self.is_run {
+            return set_fail(&mut self.last_error, 
+                ErrorCode::AlreadyRunning,
+                "you can't set_advertise_addr because client already is running",
+            );
+        }
+        match addr {
+            None => {
+                self.advertise = None;
+                set_ok(&mut self.last_error);
+                true
+            }
+            Some(s) if s.is_empty() => {
+                self.advertise = None;
+                set_ok(&mut self.last_error);
+                true
+            }
+            Some(s) => {
+                if str_to_socket_addr(s).is_none() {
+                    return set_fail(&mut self.last_error, 
+                        ErrorCode::InvalidArg,
+                        &format!("invalid advertise address: {}", s),
+                    );
+                }
+                self.advertise = Some(s.to_string());
+                set_ok(&mut self.last_error);
+                true
+            }
+        }
     }
 
     /// Set or clear the status / background-error callback. Pass `None` to clear.
@@ -181,34 +270,50 @@ impl Client {
     pub fn run(&mut self, receive_cb: UCbackIntern, udata: UData) -> bool {
         let client_ptr = std::ptr::from_mut(self);
         let _lock = self.mtx.lock();
-        if self.is_run{
-            print_error!("client already is running");
+        if self.is_run {
+            set_ok(&mut self.last_error);
             return true;
         }
-        let sa = str_to_socket_addr(&self.localhost);
-        if sa.is_none(){
-            return false;
-        }
-        let tcp_listener = match TcpListener::bind(sa.unwrap()) {
-            Ok(l) => l,
-            Err(err) => {
-                print_error!(&format!("{}", err));
-                return false;
+        let sa = match str_to_socket_addr(&self.localhost) {
+            Some(sa) => sa,
+            None => {
+                return set_fail(&mut self.last_error, 
+                    ErrorCode::Bind,
+                    &format!("invalid bind address: {}", self.localhost),
+                );
             }
         };
-        self.bound_listen_addr = tcp_listener.local_addr().ok().map(|a| a.to_string());
+        let tcp_listener = match TcpListener::bind(sa) {
+            Ok(l) => l,
+            Err(err) => {
+                return set_fail(&mut self.last_error, ErrorCode::Bind, &format!("{}", err));
+            }
+        };
+        let bound = tcp_listener.local_addr().ok().map(|a| a.to_string());
+        self.bound_listen_addr = bound.clone();
+        self.c_bound_listen_addr = bound.as_ref().map(|s| cstring_lossy(s));
+
+        let published = match compute_published_addr(
+            self.advertise.as_deref(),
+            self.bound_listen_addr.as_deref(),
+            &self.localhost,
+        ) {
+            Ok(p) => p,
+            Err(msg) => {
+                return set_fail(&mut self.last_error, ErrorCode::InvalidArg, &msg);
+            }
+        };
+        self.published_addr = Some(published.clone());
+        self.c_published_addr = Some(cstring_lossy(&published));
+
         // Register only after bind so port-0 peers never see `host:0`.
         {
             let mut db = self.db.lock().unwrap();
-            if let Some(bound) = self.bound_listen_addr.clone() {
-                if bound != self.localhost {
-                    self.localhost = bound.clone();
-                }
-                db.set_source_localhost(&self.localhost);
-            }
-            if let Err(err) = db.regist_topic(&self.source_topic){
-                print_error!(&format!("{}", err));
-                return false;
+            db.set_source_localhost(&published);
+            if let Err(err) = db.regist_topic(&self.source_topic) {
+                self.published_addr = None;
+                self.c_published_addr = None;
+                return set_fail(&mut self.last_error, ErrorCode::Store, &format!("{}", err));
             }
         }
         self.user_receive_cb = Some(receive_cb);
@@ -240,15 +345,20 @@ impl Client {
             &mut self.subscriptions,
         ) {
             self.is_run = false;
+            self.published_addr = None;
+            self.c_published_addr = None;
             drop(self.listener.take());
             drop(self.sender.take());
-            return false;
+            return set_fail(&mut self.last_error, 
+                ErrorCode::Store,
+                "failed to subscribe to internal channel",
+            );
         }
         emit_internal_event(
             self.is_run,
             &self.unique_name,
             &self.source_topic,
-            self.bound_listen_addr.as_deref(),
+            self.published_addr.as_deref(),
             &mut self.address_topic,
             &self.db,
             self.sender.as_mut().unwrap(),
@@ -256,6 +366,73 @@ impl Client {
             None,
         );
 
+        set_ok(&mut self.last_error);
+        true
+    }
+
+    /// Stop listener/sender threads and unregister from the store. Idempotent.
+    /// Keeps [`Client::bound_listen_addr`]; clears [`Client::published_addr`].
+    pub fn stop(&mut self) -> bool {
+        let (listener, sender) = {
+            let _lock = self.mtx.lock();
+            if !self.is_run {
+                set_ok(&mut self.last_error);
+                return true;
+            }
+            // Drop extra catalog registrations (subscribe topics). Do not emit
+            // "unsubscribed" here — crash/teardown must keep sender_listener so
+            // at-least-once offline delivery still works; only explicit
+            // `unsubscribe` clears those routes via the internal event.
+            let extra: Vec<String> = self
+                .subscriptions
+                .values()
+                .filter(|t| t.as_str() != INTERNAL_CHANNEL_TOPIC)
+                .cloned()
+                .collect();
+            for topic in extra {
+                let _ = unsubscribe_inner(
+                    &topic,
+                    &self.source_topic,
+                    &mut *self.db.lock().unwrap(),
+                    self.is_run,
+                    &mut self.listener,
+                    &mut self.subscriptions,
+                );
+            }
+            // Unregister before announcing disconnect so peers refresh a catalog without us.
+            if let Err(err) = self.db.lock().unwrap().unregist_topic(&self.source_topic) {
+                print_error!(&format!("{}", err));
+            }
+            let _ = unsubscribe_inner(
+                INTERNAL_CHANNEL_TOPIC,
+                &self.source_topic,
+                &mut *self.db.lock().unwrap(),
+                self.is_run,
+                &mut self.listener,
+                &mut self.subscriptions,
+            );
+            if let Some(sender) = self.sender.as_mut() {
+                emit_internal_event(
+                    self.is_run,
+                    &self.unique_name,
+                    &self.source_topic,
+                    self.published_addr.as_deref(),
+                    &mut self.address_topic,
+                    &self.db,
+                    sender,
+                    "client_disconnected",
+                    None,
+                );
+            }
+            self.is_run = false;
+            self.published_addr = None;
+            self.c_published_addr = None;
+            set_ok(&mut self.last_error);
+            (self.listener.take(), self.sender.take())
+        };
+        // Join threads outside Client.mtx — receive path also takes that lock.
+        drop(listener);
+        drop(sender);
         true
     }
 
@@ -264,12 +441,13 @@ impl Client {
         // (see docs/using-the-api.md). Store is still only locked briefly in ensure_send_route.
         let _lock = self.mtx.lock().unwrap();
         if !self.is_run {
-            print_error!("you can't send_to because client not is running");
-            return false;
+            return set_fail(&mut self.last_error, 
+                ErrorCode::NotRunning,
+                "you can't send_to because client not is running",
+            );
         }
         if topic == self.source_topic {
-            print_error!("you can't send on your own topic");
-            return false;
+            return set_fail(&mut self.last_error, ErrorCode::SelfTopic, "you can't send on your own topic");
         }
         apply_failed_routes(&mut self.address_topic, self.sender.as_mut());
         // Resolve routes first so round-robin can borrow the address without cloning.
@@ -279,21 +457,32 @@ impl Client {
             .map(|a| a.is_empty())
             .unwrap_or(true)
         {
-            if resolve_send_addresses(
+            match resolve_send_addresses(
                 topic,
                 at_least_once_delivery,
                 &mut self.address_topic,
                 &mut *self.db.lock().unwrap(),
-            )
-            .is_none()
-            {
-                self.address_topic.remove(topic);
-                return false;
+            ) {
+                ResolveAddrs::Ok(_) => {}
+                ResolveAddrs::NoAddr => {
+                    self.address_topic.remove(topic);
+                    return set_fail(&mut self.last_error, 
+                        ErrorCode::NoAddr,
+                        &format!("not found addr for topic {}", topic),
+                    );
+                }
+                ResolveAddrs::Store(err) => {
+                    self.address_topic.remove(topic);
+                    return set_fail(&mut self.last_error, ErrorCode::Store, &err);
+                }
             }
         }
         let addr_len = self.address_topic.get(topic).map(|a| a.len()).unwrap_or(0);
         if addr_len == 0 {
-            return false;
+            return set_fail(&mut self.last_error, 
+                ErrorCode::NoAddr,
+                &format!("not found addr for topic {}", topic),
+            );
         }
         mark_related_topic(&mut self.related_topics, topic);
         let index = if let Some(slot) = self.last_send_index.get_mut(topic) {
@@ -309,21 +498,27 @@ impl Client {
         if sender.needs_store_for_send(addr, topic) {
             let mut db = self.db.lock().unwrap();
             if !sender.ensure_send_route(&mut *db, addr, topic) {
-                return false;
+                return set_fail(&mut self.last_error, ErrorCode::Store, "ensure_send_route failed");
             }
         }
-        sender.send_to(addr, topic, data, at_least_once_delivery)
+        if sender.send_to(addr, topic, data, at_least_once_delivery) {
+            set_ok(&mut self.last_error);
+            true
+        } else {
+            set_fail(&mut self.last_error, ErrorCode::Store, "send_to failed")
+        }
     }
 
     pub fn send_all(&mut self, topic: &str, data: &[u8], at_least_once_delivery: bool) -> bool {
         let _lock = self.mtx.lock().unwrap();
         if !self.is_run {
-            print_error!("you can't send_all because client not is running");
-            return false;
+            return set_fail(&mut self.last_error, 
+                ErrorCode::NotRunning,
+                "you can't send_all because client not is running",
+            );
         }
         if topic == self.source_topic {
-            print_error!("you can't send on your own topic");
-            return false;
+            return set_fail(&mut self.last_error, ErrorCode::SelfTopic, "you can't send on your own topic");
         }
         apply_failed_routes(&mut self.address_topic, self.sender.as_mut());
         let addrs = if let Some(cached) = self
@@ -333,16 +528,25 @@ impl Client {
         {
             cached.to_vec()
         } else {
-            let Some(address) = resolve_send_addresses(
+            match resolve_send_addresses(
                 topic,
                 at_least_once_delivery,
                 &mut self.address_topic,
                 &mut *self.db.lock().unwrap(),
-            ) else {
-                self.address_topic.remove(topic);
-                return false;
-            };
-            address.to_vec()
+            ) {
+                ResolveAddrs::Ok(address) => address.to_vec(),
+                ResolveAddrs::NoAddr => {
+                    self.address_topic.remove(topic);
+                    return set_fail(&mut self.last_error, 
+                        ErrorCode::NoAddr,
+                        &format!("not found addr for topic {}", topic),
+                    );
+                }
+                ResolveAddrs::Store(err) => {
+                    self.address_topic.remove(topic);
+                    return set_fail(&mut self.last_error, ErrorCode::Store, &err);
+                }
+            }
         };
         mark_related_topic(&mut self.related_topics, topic);
         let sender = self.sender.as_mut().unwrap();
@@ -368,18 +572,27 @@ impl Client {
             }
             ok &= sender.send_to(addr, topic, data, at_least_once_delivery);
         }
-        ok
+        if ok {
+            set_ok(&mut self.last_error);
+            true
+        } else {
+            set_fail(&mut self.last_error, ErrorCode::Store, "send_all failed for one or more peers")
+        }
     }
 
     pub fn subscribe(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        if topic == self.source_topic{
-            print_error!("you can't subscribe on your own topic");
-            return false;
+        if topic == self.source_topic {
+            return set_fail(&mut self.last_error, 
+                ErrorCode::SelfTopic,
+                "you can't subscribe on your own topic",
+            );
         }
         if topic == INTERNAL_CHANNEL_TOPIC {
-            print_error!("you can't subscribe on internal channel topic");
-            return false;
+            return set_fail(&mut self.last_error, 
+                ErrorCode::InternalTopic,
+                "you can't subscribe on internal channel topic",
+            );
         }
         if !subscribe_inner(
             topic,
@@ -389,7 +602,7 @@ impl Client {
             &mut self.listener,
             &mut self.subscriptions,
         ) {
-            return false;
+            return set_fail(&mut self.last_error, ErrorCode::Store, "subscribe failed");
         }
         mark_related_topic(&mut self.related_topics, topic);
         if self.is_run {
@@ -397,7 +610,7 @@ impl Client {
                 self.is_run,
                 &self.unique_name,
                 &self.source_topic,
-                self.bound_listen_addr.as_deref(),
+                self.published_addr.as_deref(),
                 &mut self.address_topic,
                 &self.db,
                 self.sender.as_mut().unwrap(),
@@ -405,18 +618,23 @@ impl Client {
                 Some(topic),
             );
         }
+        set_ok(&mut self.last_error);
         true
     }
 
     pub fn unsubscribe(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        if topic == self.source_topic{
-            print_error!("you can't unsubscribe on your own topic");
-            return false;
+        if topic == self.source_topic {
+            return set_fail(&mut self.last_error, 
+                ErrorCode::SelfTopic,
+                "you can't unsubscribe on your own topic",
+            );
         }
         if topic == INTERNAL_CHANNEL_TOPIC {
-            print_error!("you can't unsubscribe on internal channel topic");
-            return false;
+            return set_fail(&mut self.last_error, 
+                ErrorCode::InternalTopic,
+                "you can't unsubscribe on internal channel topic",
+            );
         }
         if !unsubscribe_inner(
             topic,
@@ -426,14 +644,14 @@ impl Client {
             &mut self.listener,
             &mut self.subscriptions,
         ) {
-            return false;
+            return set_fail(&mut self.last_error, ErrorCode::Store, "unsubscribe failed");
         }
         if self.is_run {
             emit_internal_event(
                 self.is_run,
                 &self.unique_name,
                 &self.source_topic,
-                self.bound_listen_addr.as_deref(),
+                self.published_addr.as_deref(),
                 &mut self.address_topic,
                 &self.db,
                 self.sender.as_mut().unwrap(),
@@ -441,41 +659,56 @@ impl Client {
                 Some(topic),
             );
         }
+        set_ok(&mut self.last_error);
         true
     }
 
     pub fn refresh_address_topic(&mut self, topic: &str) -> bool {
         let _lock = self.mtx.lock();
-        let ok =
-            refresh_address_topic_cache(&mut self.address_topic, &mut *self.db.lock().unwrap(), topic);
-        if ok {
-            mark_related_topic(&mut self.related_topics, topic);
+        match refresh_address_topic_cache(
+            &mut self.address_topic,
+            &mut *self.db.lock().unwrap(),
+            topic,
+        ) {
+            RefreshResult::Ok => {
+                mark_related_topic(&mut self.related_topics, topic);
+                set_ok(&mut self.last_error);
+                true
+            }
+            RefreshResult::NoAddr => set_fail(&mut self.last_error, 
+                ErrorCode::NoAddr,
+                &format!("not found addr for topic {}", topic),
+            ),
+            RefreshResult::Store(err) => set_fail(&mut self.last_error, ErrorCode::Store, &err),
         }
-        ok
     }
 
     pub fn clear_stored_messages(&mut self) -> bool {
         let _lock = self.mtx.lock();
-        if self.is_run{
-            print_error!("you can't clear_stored_messages because client already is running");
-            return false;
+        if self.is_run {
+            return set_fail(&mut self.last_error, 
+                ErrorCode::ClearWhileRunning,
+                "you can't clear_stored_messages because client already is running",
+            );
         }
-        if let Err(err) = self.db.lock().unwrap().clear_stored_messages(){
-            print_error!(&format!("{}", err));
-            return false;
+        if let Err(err) = self.db.lock().unwrap().clear_stored_messages() {
+            return set_fail(&mut self.last_error, ErrorCode::Store, &format!("{}", err));
         }
+        set_ok(&mut self.last_error);
         true
     }
     pub fn clear_addresses_of_topic(&mut self) -> bool {
         let _lock = self.mtx.lock();
-        if self.is_run{
-            print_error!("you can't clear_addresses_of_topic because client already is running");
-            return false;
+        if self.is_run {
+            return set_fail(&mut self.last_error, 
+                ErrorCode::ClearWhileRunning,
+                "you can't clear_addresses_of_topic because client already is running",
+            );
         }
-        if let Err(err) = self.db.lock().unwrap().clear_addresses_of_topic(){
-            print_error!(&format!("{}", err));
-            return false;
+        if let Err(err) = self.db.lock().unwrap().clear_addresses_of_topic() {
+            return set_fail(&mut self.last_error, ErrorCode::Store, &format!("{}", err));
         }
+        set_ok(&mut self.last_error);
         true
     }
 }
@@ -572,19 +805,21 @@ fn emit_internal_event(
         let mut db = db.lock().unwrap();
         // Always reload peers from the store — a fresh process may emit
         // subscribe/unsubscribe before its in-memory route cache is warm.
-        if let Some(addr) = get_address_topic(INTERNAL_CHANNEL_TOPIC, &mut *db, true) {
+        if let Ok(Some(addr)) = get_address_topic(INTERNAL_CHANNEL_TOPIC, &mut *db, true) {
             address_topic.insert(INTERNAL_CHANNEL_TOPIC.to_string(), addr);
         }
-        let Some(address) = resolve_send_addresses(
+        match resolve_send_addresses(
             INTERNAL_CHANNEL_TOPIC,
             false,
             address_topic,
             &mut *db,
-        ) else {
-            address_topic.remove(INTERNAL_CHANNEL_TOPIC);
-            return;
-        };
-        address.to_vec()
+        ) {
+            ResolveAddrs::Ok(address) => address.to_vec(),
+            _ => {
+                address_topic.remove(INTERNAL_CHANNEL_TOPIC);
+                return;
+            }
+        }
     };
     for addr in address {
         {
@@ -653,7 +888,7 @@ fn apply_internal_channel_event(client: &mut Client, data: &[u8]) {
         .unwrap_or("");
     let related = is_related_topic(topic, &client.related_topics);
     if !topic.is_empty() && topic != INTERNAL_CHANNEL_TOPIC {
-        refresh_address_topic_cache(
+        let _ = refresh_address_topic_cache(
             &mut client.address_topic,
             &mut *client.db.lock().unwrap(),
             topic,
@@ -667,7 +902,7 @@ fn apply_internal_channel_event(client: &mut Client, data: &[u8]) {
         }
     }
     if matches!(event, "client_connected" | "client_disconnected") {
-        refresh_address_topic_cache(
+        let _ = refresh_address_topic_cache(
             &mut client.address_topic,
             &mut *client.db.lock().unwrap(),
             INTERNAL_CHANNEL_TOPIC,
@@ -707,14 +942,27 @@ fn refresh_address_topic_cache(
     address_topic: &mut HashMap<String, Vec<String>>,
     db: &mut dyn Store,
     topic: &str,
-) -> bool {
-    if let Some(addr) = get_address_topic(topic, db, true) {
-        address_topic.insert(topic.to_string(), addr);
-        true
-    } else {
-        address_topic.remove(topic);
-        false
+) -> RefreshResult {
+    match get_address_topic(topic, db, true) {
+        Ok(Some(addr)) => {
+            address_topic.insert(topic.to_string(), addr);
+            RefreshResult::Ok
+        }
+        Ok(None) => {
+            address_topic.remove(topic);
+            RefreshResult::NoAddr
+        }
+        Err(err) => {
+            address_topic.remove(topic);
+            RefreshResult::Store(err)
+        }
     }
+}
+
+enum RefreshResult {
+    Ok,
+    NoAddr,
+    Store(String),
 }
 
 fn apply_failed_routes(
@@ -743,18 +991,27 @@ fn apply_failed_routes(
     }
 }
 
-fn get_address_topic(topic: &str, db: &mut dyn Store, without_cache: bool) -> Option<Vec<String>> {
-    match db.get_addresses_of_topic(without_cache, topic){
-        Ok(addresses)=>{
-            if !addresses.is_empty(){
-                return Some(addresses);
+fn get_address_topic(
+    topic: &str,
+    db: &mut dyn Store,
+    without_cache: bool,
+) -> Result<Option<Vec<String>>, String> {
+    match db.get_addresses_of_topic(without_cache, topic) {
+        Ok(addresses) => {
+            if addresses.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(addresses))
             }
-        },
-        Err(err)=>{
-            print_error!(&format!("{}", err));
         }
+        Err(err) => Err(format!("{}", err)),
     }
-    None
+}
+
+enum ResolveAddrs<'a> {
+    Ok(&'a [String]),
+    NoAddr,
+    Store(String),
 }
 
 /// Prefer the in-memory route cache (kept fresh by the internal channel / `refresh_address_topic`).
@@ -766,103 +1023,75 @@ fn resolve_send_addresses<'a>(
     at_least_once_delivery: bool,
     address_topic: &'a mut HashMap<String, Vec<String>>,
     db: &mut dyn Store,
-) -> Option<&'a [String]> {
+) -> ResolveAddrs<'a> {
     if address_topic.get(topic).is_some_and(|a| !a.is_empty()) {
-        return Some(address_topic[topic].as_slice());
+        return ResolveAddrs::Ok(address_topic[topic].as_slice());
     }
     address_topic.remove(topic);
-    let addrs = if let Some(addr) = get_address_topic(topic, db, true) {
-        addr
-    } else if at_least_once_delivery {
-        let Ok(listeners) = db.get_listeners_of_sender() else {
-            return None;
-        };
-        let addrs: Vec<String> = listeners
-            .into_iter()
-            .filter(|(_, listener_topic)| listener_topic == topic)
-            .map(|(addr, _)| addr)
-            .collect();
-        if addrs.is_empty() {
-            return None;
+    let addrs = match get_address_topic(topic, db, true) {
+        Ok(Some(addr)) => addr,
+        Ok(None) => {
+            if at_least_once_delivery {
+                let listeners = match db.get_listeners_of_sender() {
+                    Ok(l) => l,
+                    Err(err) => return ResolveAddrs::Store(format!("{}", err)),
+                };
+                let mut from_listeners = Vec::new();
+                for (addr, listener_topic) in listeners {
+                    if listener_topic == topic {
+                        from_listeners.push(addr);
+                    }
+                }
+                if from_listeners.is_empty() {
+                    return ResolveAddrs::NoAddr;
+                }
+                from_listeners
+            } else {
+                return ResolveAddrs::NoAddr;
+            }
         }
-        addrs
-    } else {
-        return None;
+        Err(err) => return ResolveAddrs::Store(err),
     };
     let slot = address_topic.entry(topic.to_string()).or_insert(addrs);
-    Some(slot.as_slice())
+    ResolveAddrs::Ok(slot.as_slice())
 }
 
-fn str_to_socket_addr(localhost: &str)->Option<SocketAddr>{
-    match localhost.to_socket_addrs() {
-        Ok(mut sa_)=>{
-            sa_.next()
+/// Bind stays `bind`; catalog gets advertise (with port-0 rewritten from `bound`) or bound/bind.
+fn compute_published_addr(
+    advertise: Option<&str>,
+    bound: Option<&str>,
+    bind: &str,
+) -> Result<String, String> {
+    if let Some(adv) = advertise {
+        let mut adv_sa = str_to_socket_addr(adv)
+            .ok_or_else(|| format!("invalid advertise address: {}", adv))?;
+        if adv_sa.port() == 0 {
+            let bound = bound.ok_or_else(|| {
+                "advertise port is 0 but bind did not produce a local address".to_string()
+            })?;
+            let bound_sa = str_to_socket_addr(bound)
+                .ok_or_else(|| format!("invalid bound address: {}", bound))?;
+            adv_sa.set_port(bound_sa.port());
         }
-        Err(err)=>{
+        Ok(adv_sa.to_string())
+    } else {
+        Ok(bound.unwrap_or(bind).to_string())
+    }
+}
+
+fn str_to_socket_addr(localhost: &str) -> Option<SocketAddr> {
+    match localhost.to_socket_addrs() {
+        Ok(mut sa_) => sa_.next(),
+        Err(err) => {
             print_error!(&format!("{}", err));
             None
-        }            
-    }    
+        }
+    }
 }
 
 impl Drop for Client {
     fn drop(&mut self) {
-        let (listener, sender) = {
-            let _lock = self.mtx.lock();
-            if !self.is_run {
-                return;
-            }
-            // Drop extra catalog registrations (subscribe topics). Do not emit
-            // "unsubscribed" here — crash/teardown must keep sender_listener so
-            // at-least-once offline delivery still works; only explicit
-            // `unsubscribe` clears those routes via the internal event.
-            let extra: Vec<String> = self
-                .subscriptions
-                .values()
-                .filter(|t| t.as_str() != INTERNAL_CHANNEL_TOPIC)
-                .cloned()
-                .collect();
-            for topic in extra {
-                let _ = unsubscribe_inner(
-                    &topic,
-                    &self.source_topic,
-                    &mut *self.db.lock().unwrap(),
-                    self.is_run,
-                    &mut self.listener,
-                    &mut self.subscriptions,
-                );
-            }
-            // Unregister before announcing disconnect so peers refresh a catalog without us.
-            if let Err(err) = self.db.lock().unwrap().unregist_topic(&self.source_topic) {
-                print_error!(&format!("{}", err));
-            }
-            let _ = unsubscribe_inner(
-                INTERNAL_CHANNEL_TOPIC,
-                &self.source_topic,
-                &mut *self.db.lock().unwrap(),
-                self.is_run,
-                &mut self.listener,
-                &mut self.subscriptions,
-            );
-            if let Some(sender) = self.sender.as_mut() {
-                emit_internal_event(
-                    self.is_run,
-                    &self.unique_name,
-                    &self.source_topic,
-                    self.bound_listen_addr.as_deref(),
-                    &mut self.address_topic,
-                    &self.db,
-                    sender,
-                    "client_disconnected",
-                    None,
-                );
-            }
-            self.is_run = false;
-            (self.listener.take(), self.sender.take())
-        };
-        // Join threads outside Client.mtx — receive path also takes that lock.
-        drop(listener);
-        drop(sender);
+        let _ = self.stop();
     }
 }
 
@@ -920,6 +1149,103 @@ mod tests {
     fn str_to_socket_addr_accepts_localhost_port() {
         assert!(str_to_socket_addr("127.0.0.1:0").is_some());
         assert!(str_to_socket_addr("localhost:0").is_some());
+    }
+
+    #[test]
+    fn compute_published_rewrites_advertise_port_zero() {
+        let published = compute_published_addr(
+            Some("127.0.0.1:0"),
+            Some("127.0.0.1:34567"),
+            "0.0.0.0:0",
+        )
+        .unwrap();
+        assert_eq!(published, "127.0.0.1:34567");
+    }
+
+    #[test]
+    fn send_to_not_running_sets_last_error() {
+        let mut c = Client::new_sqlite("u_err", "t", "127.0.0.1:0", ":memory:", "")
+            .expect("sqlite client");
+        assert!(!c.send_to("other", b"x", false));
+        assert_eq!(c.last_error(), ErrorCode::NotRunning);
+    }
+
+    #[test]
+    fn advertise_while_running_sets_already_running() {
+        let mut c = Client::new_sqlite("u_adv", "t_adv", "127.0.0.1:0", ":memory:", "")
+            .expect("sqlite client");
+        assert!(c.run(recv_noop, UData::null()));
+        assert!(!c.set_advertise_addr(Some("127.0.0.1:1")));
+        assert_eq!(c.last_error(), ErrorCode::AlreadyRunning);
+        assert!(c.stop());
+    }
+
+    #[test]
+    fn run_idempotent_clears_last_error_to_ok() {
+        let mut c = Client::new_sqlite("u_idemp", "t_idemp", "127.0.0.1:0", ":memory:", "")
+            .expect("sqlite client");
+        assert!(c.run(recv_noop, UData::null()));
+        let _ = c.send_to("missing", b"x", false);
+        assert_ne!(c.last_error(), ErrorCode::Ok);
+        assert!(c.run(recv_noop, UData::null()));
+        assert_eq!(c.last_error(), ErrorCode::Ok);
+        assert!(c.stop());
+    }
+
+    #[test]
+    fn stop_clears_published_keeps_bound_allows_clear_and_rerun() {
+        let path = format!(
+            "{}/liner_stop_test_{}.sqlite",
+            std::env::temp_dir().display(),
+            std::process::id()
+        );
+        let _ = std::fs::remove_file(&path);
+        let mut c = Client::new_sqlite("u_stop", "t_stop", "127.0.0.1:0", &path, "")
+            .expect("sqlite client");
+        assert!(c.set_advertise_addr(Some("127.0.0.1:0")));
+        assert!(c.run(recv_noop, UData::null()));
+        assert!(c.is_running());
+        let bound = c.bound_listen_addr().map(|s| s.to_string());
+        assert!(bound.is_some());
+        assert!(c.published_addr().is_some());
+        assert_eq!(c.published_addr(), bound.as_deref());
+        assert!(c.stop());
+        assert!(!c.is_running());
+        assert_eq!(c.bound_listen_addr(), bound.as_deref());
+        assert!(c.published_addr().is_none());
+        assert!(c.clear_stored_messages());
+        assert_eq!(c.last_error(), ErrorCode::Ok);
+        assert!(c.run(recv_noop, UData::null()));
+        assert!(c.is_running());
+        assert!(c.published_addr().is_some());
+        assert!(c.stop());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}-wal"));
+        let _ = std::fs::remove_file(format!("{path}-shm"));
+    }
+
+    #[test]
+    fn advertise_host_with_ephemeral_port_published() {
+        let path = format!(
+            "{}/liner_adv_test_{}.sqlite",
+            std::env::temp_dir().display(),
+            std::process::id()
+        );
+        let _ = std::fs::remove_file(&path);
+        let mut c = Client::new_sqlite("u_adv2", "t_adv2", "0.0.0.0:0", &path, "")
+            .expect("sqlite client");
+        assert!(c.set_advertise_addr(Some("127.0.0.1:0")));
+        assert!(c.run(recv_noop, UData::null()));
+        let published = c.published_addr().unwrap().to_string();
+        assert!(published.starts_with("127.0.0.1:"), "{published}");
+        assert!(!published.ends_with(":0"));
+        let bound = c.bound_listen_addr().unwrap();
+        let bound_port = bound.rsplit(':').next().unwrap();
+        assert!(published.ends_with(&format!(":{bound_port}")));
+        assert!(c.stop());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}-wal"));
+        let _ = std::fs::remove_file(format!("{path}-shm"));
     }
 
     #[test]
