@@ -143,6 +143,13 @@ LINER_API long long lnr_pending_count(lnr_hClient client);
 typedef void(*lnr_pending_cb)(const char* addr, const char* topic, const char* unique_name, long long count, lnr_uData);
 LINER_API BOOL lnr_pending_by_peer(lnr_hClient client, lnr_pending_cb cb, lnr_uData);
 
+/// Total in-memory sender queue depth (not store/offline). `0` if not running / null handle.
+LINER_API long long lnr_send_queue_depth(lnr_hClient client);
+
+/// Per-peer in-memory sender queue depth for known routes. Empty → success with zero callbacks.
+typedef void(*lnr_queue_cb)(const char* addr, long long count, lnr_uData);
+LINER_API BOOL lnr_send_queue_depth_by_peer(lnr_hClient client, lnr_queue_cb cb, lnr_uData);
+
 /// App subscriptions (excludes internal channel) / related topics (status filter set).
 typedef void(*lnr_topic_cb)(const char* topic, lnr_uData);
 LINER_API BOOL lnr_list_subscriptions(lnr_hClient client, lnr_topic_cb cb, lnr_uData);
@@ -186,6 +193,15 @@ LINER_API BOOL lnr_is_running(lnr_hClient client);
 
 /// Client `unique_name` (owned by client; valid until `lnr_delete_client`).
 LINER_API const char* lnr_unique_name(lnr_hClient client);
+
+/// Source topic from the constructor (owned by client; valid until delete).
+LINER_API const char* lnr_topic(lnr_hClient client);
+
+/// Constructor TCP bind string (`localhost` argument). Not rewritten by ephemeral bind.
+LINER_API const char* lnr_bind_addr(lnr_hClient client);
+
+/// Configured advertise string; NULL if never set / cleared. Independent of `lnr_published_addr`.
+LINER_API const char* lnr_advertise_addr(lnr_hClient client);
 
 /// Last successful bind address (kept after `lnr_stop`); NULL if never run.
 LINER_API const char* lnr_bound_listen_addr(lnr_hClient client);

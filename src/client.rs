@@ -22,10 +22,15 @@ pub struct Client{
     /// NUL-terminated copy for C `lnr_unique_name`.
     c_unique_name: CString,
     source_topic: String,
+    /// NUL-terminated copy for C `lnr_topic`.
+    c_source_topic: CString,
     /// TCP bind string from the constructor (not overwritten by advertise / ephemeral port).
     localhost: String,
+    /// NUL-terminated copy for C `lnr_bind_addr`.
+    c_localhost: CString,
     /// Optional address published to the store catalog (see [`Client::set_advertise_addr`]).
     advertise: Option<String>,
+    c_advertise: Option<CString>,
     db: Arc<Mutex<dyn Store>>,
     listener: Option<Listener>,
     sender: Option<Sender>,
@@ -66,12 +71,17 @@ fn client_fields(
     db: Arc<Mutex<dyn Store>>,
 ) -> Client {
     let c_unique_name = cstring_lossy(&unique_name);
+    let c_source_topic = cstring_lossy(&source_topic);
+    let c_localhost = cstring_lossy(&localhost);
     Client {
         unique_name,
         c_unique_name,
         source_topic,
+        c_source_topic,
         localhost,
+        c_localhost,
         advertise: None,
+        c_advertise: None,
         db,
         listener: None,
         sender: None,
@@ -254,6 +264,36 @@ impl Client {
         self.c_unique_name.as_ptr()
     }
 
+    /// Source topic from the constructor (registration / self-topic).
+    pub fn topic(&self) -> &str {
+        &self.source_topic
+    }
+
+    pub fn topic_c_str(&self) -> *const i8 {
+        self.c_source_topic.as_ptr()
+    }
+
+    /// Constructor TCP bind string (`localhost` argument). Not rewritten by ephemeral bind.
+    pub fn bind_addr(&self) -> &str {
+        &self.localhost
+    }
+
+    pub fn bind_addr_c_str(&self) -> *const i8 {
+        self.c_localhost.as_ptr()
+    }
+
+    /// Configured advertise string, if any (`None` when cleared / never set).
+    pub fn advertise_addr(&self) -> Option<&str> {
+        self.advertise.as_deref()
+    }
+
+    pub fn advertise_addr_c_str(&self) -> *const i8 {
+        self.c_advertise
+            .as_ref()
+            .map(|c| c.as_ptr())
+            .unwrap_or(std::ptr::null())
+    }
+
     /// After [`Client::run`], the resolved bind address if `localhost` used port `0`. Kept after [`Client::stop`].
     pub fn bound_listen_addr(&self) -> Option<&str> {
         self.bound_listen_addr.as_deref()
@@ -295,11 +335,13 @@ impl Client {
         match addr {
             None => {
                 self.advertise = None;
+                self.c_advertise = None;
                 client_ok!(self);
                 true
             }
             Some(s) if s.is_empty() => {
                 self.advertise = None;
+                self.c_advertise = None;
                 client_ok!(self);
                 true
             }
@@ -311,6 +353,7 @@ impl Client {
                     );
                 }
                 self.advertise = Some(s.to_string());
+                self.c_advertise = Some(cstring_lossy(s));
                 client_ok!(self);
                 true
             }
@@ -959,6 +1002,24 @@ impl Client {
         }
         client_ok!(self);
         Some(rows)
+    }
+
+    /// Total in-memory sender queue depth (not store/offline). `0` if not running.
+    pub fn send_queue_depth(&self) -> u64 {
+        let _lock = self.mtx.lock();
+        match &self.sender {
+            Some(s) => s.send_queue_depth(),
+            None => 0,
+        }
+    }
+
+    /// Per-peer in-memory sender queue depths for known routes. Empty if not running.
+    pub fn send_queue_depth_by_peer(&self) -> Vec<(String, u64)> {
+        let _lock = self.mtx.lock();
+        match &self.sender {
+            Some(s) => s.send_queue_depth_by_peer(),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -2371,19 +2432,53 @@ mod tests {
         drop(a);
         drop(b);
         s.address_topic
-            .insert(topic_a.clone(), vec![addr_a]);
+            .insert(topic_a.clone(), vec![addr_a.clone()]);
         s.address_topic
-            .insert(topic_b.clone(), vec![addr_b]);
+            .insert(topic_b.clone(), vec![addr_b.clone()]);
 
         assert!(s.send_to(&topic_a, b"q1", false), "first enqueue to A");
+        assert_eq!(s.send_queue_depth(), 1);
+        assert_eq!(
+            s.send_queue_depth_by_peer()
+                .into_iter()
+                .find(|(a, _)| a == &addr_a)
+                .map(|(_, n)| n),
+            Some(1)
+        );
         assert!(!s.send_to(&topic_a, b"q2", false), "second to A should be busy");
         assert_eq!(s.last_error(), ErrorCode::Busy);
+        assert_eq!(s.send_queue_depth(), 1, "busy must not grow A's queue");
         assert!(
             s.send_to(&topic_b, b"qb", false),
             "peer B must accept while A is at cap"
         );
 
         drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn topic_bind_advertise_getters() {
+        let dir = std::env::temp_dir().join(format!(
+            "liner_getters_{}_{}",
+            std::process::id(),
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("g.sqlite");
+        let db = db.to_str().unwrap();
+        let topic = format!("g_topic_{}", std::process::id());
+        let mut c = Client::new_sqlite("g_client", &topic, "127.0.0.1:0", db, "").expect("c");
+        assert_eq!(c.topic(), topic.as_str());
+        assert_eq!(c.bind_addr(), "127.0.0.1:0");
+        assert!(c.advertise_addr().is_none());
+        assert!(c.set_advertise_addr(Some("127.0.0.1:9")));
+        assert_eq!(c.advertise_addr(), Some("127.0.0.1:9"));
+        assert!(c.set_advertise_addr(None));
+        assert!(c.advertise_addr().is_none());
+        assert_eq!(c.send_queue_depth(), 0);
+        assert!(c.send_queue_depth_by_peer().is_empty());
+        drop(c);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

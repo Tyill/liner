@@ -66,6 +66,9 @@
 | Геттер | Пока running | После `stop` |
 |--------|--------------|--------------|
 | `unique_name` | Всегда доступен | Всегда доступен |
+| `topic` | Исходный топик из конструктора | То же |
+| `bind_addr` | Строка TCP bind из конструктора | То же (не переписывается эфемерным bind) |
+| `advertise_addr` | Сконфигурированный advertise, если задан | То же (независимо от каталога) |
 | `bound_listen_addr` | Фактический local bind после успешного `run` | **Сохраняется** (последний успешный bind) |
 | `published_addr` | Строка, сейчас зарегистрированная в store | **Очищается** (`NULL` / `None`) |
 
@@ -79,7 +82,7 @@
 - Rust: `Client::last_error` → `ErrorCode`
 - Python: `last_error_code`
 
-Успешные вызовы сбрасывают его в **`LNR_OK`**. Публичного getter’а человекочитаемой строки ошибки **нет**. Текст по-прежнему идёт в **stderr** по умолчанию или в процессно-глобальный **log hook**, если он установлен.
+Успешные вызовы сбрасывают его в **`LNR_OK`**. Текст доступен через **`lnr_last_error_message`** / `Client::last_error_message`, плюс **stderr** или процессно-глобальный **log hook**.
 
 Полная таблица кодов и исходов по функциям: [errors-and-logging.md](errors-and-logging.md).
 
@@ -100,11 +103,19 @@
 
 **`lnr_pending_count` / `Client::pending_count` / Python `pending_count`** суммирует офлайн-блобы **этого sender** в store.
 
-**`lnr_pending_by_peer`** — те же маршруты по пирам `(addr, topic, unique_name, count)`. **`lnr_list_subscriptions`** / **`lnr_list_related_topics`** — in-memory списки (подписки без internal channel).
+**`lnr_pending_by_peer`** — те же маршруты по пирам `(addr, topic, unique_name, count)`.
 
 - Возвращает **`0`**, если очереди пусты.
 - Возвращает **`-1`** (C) или **`None`** (Rust) при ошибке store; смотрите `lnr_last_error_code`.
 - Глубина может **отставать**, пока at-least-once полезные нагрузки ещё лежат в in-memory очередях sender. Типичные моменты, когда store догоняет: после потери пира или после **`stop`** (teardown sender сбрасывает в store).
+
+### In-memory очередь отправки
+
+**`lnr_send_queue_depth` / `Client::send_queue_depth`** — сумма сообщений в **RAM**-worklist sender (то, что ограничивает `max_send_queue` / `LNR_ERR_BUSY`). **`0`**, если клиент не running. Это **не** offline-глубина store.
+
+**`lnr_send_queue_depth_by_peer`** — `(addr, count)` по известным маршрутам.
+
+**`lnr_list_subscriptions`** / **`lnr_list_related_topics`** — in-memory списки (подписки без internal channel).
 
 ---
 

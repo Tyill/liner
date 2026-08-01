@@ -361,6 +361,29 @@ class Client:
             return None
         return out
 
+    def send_queue_depth(self) -> int:
+        """In-memory sender queue depth (not store/offline); ``0`` if not running."""
+        pfun = lib_.lnr_send_queue_depth
+        pfun.restype = ctypes.c_longlong
+        pfun.argtypes = (ctypes.c_void_p,)
+        return int(pfun(self.hClient_))
+
+    def send_queue_depth_by_peer(self):
+        """Return ``[(addr, count), ...]`` for known in-memory send routes."""
+        out = []
+        QueueCb = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_longlong, ctypes.c_void_p)
+
+        def c_cb(addr, count, _udata):
+            out.append((addr.decode("utf-8") if addr else "", int(count)))
+
+        cb = QueueCb(c_cb)
+        pfun = lib_.lnr_send_queue_depth_by_peer
+        pfun.restype = ctypes.c_bool
+        pfun.argtypes = (ctypes.c_void_p, QueueCb, ctypes.c_void_p)
+        if not pfun(self.hClient_, cb, None):
+            return None
+        return out
+
     def list_subscriptions(self):
         """App-facing subscription topics (excludes internal channel)."""
         out = []
@@ -420,6 +443,30 @@ class Client:
 
     def unique_name(self):
         pfun = lib_.lnr_unique_name
+        pfun.restype = ctypes.c_char_p
+        pfun.argtypes = (ctypes.c_void_p,)
+        raw = pfun(self.hClient_)
+        return raw.decode("utf-8") if raw else None
+
+    def topic(self):
+        """Source topic from the constructor."""
+        pfun = lib_.lnr_topic
+        pfun.restype = ctypes.c_char_p
+        pfun.argtypes = (ctypes.c_void_p,)
+        raw = pfun(self.hClient_)
+        return raw.decode("utf-8") if raw else None
+
+    def bind_addr(self):
+        """Constructor TCP bind string (``localhost`` argument)."""
+        pfun = lib_.lnr_bind_addr
+        pfun.restype = ctypes.c_char_p
+        pfun.argtypes = (ctypes.c_void_p,)
+        raw = pfun(self.hClient_)
+        return raw.decode("utf-8") if raw else None
+
+    def advertise_addr(self):
+        """Configured advertise string; ``None`` if never set / cleared."""
+        pfun = lib_.lnr_advertise_addr
         pfun.restype = ctypes.c_char_p
         pfun.argtypes = (ctypes.c_void_p,)
         raw = pfun(self.hClient_)

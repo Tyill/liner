@@ -75,6 +75,8 @@ Error <file>:<line>: <message>
 | `lnr_set_log_cb` | Всегда `TRUE`; ставит или сбрасывает (`cb == NULL`) глобальный sink ошибок. |
 | `lnr_list_addresses` | `TRUE` и ноль или более вызовов `lnr_addr_cb` (пустой топик ⇒ без колбэков). `FALSE` + `LNR_ERR_STORE` при ошибке БД. |
 | `lnr_pending_count` | Неотрицательная глубина офлайн-блобов этого sender; `0` если пусто; `-1` при ошибке (тогда смотрите `lnr_last_error_code`). |
+| `lnr_send_queue_depth` | Неотрицательная in-memory глубина sender; `0` если не running / null handle. |
+| `lnr_send_queue_depth_by_peer` | `TRUE` + ноль или более `lnr_queue_cb` (`addr`, count). |
 | `lnr_set_max_message_size` / `lnr_set_compress_threshold` | Процессно-глобально. `FALSE` при `bytes == 0`. Лучше задавать до `run`. |
 | `lnr_set_status_cb` | `TRUE` при валидном handle; `FALSE` при null/неизвестном. Регистрирует или снимает (`cb == NULL`) status callback. |
 | `lnr_send_to`, `lnr_send_all`, subscribe, refresh, clear, … | `FALSE` при логических или I/O ошибках; смотрите **`lnr_last_error_code`** и stderr/log hook. |

@@ -66,6 +66,9 @@ Rules:
 | Getter | While running | After `stop` |
 |--------|---------------|--------------|
 | `unique_name` | Always available | Always available |
+| `topic` | Constructor source topic | Same |
+| `bind_addr` | Constructor TCP bind string | Same (not rewritten by ephemeral bind) |
+| `advertise_addr` | Configured advertise, if set | Same (independent of catalog) |
 | `bound_listen_addr` | Actual local bind address after successful `run` | **Kept** (last successful bind) |
 | `published_addr` | String currently registered in the store | **Cleared** (`NULL` / `None`) |
 
@@ -79,7 +82,7 @@ Every synchronous API call that can fail sets a per-client **last error code**:
 - Rust: `Client::last_error` → `ErrorCode`
 - Python: `last_error_code`
 
-Successful calls clear it to **`LNR_OK`**. There is **no** public getter for the human-readable message string. Detail text still goes to **stderr** by default, or to the process-global **log hook** if installed.
+Successful calls clear it to **`LNR_OK`**. Detail text is available via **`lnr_last_error_message`** / `Client::last_error_message` (bare string), plus **stderr** or the process-global **log hook**.
 
 Full code table and per-function outcomes: [errors-and-logging.md](errors-and-logging.md).
 
@@ -105,6 +108,12 @@ Full code table and per-function outcomes: [errors-and-logging.md](errors-and-lo
 - Depth can **lag** while at-least-once payloads still sit in the sender’s in-memory queues. Typical moments when the store catches up: after a peer is lost, or after **`stop`** (sender teardown flushes to the store).
 
 **`lnr_pending_by_peer` / `Client::pending_by_peer`** walks the same routes and reports **per peer** `(addr, topic, unique_name, count)`. Sum of counts matches `pending_count` when both succeed.
+
+### In-memory send queue
+
+**`lnr_send_queue_depth` / `Client::send_queue_depth`** sums messages waiting in the sender’s **RAM** worklists (what `max_send_queue` / `LNR_ERR_BUSY` constrain). Returns **`0`** if the client is not running. This is **not** the store offline depth.
+
+**`lnr_send_queue_depth_by_peer`** reports `(addr, count)` for known send routes. Sum of counts matches `send_queue_depth` for those routes.
 
 ### Subscriptions and related topics
 

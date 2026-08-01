@@ -315,6 +315,14 @@ impl Liner {
         unsafe { (*self.hclient).pending_by_peer() }
     }
 
+    pub fn send_queue_depth(&self) -> u64 {
+        unsafe { (*self.hclient).send_queue_depth() }
+    }
+
+    pub fn send_queue_depth_by_peer(&self) -> Vec<(String, u64)> {
+        unsafe { (*self.hclient).send_queue_depth_by_peer() }
+    }
+
     pub fn list_subscriptions(&self) -> Vec<String> {
         unsafe { (*self.hclient).list_subscriptions() }
     }
@@ -420,6 +428,18 @@ impl Liner {
 
     pub fn unique_name(&self) -> String {
         unsafe { (*self.hclient).unique_name().to_string() }
+    }
+
+    pub fn topic(&self) -> String {
+        unsafe { (*self.hclient).topic().to_string() }
+    }
+
+    pub fn bind_addr(&self) -> String {
+        unsafe { (*self.hclient).bind_addr().to_string() }
+    }
+
+    pub fn advertise_addr(&self) -> Option<String> {
+        unsafe { (*self.hclient).advertise_addr().map(|s| s.to_string()) }
     }
 }
 
@@ -592,6 +612,8 @@ pub unsafe extern "C" fn lnr_new_client(
     std::hint::black_box(lnr_list_addresses);
     std::hint::black_box(lnr_pending_count);
     std::hint::black_box(lnr_pending_by_peer);
+    std::hint::black_box(lnr_send_queue_depth);
+    std::hint::black_box(lnr_send_queue_depth_by_peer);
     std::hint::black_box(lnr_list_subscriptions);
     std::hint::black_box(lnr_list_related_topics);
     std::hint::black_box(lnr_set_max_message_size);
@@ -611,6 +633,9 @@ pub unsafe extern "C" fn lnr_new_client(
     std::hint::black_box(lnr_stop);
     std::hint::black_box(lnr_is_running);
     std::hint::black_box(lnr_unique_name);
+    std::hint::black_box(lnr_topic);
+    std::hint::black_box(lnr_bind_addr);
+    std::hint::black_box(lnr_advertise_addr);
     std::hint::black_box(lnr_bound_listen_addr);
     std::hint::black_box(lnr_published_addr);
     #[cfg(feature = "postgres")]
@@ -742,6 +767,42 @@ pub unsafe extern "C" fn lnr_pending_by_peer(
                 a.as_ptr(),
                 t.as_ptr(),
                 n.as_ptr(),
+                i64::try_from(count).unwrap_or(i64::MAX),
+                udata,
+            );
+        }
+    }
+    true
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_send_queue_depth(client: *mut Client) -> i64 {
+    if !has_client(client) {
+        return 0;
+    }
+    i64::try_from((*client).send_queue_depth()).unwrap_or(i64::MAX)
+}
+
+pub type QueueCbackC =
+    Option<extern "C" fn(addr: *const i8, count: i64, udata: *mut libc::c_void)>;
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_send_queue_depth_by_peer(
+    client: *mut Client,
+    cb: QueueCbackC,
+    udata: *mut libc::c_void,
+) -> bool {
+    if !has_client(client) {
+        return false;
+    }
+    let rows = (*client).send_queue_depth_by_peer();
+    if let Some(cb) = cb {
+        for (addr, count) in rows {
+            let Ok(a) = CString::new(addr) else { continue };
+            cb(
+                a.as_ptr(),
                 i64::try_from(count).unwrap_or(i64::MAX),
                 udata,
             );
@@ -922,6 +983,33 @@ pub unsafe extern "C" fn lnr_unique_name(client: *mut Client) -> *const i8 {
         return std::ptr::null();
     }
     (*client).unique_name_c_str()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_topic(client: *mut Client) -> *const i8 {
+    if !has_client(client) {
+        return std::ptr::null();
+    }
+    (*client).topic_c_str()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_bind_addr(client: *mut Client) -> *const i8 {
+    if !has_client(client) {
+        return std::ptr::null();
+    }
+    (*client).bind_addr_c_str()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_advertise_addr(client: *mut Client) -> *const i8 {
+    if !has_client(client) {
+        return std::ptr::null();
+    }
+    (*client).advertise_addr_c_str()
 }
 
 /// # Safety
@@ -1123,11 +1211,16 @@ mod tests {
             assert!(!lnr_stop(ptr::null_mut()));
             assert!(!lnr_is_running(ptr::null_mut()));
             assert!(lnr_unique_name(ptr::null_mut()).is_null());
+            assert!(lnr_topic(ptr::null_mut()).is_null());
+            assert!(lnr_bind_addr(ptr::null_mut()).is_null());
+            assert!(lnr_advertise_addr(ptr::null_mut()).is_null());
             assert!(lnr_bound_listen_addr(ptr::null_mut()).is_null());
             assert!(lnr_published_addr(ptr::null_mut()).is_null());
             assert!(!lnr_list_addresses(ptr::null_mut(), ptr::null(), None, ptr::null_mut()));
             assert_eq!(lnr_pending_count(ptr::null_mut()), -1);
             assert!(!lnr_pending_by_peer(ptr::null_mut(), None, ptr::null_mut()));
+            assert_eq!(lnr_send_queue_depth(ptr::null_mut()), 0);
+            assert!(!lnr_send_queue_depth_by_peer(ptr::null_mut(), None, ptr::null_mut()));
             assert!(!lnr_list_subscriptions(ptr::null_mut(), None, ptr::null_mut()));
             assert!(!lnr_list_related_topics(ptr::null_mut(), None, ptr::null_mut()));
             assert!(lnr_last_error_message(ptr::null_mut()).is_null());

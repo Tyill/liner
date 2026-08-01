@@ -223,6 +223,33 @@ impl Sender {
         taken
     }
 
+    /// Total in-memory messages waiting to send (all peer slots). Not store/offline depth.
+    pub fn send_queue_depth(&self) -> u64 {
+        let Ok(mess) = self.messages.lock() else {
+            return 0;
+        };
+        mess.iter()
+            .map(|slot| slot.as_ref().map(|v| v.len() as u64).unwrap_or(0))
+            .sum()
+    }
+
+    /// Per-peer in-memory send queue depth for known routes (`addrs_for`).
+    pub fn send_queue_depth_by_peer(&self) -> Vec<(String, u64)> {
+        let Ok(mess) = self.messages.lock() else {
+            return Vec::new();
+        };
+        let mut rows = Vec::with_capacity(self.addrs_for.len());
+        for (addr, &ix) in &self.addrs_for {
+            let n = mess
+                .get(ix)
+                .and_then(|s| s.as_ref())
+                .map(|v| v.len() as u64)
+                .unwrap_or(0);
+            rows.push((addr.clone(), n));
+        }
+        rows
+    }
+
     /// True when enqueue needs the shared store (unknown addr and/or topic_key).
     pub fn needs_store_for_send(&self, addr_to: &str, listener_topic: &str) -> bool {
         !self.addrs_for.contains_key(addr_to) || !self.topic_keys.contains_key(listener_topic)
