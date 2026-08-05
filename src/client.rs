@@ -17,7 +17,10 @@ use mio::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
 
-pub struct Client{
+/// Heap-stable state. `Client` is a thin `Box` wrapper so moving the handle
+/// after `run` does not invalidate the raw pointer passed to listener threads.
+#[doc(hidden)]
+pub struct ClientRepr {
     unique_name: String,
     /// NUL-terminated copy for C `lnr_unique_name`.
     c_unique_name: CString,
@@ -64,6 +67,25 @@ fn empty_cstr() -> &'static CStr {
     unsafe { CStr::from_bytes_with_nul_unchecked(b"\0") }
 }
 
+/// Public client handle. Internally boxed so `run` may pass a stable `self` pointer
+/// to background listener threads; moving this handle does not move that state.
+pub struct Client {
+    inner: Box<ClientRepr>,
+}
+
+impl std::ops::Deref for Client {
+    type Target = ClientRepr;
+    fn deref(&self) -> &ClientRepr {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for Client {
+    fn deref_mut(&mut self) -> &mut ClientRepr {
+        &mut self.inner
+    }
+}
+
 fn client_fields(
     unique_name: String,
     source_topic: String,
@@ -74,33 +96,35 @@ fn client_fields(
     let c_source_topic = cstring_lossy(&source_topic);
     let c_localhost = cstring_lossy(&localhost);
     Client {
-        unique_name,
-        c_unique_name,
-        source_topic,
-        c_source_topic,
-        localhost,
-        c_localhost,
-        advertise: None,
-        c_advertise: None,
-        db,
-        listener: None,
-        sender: None,
-        last_send_index: HashMap::new(),
-        is_run: false,
-        mtx: Mutex::new(()),
-        address_topic: HashMap::new(),
-        related_topics: HashSet::new(),
-        subscriptions: HashMap::new(),
-        bound_listen_addr: None,
-        c_bound_listen_addr: None,
-        published_addr: None,
-        c_published_addr: None,
-        last_error: ErrorCode::Ok,
-        last_error_msg: String::new(),
-        c_last_error_msg: None,
-        user_receive_cb: None,
-        user_receive_udata: UData::null(),
-        status_emitter: StatusEmitter::new(),
+        inner: Box::new(ClientRepr {
+            unique_name,
+            c_unique_name,
+            source_topic,
+            c_source_topic,
+            localhost,
+            c_localhost,
+            advertise: None,
+            c_advertise: None,
+            db,
+            listener: None,
+            sender: None,
+            last_send_index: HashMap::new(),
+            is_run: false,
+            mtx: Mutex::new(()),
+            address_topic: HashMap::new(),
+            related_topics: HashSet::new(),
+            subscriptions: HashMap::new(),
+            bound_listen_addr: None,
+            c_bound_listen_addr: None,
+            published_addr: None,
+            c_published_addr: None,
+            last_error: ErrorCode::Ok,
+            last_error_msg: String::new(),
+            c_last_error_msg: None,
+            user_receive_cb: None,
+            user_receive_udata: UData::null(),
+            status_emitter: StatusEmitter::new(),
+        }),
     }
 }
 
@@ -239,6 +263,12 @@ impl Client {
         ))
     }
 
+    pub fn new(unique_name: &str, topic: &str, localhost: &str, redis_path: &str) -> Option<Client> {
+        Client::new_redis(unique_name, topic, localhost, redis_path)
+    }
+}
+
+impl ClientRepr {
     pub fn last_error(&self) -> ErrorCode {
         self.last_error
     }
@@ -367,10 +397,6 @@ impl Client {
             .set_callback(cb, udata);
     }
 
-    /// Backward compatible: same as [`Client::new_redis`].
-    pub fn new(unique_name: &str, topic: &str, localhost: &str, redis_path: &str) -> Option<Client> {
-        Self::new_redis(unique_name, topic, localhost, redis_path)
-    }
     pub fn run(&mut self, receive_cb: UCbackIntern, udata: UData) -> bool {
         let client_ptr = std::ptr::from_mut(self);
         let _lock = self.mtx.lock();
@@ -1158,7 +1184,7 @@ extern "C" fn client_receive_wrapper(
     dsize: usize,
     udata: *mut libc::c_void,
 ) {
-    let client = udata as *mut Client;
+    let client = udata as *mut ClientRepr;
     if client.is_null() {
         return;
     }
@@ -1181,7 +1207,7 @@ extern "C" fn client_receive_wrapper(
     }
 }
 
-fn apply_internal_channel_event(client: &mut Client, data: &[u8]) {
+fn apply_internal_channel_event(client: &mut ClientRepr, data: &[u8]) {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) else {
         return;
     };
@@ -1399,7 +1425,7 @@ fn str_to_socket_addr(localhost: &str) -> Option<SocketAddr> {
     }
 }
 
-impl Drop for Client {
+impl Drop for ClientRepr {
     fn drop(&mut self) {
         let _ = self.stop();
     }
@@ -1496,6 +1522,8 @@ mod tests {
 
     #[test]
     fn send_rejects_empty_or_oversized_payload() {
+        let _run_lock = client_run_test_lock();
+        let _limits = crate::settings::test_limits_lock();
         let mut c = Client::new_sqlite("u_max", "t_max", "127.0.0.1:0", ":memory:", "")
             .expect("sqlite client");
         assert!(c.run(recv_noop, UData::null()));
@@ -1837,8 +1865,8 @@ mod tests {
         )
         .expect("client");
         assert!(client.run(recv_noop, UData::null()));
-        apply_internal_channel_event(&mut client, b"not-json");
-        apply_internal_channel_event(&mut client, br#"{"topic":"x"}"#);
+        apply_internal_channel_event(&mut *client, b"not-json");
+        apply_internal_channel_event(&mut *client, br#"{"topic":"x"}"#);
         drop(client);
     }
 
@@ -1879,7 +1907,7 @@ mod tests {
             UData(raw_called as *mut libc::c_void),
         ));
 
-        let client_ptr = &mut client as *mut Client as *mut libc::c_void;
+        let client_ptr = &mut *client as *mut ClientRepr as *mut libc::c_void;
         let internal_to = std::ffi::CString::new(INTERNAL_CHANNEL_TOPIC).unwrap();
         let app_to = std::ffi::CString::new(topic.as_str()).unwrap();
         let from = std::ffi::CString::new("peer").unwrap();
@@ -2083,7 +2111,7 @@ mod tests {
         assert!(client.run(recv_noop, UData::null()));
 
         let payload = br#"{"event":"client_disconnected","client":"other","topic":"not_related_topic"}"#;
-        apply_internal_channel_event(&mut client, payload);
+        apply_internal_channel_event(&mut *client, payload);
         assert!(
             unsafe { (*raw).kinds.lock().unwrap().is_empty() },
             "unrelated peer events must not reach status callback"
@@ -2123,7 +2151,7 @@ mod tests {
         let payload = format!(
             r#"{{"event":"client_disconnected","client":"peer_x","topic":"{peer_topic}"}}"#
         );
-        apply_internal_channel_event(&mut client, payload.as_bytes());
+        apply_internal_channel_event(&mut *client, payload.as_bytes());
         let events = unsafe { (*raw).kinds.lock().unwrap().clone() };
         assert!(
             events.iter().any(|(k, t, p)| {
@@ -2196,7 +2224,7 @@ mod tests {
             .insert(listener_topic.clone(), vec![peer_addr.clone()]);
         mark_related_topic(&mut sender.related_topics, &listener_topic);
 
-        for _ in 0..80 {
+        for _ in 0..160 {
             let _ = sender.send_to(&listener_topic, b"again", false);
             let hit = unsafe {
                 (*raw).kinds.lock().unwrap().iter().any(|(k, _, _)| {
