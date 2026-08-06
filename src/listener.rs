@@ -422,7 +422,7 @@ fn read_stream(token: Token,
     let receive_thread_cvar = receive_thread_cvar.clone();
 
     rayon::spawn(move || {           
-        let mut mess_buff: Vec<Message> = Vec::new();      
+        let mut mess_buff: Vec<Message> = Vec::with_capacity(settings::LISTENER_RECEIVE_FLUSH_BATCH);      
         let mut last_mess_num = 0;
         if let Ok(senders) = senders.lock(){
             if let Some(sender) = senders.get(token.0) {
@@ -466,35 +466,27 @@ fn read_stream(token: Token,
                 if mess.number_mess > last_mess_num{
                     last_mess_num = mess.number_mess;
                     mess_buff.push(mess);
+                    if mess_buff.len() >= settings::LISTENER_RECEIVE_FLUSH_BATCH {
+                        flush_received_messages(
+                            token.0,
+                            &mut mess_buff,
+                            &messages,
+                            &receive_thread_cvar,
+                            &mempool,
+                        );
+                    }
                 }else{
                     mess.free(&mempool);
                 }
             }
         }
-        if !mess_buff.is_empty(){
-            let (lock, cvar) = &*receive_thread_cvar;
-            if let Ok(mut _started) = lock.lock(){
-                if let Ok(mut mess_lock) = messages.lock(){
-                    if let Some(slot) = mess_lock.get_mut(token.0) {
-                        if let Some(mess_for_receive) = slot.as_mut() {
-                            mess_for_receive.append(&mut mess_buff);
-                        } else {
-                            *slot = Some(mess_buff);
-                        }
-                    } else {
-                        print_error!(&format!("read_stream: messages index out of bounds for token {}", token.0));
-                        // Free to avoid leaking mempool allocations.
-                        for m in mess_buff.drain(..) {
-                            m.free(&mempool);
-                        }
-                    }
-                }
-                // Always wake: skipping notify when *_started is already true can miss
-                // the receive thread entering wait_timeout → ~LISTENER wait spikes.
-                *_started = true;
-                cvar.notify_one();
-            }
-        }
+        flush_received_messages(
+            token.0,
+            &mut mess_buff,
+            &messages,
+            &receive_thread_cvar,
+            &mempool,
+        );
         if let Ok(mut senders) = senders.lock(){
             if let Some(sender) = senders.get_mut(token.0){
                 sender.last_mess_num_preview = last_mess_num;
@@ -656,6 +648,39 @@ impl Drop for Listener {
         if let Err(err) = self.stream_thread.take().unwrap().join(){
             print_error!(&format!("stream_thread.join, {:?}", err));
         }
+    }
+}
+
+fn flush_received_messages(
+    token: usize,
+    mess_buff: &mut Vec<Message>,
+    messages: &Arc<Mutex<MessList>>,
+    receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>,
+    mempool: &Arc<Mutex<Mempool>>,
+) {
+    if mess_buff.is_empty() {
+        return;
+    }
+    let (lock, cvar) = &**receive_thread_cvar;
+    if let Ok(mut started) = lock.lock() {
+        if let Ok(mut mess_lock) = messages.lock() {
+            if let Some(slot) = mess_lock.get_mut(token) {
+                if let Some(mess_for_receive) = slot.as_mut() {
+                    mess_for_receive.append(mess_buff);
+                } else {
+                    *slot = Some(std::mem::take(mess_buff));
+                }
+            } else {
+                print_error!(&format!("read_stream: messages index out of bounds for token {}", token));
+                for m in mess_buff.drain(..) {
+                    m.free(mempool);
+                }
+            }
+        }
+        // Always wake: skipping notify when *started is already true can miss
+        // the receive thread entering wait_timeout → ~LISTENER wait spikes.
+        *started = true;
+        cvar.notify_one();
     }
 }
 

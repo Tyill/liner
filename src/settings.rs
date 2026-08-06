@@ -5,6 +5,9 @@ pub const INTERNAL_CHANNEL_TOPIC: &str = "__#internal_channel";
 
 pub const WRITE_BUFFER_CAPASITY: usize = 64 * 1024;
 pub const READ_BUFFER_CAPASITY: usize = 64 * 1024;
+/// Flush read messages to the receive thread (and wake it) every N messages so
+/// a large burst does not delay delivery until the whole stream drain finishes.
+pub const LISTENER_RECEIVE_FLUSH_BATCH: usize = 1000;
 pub const BYTESTREAM_READ_BUFFER_SIZE: usize = 8 * 1024;
 pub const BYTESTREAM_WRITE_BUFFER_SIZE: usize = 8 * 1024;
 /// Default max framed message size (also initial value of [`max_message_size`]).
