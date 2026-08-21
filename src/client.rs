@@ -961,6 +961,7 @@ impl ClientRepr {
     }
 
     /// App-facing subscriptions (excludes `__#internal_channel`).
+    #[cfg(test)]
     pub(crate) fn list_subscriptions(&self) -> Vec<String> {
         let _lock = self.mtx.lock();
         self.subscriptions
@@ -971,6 +972,7 @@ impl ClientRepr {
     }
 
     /// Topics this client has sent to, subscribed to, or refreshed (status peer filter).
+    #[cfg(test)]
     pub(crate) fn list_related_topics(&self) -> Vec<String> {
         let _lock = self.mtx.lock();
         self.related_topics.iter().cloned().collect()
@@ -1015,6 +1017,7 @@ impl ClientRepr {
     }
 
     /// Total in-memory sender queue depth (not store/offline). `0` if not running.
+    #[cfg(test)]
     pub(crate) fn send_queue_depth(&self) -> u64 {
         let _lock = self.mtx.lock();
         match &self.sender {
@@ -1024,6 +1027,7 @@ impl ClientRepr {
     }
 
     /// Per-peer in-memory sender queue depths for known routes. Empty if not running.
+    #[cfg(test)]
     pub(crate) fn send_queue_depth_by_peer(&self) -> Vec<(String, u64)> {
         let _lock = self.mtx.lock();
         match &self.sender {

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Reserved topic for broker-internal events (client connect/disconnect, subscribe/unsubscribe).
 pub const INTERNAL_CHANNEL_TOPIC: &str = "__#internal_channel";
@@ -36,8 +36,6 @@ static MAX_MESSAGE_SIZE: AtomicUsize = AtomicUsize::new(BYTESTREAM_MAX_MESSAGE_S
 static COMPRESS_THRESHOLD: AtomicUsize = AtomicUsize::new(MIN_SIZE_DATA_FOR_COMPRESS_BYTE);
 /// 0 = unlimited (default).
 static MAX_SEND_QUEUE: AtomicUsize = AtomicUsize::new(0);
-static STREAM_CHECK_TIMEOUT_MS: AtomicU64 = AtomicU64::new(CHECK_AVAILABLE_STREAM_TIMEOUT_MS);
-static WOULD_BLOCK_TIMEOUT_MS: AtomicU64 = AtomicU64::new(BYTESTREAM_WOULD_BLOCK_TIMEOUT_MS);
 
 pub fn max_message_size() -> usize {
     MAX_MESSAGE_SIZE.load(Ordering::Relaxed)
@@ -75,36 +73,10 @@ pub fn set_max_send_queue(n: usize) -> bool {
     true
 }
 
-pub fn stream_check_timeout_ms() -> u64 {
-    STREAM_CHECK_TIMEOUT_MS.load(Ordering::Relaxed)
-}
-
-/// Returns false if `ms == 0`.
-pub fn set_stream_check_timeout_ms(ms: u64) -> bool {
-    if ms == 0 {
-        return false;
-    }
-    STREAM_CHECK_TIMEOUT_MS.store(ms, Ordering::Relaxed);
-    true
-}
-
-pub fn would_block_timeout_ms() -> u64 {
-    WOULD_BLOCK_TIMEOUT_MS.load(Ordering::Relaxed)
-}
-
-/// Returns false if `ms == 0`.
-pub fn set_would_block_timeout_ms(ms: u64) -> bool {
-    if ms == 0 {
-        return false;
-    }
-    WOULD_BLOCK_TIMEOUT_MS.store(ms, Ordering::Relaxed);
-    true
-}
-
 #[cfg(test)]
 static LIMITS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Serialize tests that mutate process-global size / compress / queue / timeout limits.
+/// Serialize tests that mutate process-global size / compress / queue limits.
 #[cfg(test)]
 pub fn test_limits_lock() -> std::sync::MutexGuard<'static, ()> {
     LIMITS_TEST_LOCK

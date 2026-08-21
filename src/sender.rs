@@ -224,6 +224,7 @@ impl Sender {
     }
 
     /// Total in-memory messages waiting to send (all peer slots). Not store/offline depth.
+    #[cfg(test)]
     pub(crate) fn send_queue_depth(&self) -> u64 {
         let Ok(mess) = self.messages.lock() else {
             return 0;
@@ -234,6 +235,7 @@ impl Sender {
     }
 
     /// Per-peer in-memory send queue depth for known routes (`addrs_for`).
+    #[cfg(test)]
     pub(crate) fn send_queue_depth_by_peer(&self) -> Vec<(String, u64)> {
         let Ok(mess) = self.messages.lock() else {
             return Vec::new();
@@ -594,7 +596,9 @@ fn check_writable_messages(streams: &WriteStreamList, messages: &Arc<Mutex<MessL
 }
 
 fn check_available_stream(is_new_addr: &Arc<AtomicBool>, ctime: u64, prev_time: &mut u64)->bool{
-    if is_new_addr.load(Ordering::Relaxed) || (ctime - *prev_time) > settings::stream_check_timeout_ms(){
+    if is_new_addr.load(Ordering::Relaxed)
+        || (ctime - *prev_time) > settings::CHECK_AVAILABLE_STREAM_TIMEOUT_MS
+    {
         is_new_addr.store(false, Ordering::Relaxed);
         *prev_time = ctime;
         true
