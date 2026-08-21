@@ -75,7 +75,16 @@
 | Тайминг ack | Listener сбрасывает ack в хранилище с шагом **~1 с** (`UPDATE_LAST_MESS_NUMBER_TIMEOUT_MS`). |
 | Изолированный SQLite (разный путь у процессов) | **Не** используйте **`at_least_once_delivery == true`** для межпировых отправок, если не готовы к неограниченному RAM / рассинхрону ack; используйте **`false`** или **общий** файл каталога. |
 
-## Дополнительное чтение
+## Проверка глубины очереди через API
 
-- [using-the-api.md](using-the-api.md) — `at_least_once_delivery` в C/Rust API.  
+**`lnr_pending_count` / `Client::pending_count`** суммирует офлайн-блобы для **этой идентичности sender’а**, обходя сохранённых listener’ов → `connection_key` → длину очереди в хранилище.
+
+- Возвращает **`0`**, если ничего не ожидает.
+- Глубина может **отставать**, пока сообщения at-least-once ещё только в очередях sender’а в памяти. После потери пира или **`stop`** (который сбрасывает через teardown sender’а) представление в store обычно догоняет.
+- Детали и коды ошибок: [using-the-api.md](using-the-api.md), [errors-and-logging.md](errors-and-logging.md).
+
+## См. также
+
+- [using-the-api.md](using-the-api.md) — `at_least_once_delivery`, `pending_count`, `stop`.
 - [backends.md](backends.md) — где лежат очереди и счётчики (ключи Redis / таблицы SQLite).
+- [routing-and-store-layout.md](routing-and-store-layout.md) — имена ключей и таблиц для операторов.

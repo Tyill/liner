@@ -1,34 +1,71 @@
 # Capacity, limits, and tuning constants
 
-All numeric constants live in **`src/settings.rs`** unless stated otherwise. This is a **sizing guide** for integrators, not a guarantee of every edge case in the code.
+All numeric defaults live in **`src/settings.rs`** unless stated otherwise. This is a **sizing guide** for integrators, not a guarantee of every edge case in the code.
+
+Two limits are also **runtime-tunable** through the public API (crate **1.4.0**): maximum framed message size, and the zstd compression threshold. Prefer setting them **before** `run`.
+
+Related:
+
+- [using-the-api.md](using-the-api.md) — when to call the setters
+- [errors-and-logging.md](errors-and-logging.md) — invalid `0` values return `FALSE`
+- [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md) — offline queues and timeouts
 
 ---
 
 ## Hard cap: single framed message on the wire
 
-**`BYTESTREAM_MAX_MESSAGE_SIZE`** (default **1 GiB**, `1024 * 1024 * 1024`)
+### Default and runtime API
 
-- Each TCP frame starts with a **4-byte big-endian `u32` length**, then payload (`bytestream::read_stream`).
-- If the declared length is **0** or **greater than `BYTESTREAM_MAX_MESSAGE_SIZE`**, the reader logs an error and treats the stream as **shut down** (`is_shutdown` path): no message is returned.
-- Payload is allocated in the connection’s **mempool** (`mempool.alloc(msg_len)`). A malicious or buggy peer advertising a length close to the cap can force a **very large RAM reservation** on the receiver.
+| Item | Value / API |
+|------|-------------|
+| Compile-time default constant | `BYTESTREAM_MAX_MESSAGE_SIZE` = **1 GiB** (`1024 * 1024 * 1024`) |
+| Runtime value | `settings::max_message_size()` |
+| C | `lnr_get_max_message_size` / `lnr_set_max_message_size` |
+| Rust | `settings::max_message_size` / `set_max_message_size`, also on `Liner` |
+| Python | `get_max_message_size` / `set_max_message_size` |
 
-**Practical limit:** treat **~1 GiB per framed read** as the library’s configured ceiling; the **`u32` header** allows up to 4 GiB in principle, but this constant is the enforced bound.
+`lnr_set_max_message_size(0)` (and the Rust/Python equivalents) return **`FALSE` / `false`**. Non-zero values are accepted.
 
-Smaller internal I/O buffers (**`BYTESTREAM_READ_BUFFER_SIZE`** / **`BYTESTREAM_WRITE_BUFFER_SIZE`**, default **8 KiB**) only control **chunking** of reads/writes, not the maximum message size.
+Prefer setting the limit **before** `run`. Changing it later is allowed, but only **new** framed reads/writes observe the new value; in-flight frames are unaffected.
+
+**Send path:** `send_to` / `send_all` reject early with **`LNR_ERR_INVALID_ARG`** if the payload is **empty**, or if the **uncompressed** framed message body (message header + payload length + payload) would exceed the runtime max. Compression can only shrink the body, so the size check is conservative before routing or enqueue.
+
+### How enforcement works
+
+- Each TCP frame starts with a **4-byte big-endian `u32` length**, then the payload (`bytestream::read_stream`).
+- If the declared length is **0** or **greater than the runtime max**, the reader logs an error and treats the stream as **shut down** (`is_shutdown` path): no message is returned to the application.
+- Payload bytes are allocated in the connection’s **mempool** (`mempool.alloc(msg_len)`). A malicious or buggy peer advertising a length close to the cap can force a **very large RAM reservation** on the receiver.
+
+**Practical ceiling:** treat **~1 GiB per framed read** as the default limit. The `u32` header could express up to 4 GiB in principle, but the runtime max is the enforced bound.
+
+Smaller internal I/O buffers (`BYTESTREAM_READ_BUFFER_SIZE` / `BYTESTREAM_WRITE_BUFFER_SIZE`, default **8 KiB**) only control **chunking** of reads/writes. They do **not** change the maximum message size.
+
+**DoS / untrusted peers:** the length header is untrusted. Lower `lnr_set_max_message_size` before `run` if 1 GiB is unacceptable for your deployment.
 
 ---
 
 ## Optional payload compression (zstd)
 
-**`MIN_SIZE_DATA_FOR_COMPRESS_BYTE`** (default **1 MiB**, `1024 * 1024`)
+### Default and runtime API
 
-- In **`Message::new`**, if **`data.len() > MIN_SIZE_DATA_FOR_COMPRESS_BYTE`** (strictly **greater than** 1 MiB), the implementation tries **`zstd::stream::encode_all`**.
+| Item | Value / API |
+|------|-------------|
+| Compile-time default constant | `MIN_SIZE_DATA_FOR_COMPRESS_BYTE` = **1 MiB** (`1024 * 1024`) |
+| Runtime value | `settings::compress_threshold()` |
+| C | `lnr_get_compress_threshold` / `lnr_set_compress_threshold` |
+| Rust / Python | matching getters/setters on settings / `Liner` / module helpers |
+
+`0` is rejected (`FALSE` / `false`). Prefer set **before** `run`; later changes apply to new `Message::new` calls only.
+
+### Behavior
+
+- In **`Message::new`**, if **`data.len() > compress_threshold()`** (strictly greater), the implementation tries **`zstd::stream::encode_all`**.
 - On success, the wire message stores **compressed bytes** and sets a **`COMPRESS`** flag so **`get_data`** decompresses on the listener.
-- Payloads **≤ 1 MiB** are sent **uncompressed** regardless of compressibility.
+- Payloads **≤ threshold** are sent **uncompressed** regardless of compressibility.
 
-**`DATA_COMPRESS_LEVEL`** (default **`0`**) — passed to zstd; level **`0`** means “use zstd’s default” (documented in-code as currently similar to level **3**).
+**`DATA_COMPRESS_LEVEL`** (default **`0`**) is passed to zstd. Level **`0`** means “use zstd’s default” (documented in-code as currently similar to level **3**).
 
-Compression is **best-effort**: if encoding fails, the code logs and may still mark the message compressed with an **empty** compressed payload—callers should treat compression as an optimization, not a substitute for application-level integrity checks.
+Compression is **best-effort**: if encoding fails, the code logs and may still mark the message compressed with an **empty** compressed payload. Treat compression as an optimization, not a substitute for application-level integrity checks.
 
 ---
 
@@ -66,18 +103,21 @@ These affect syscall batching, not the logical max message size.
 
 ## Short sizing checklist
 
-1. **Per message:** application payload ≤ **1 MiB** → no zstd attempt; **> 1 MiB** → zstd may run (CPU cost, smaller wire if data is compressible).
-2. **Per framed TCP message:** declared length must be **≤ `BYTESTREAM_MAX_MESSAGE_SIZE`** (1 GiB default) or the connection is aborted for that read path.
-3. **RAM:** plan for **peak concurrent messages × mempool footprint** per active connection (listener + sender each use mempools for their worklists). Add headroom for **fragmentation** (allocator may keep extra chunks when the 20% rule blocks merging).
-4. **Disk / Redis memory:** **at-least-once** offline queues store **encoded** message blobs; size ≈ wire size (compressed if compression was used).
-5. **DoS / untrusted peers:** the length header is untrusted; cap expectations at the network boundary or use a smaller maximum at the application layer if 1 GiB is unacceptable.
+1. **Per application payload:** size ≤ compression threshold (1 MiB default) → no zstd attempt; **above threshold** → zstd may run (CPU cost; smaller wire if data is compressible).
+2. **Per framed TCP message:** declared length must be **≤ runtime `max_message_size`** (1 GiB default) or the connection is aborted for that read path.
+3. **RAM:** plan for **peak concurrent messages × mempool footprint** per active connection (listener and sender each use mempools for their worklists). Add headroom for **fragmentation** (the allocator may keep extra chunks when the 20% rule blocks merging).
+4. **Disk / Redis memory:** **at-least-once** offline queues store **encoded** message blobs; size ≈ wire size (compressed if compression was used). Use **`lnr_pending_count`** / **`lnr_pending_by_peer`** for offline depth.
+5. **DoS / untrusted peers:** lower **`lnr_set_max_message_size`** before `run` if the default 1 GiB cap is too high. Cap in-memory send queues with **`lnr_set_max_send_queue`** when producers can outrun drains.
+
+### Send queue and timeouts
+
+- **`max_send_queue`** (default **`0` = unlimited**): max in-memory messages **per peer slot**. Full queue → `LNR_ERR_BUSY` / `LNR_SENDER_BUSY`.
+- Stream-check / would-block timeouts default to 10 s (crate constants; not runtime-tunable on the public API).
 
 ---
 
 ## Related
 
-- [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md) — persistence and `number_mess`.  
-- [routing-and-store-layout.md](routing-and-store-layout.md) — where queued payloads live in Redis/SQLite.  
+- [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md) — persistence and `number_mess`.
+- [routing-and-store-layout.md](routing-and-store-layout.md) — where queued payloads live in Redis/SQLite.
 - [operations-redis-sqlite.md](operations-redis-sqlite.md) — backing-store operations.
-
-Constants for timeouts (`CHECK_AVAILABLE_STREAM_TIMEOUT_MS`, etc.) are documented in [offline-delivery-and-message-numbers.md](offline-delivery-and-message-numbers.md).

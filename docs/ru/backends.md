@@ -63,6 +63,7 @@
 
 ## См. также
 
-- [store-startup-failure-semantics.md](store-startup-failure-semantics.md) — клиент и listener/sender при открытии хранилища на `run`.  
-- [routing-and-store-layout.md](routing-and-store-layout.md) — имена ключей Redis и таблицы SQLite (для отладки и бэкапов).  
-- [operations-redis-sqlite.md](operations-redis-sqlite.md) — политика префикса, `clear_*`, Redis 6.2+, WAL и бэкап SQLite.
+- [store-startup-failure-semantics.md](store-startup-failure-semantics.md) — listener/sender разделяют store клиента; `run` возвращает `false` + `LNR_ERR_STARTUP` при сбое listener (без panic).
+- [using-the-api.md](using-the-api.md) — bind vs advertise, `published_addr`, stop/restart, интроспекция.
+- [routing-and-store-layout.md](routing-and-store-layout.md) — ключи Redis и SQL-таблицы (SQLite / PostgreSQL).
+- [operations-redis-sqlite.md](operations-redis-sqlite.md) — политика префикса, `clear_*`, Redis 6.2+, WAL SQLite, заметки по бэкапу PostgreSQL.

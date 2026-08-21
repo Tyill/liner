@@ -10,7 +10,9 @@
 cargo build --release --features liner_debug
 ```
 
-Сейчас **`print_debug!`** используется лишь в нескольких местах (например неудачные TCP-подключения в sender и часть путей listener). Это **не** замена структурированному логированию; **`print_error!`** по-прежнему пишет в **stderr** независимо от этого флага (см. [errors-and-logging.md](errors-and-logging.md)).
+Сейчас **`print_debug!`** используется лишь в нескольких местах (например неудачные TCP-подключения в sender и часть путей listener). Это **не** замена структурированному логированию.
+
+**`print_error!`** по-прежнему выводит обычную строку `Error file:line: …` независимо от `liner_debug`. По умолчанию это **stderr**; перенаправить можно процессно-глобальным **log hook** (`lnr_set_log_cb` / Python `set_log_callback`). Сбои синхронизации также выставляют **`lnr_last_error_code`**. См. [errors-and-logging.md](errors-and-logging.md).
 
 ## Модульные тесты
 

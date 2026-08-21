@@ -75,7 +75,16 @@ Together, **`number_mess`** plus the stored **last acknowledged number per `conn
 | Ack timing | Listener flushes acks to the store on a **~1 s** cadence (`UPDATE_LAST_MESS_NUMBER_TIMEOUT_MS`). |
 | Isolated SQLite (different path per process) | Do **not** use **`at_least_once_delivery == true`** for cross-peer sends unless you accept unbounded RAM / wrong ack sync; use **`false`** or a **shared** catalog file. |
 
+## Inspecting pending depth from the API
+
+**`lnr_pending_count` / `Client::pending_count`** sums offline blobs for **this sender identity** by walking saved listeners → `connection_key` → queue length in the store.
+
+- Returns **`0`** when nothing is pending.
+- Depth can **lag** while at-least-once messages still sit only in the sender’s in-memory queues. After peer loss or **`stop`** (which flushes via sender teardown), the store view usually catches up.
+- Details and error codes: [using-the-api.md](using-the-api.md), [errors-and-logging.md](errors-and-logging.md).
+
 ## Related reading
 
-- [using-the-api.md](using-the-api.md) — `at_least_once_delivery` on C/Rust APIs.
+- [using-the-api.md](using-the-api.md) — `at_least_once_delivery`, `pending_count`, `stop`.
 - [backends.md](backends.md) — where queues and counters live (Redis keys / SQLite tables).
+- [routing-and-store-layout.md](routing-and-store-layout.md) — key/table names for operators.

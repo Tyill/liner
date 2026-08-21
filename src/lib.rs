@@ -36,9 +36,20 @@ pub use store::redis;
 mod status;
 pub use status::{
     StatusCbackIntern, StatusEmitter, StatusMsg, LNR_LISTENER_STORE_ERROR, LNR_PEER_CONNECTED,
-    LNR_PEER_DISCONNECTED, LNR_PEER_SUBSCRIBED, LNR_PEER_UNSUBSCRIBED, LNR_SENDER_ROUTE_LOST,
-    LNR_SENDER_SEND_ERROR, LNR_SENDER_STORE_ERROR,
+    LNR_PEER_DISCONNECTED, LNR_PEER_SUBSCRIBED, LNR_PEER_UNSUBSCRIBED, LNR_SENDER_BUSY,
+    LNR_SENDER_ROUTE_LOST, LNR_SENDER_SEND_ERROR, LNR_SENDER_STORE_ERROR,
 };
+
+mod error;
+pub use error::ErrorCode;
+
+/// Crate version string (same as `lnr_version` / `CARGO_PKG_VERSION`).
+pub fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+mod log;
+pub use log::set_log_cb;
 
 mod client;
 pub use client::Client;
@@ -228,6 +239,87 @@ impl Liner {
         }
     }
 
+    pub fn last_error_code(&self) -> i32 {
+        unsafe { lnr_last_error_code(self.hclient) }
+    }
+
+    pub fn last_error_message(&self) -> String {
+        unsafe {
+            let p = lnr_last_error_message(self.hclient);
+            if p.is_null() {
+                return String::new();
+            }
+            CStr::from_ptr(p).to_string_lossy().into_owned()
+        }
+    }
+
+    pub fn version() -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+
+    pub fn set_log_callback(cb: Option<extern "C" fn(*const i8, *mut libc::c_void)>, udata: *mut libc::c_void) {
+        unsafe {
+            lnr_set_log_cb(cb, udata);
+        }
+    }
+
+    pub fn set_max_message_size(bytes: usize) -> bool {
+        unsafe { lnr_set_max_message_size(bytes) }
+    }
+
+    pub fn max_message_size() -> usize {
+        unsafe { lnr_get_max_message_size() }
+    }
+
+    pub fn set_compress_threshold(bytes: usize) -> bool {
+        unsafe { lnr_set_compress_threshold(bytes) }
+    }
+
+    pub fn compress_threshold() -> usize {
+        unsafe { lnr_get_compress_threshold() }
+    }
+
+    pub fn set_max_send_queue(n: usize) -> bool {
+        unsafe { lnr_set_max_send_queue(n) }
+    }
+
+    pub fn max_send_queue() -> usize {
+        unsafe { lnr_get_max_send_queue() }
+    }
+
+    pub fn list_addresses(&mut self, topic: &str) -> Option<Vec<(String, String)>> {
+        unsafe { (*self.hclient).list_addresses(topic) }
+    }
+
+    pub fn pending_count(&mut self) -> Option<u64> {
+        unsafe { (*self.hclient).pending_count() }
+    }
+
+    pub fn pending_by_peer(&mut self) -> Option<Vec<(String, String, String, u64)>> {
+        unsafe { (*self.hclient).pending_by_peer() }
+    }
+
+    /// Address published to the store instead of the bind string. `None` clears.
+    pub fn set_advertise_addr(&mut self, addr: Option<&str>) -> bool {
+        unsafe {
+            match addr {
+                None => lnr_set_advertise_addr(self.hclient, std::ptr::null()),
+                Some(s) => {
+                    let c = cstring_or_empty(s);
+                    lnr_set_advertise_addr(self.hclient, c.as_ptr())
+                }
+            }
+        }
+    }
+
+    pub fn stop(&mut self) -> bool {
+        unsafe { lnr_stop(self.hclient) }
+    }
+
+    pub fn is_running(&self) -> bool {
+        unsafe { lnr_is_running(self.hclient) }
+    }
+
     pub fn run(&mut self, ucback: UCback)->bool{        
         unsafe{
             self.ucback = Some(ucback);
@@ -292,12 +384,18 @@ impl Liner {
     }
 
     /// After a successful [`Liner::run`], the resolved bind address (e.g. when `localhost` used port `0`).
+    /// Kept after [`Liner::stop`].
     pub fn bound_listen_addr(&self) -> Option<String> {
         unsafe { (*self.hclient).bound_listen_addr().map(|s| s.to_string()) }
     }
 
-    pub fn unique_name(&self) -> String {
-        unsafe { (*self.hclient).unique_name().to_string() }
+    /// Catalog address while registered; `None` after stop.
+    pub fn published_addr(&self) -> Option<String> {
+        unsafe { (*self.hclient).published_addr().map(|s| s.to_string()) }
+    }
+
+    pub fn advertise_addr(&self) -> Option<String> {
+        unsafe { (*self.hclient).advertise_addr().map(|s| s.to_string()) }
     }
 }
 
@@ -466,6 +564,25 @@ pub unsafe extern "C" fn lnr_new_client(
     std::hint::black_box(lnr_new_client_redis);
     std::hint::black_box(lnr_new_client_sqlite);
     std::hint::black_box(lnr_set_status_cb);
+    std::hint::black_box(lnr_set_log_cb);
+    std::hint::black_box(lnr_list_addresses);
+    std::hint::black_box(lnr_pending_count);
+    std::hint::black_box(lnr_pending_by_peer);
+    std::hint::black_box(lnr_set_max_message_size);
+    std::hint::black_box(lnr_get_max_message_size);
+    std::hint::black_box(lnr_set_compress_threshold);
+    std::hint::black_box(lnr_get_compress_threshold);
+    std::hint::black_box(lnr_set_max_send_queue);
+    std::hint::black_box(lnr_get_max_send_queue);
+    std::hint::black_box(lnr_last_error_code);
+    std::hint::black_box(lnr_last_error_message);
+    std::hint::black_box(lnr_version);
+    std::hint::black_box(lnr_set_advertise_addr);
+    std::hint::black_box(lnr_stop);
+    std::hint::black_box(lnr_is_running);
+    std::hint::black_box(lnr_advertise_addr);
+    std::hint::black_box(lnr_bound_listen_addr);
+    std::hint::black_box(lnr_published_addr);
     #[cfg(feature = "postgres")]
     {
         std::hint::black_box(lnr_new_client_postgres);
@@ -506,6 +623,228 @@ pub unsafe extern "C" fn lnr_set_status_cb(
     }
     (*client).set_status_cb(cb, UData(udata));
     true
+}
+
+pub type LogCbackC = Option<extern "C" fn(message: *const i8, udata: *mut libc::c_void)>;
+pub type AddrCbackC =
+    Option<extern "C" fn(addr: *const i8, unique_name: *const i8, udata: *mut libc::c_void)>;
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_set_log_cb(cb: LogCbackC, udata: *mut libc::c_void) -> bool {
+    set_log_cb(cb, UData(udata));
+    true
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_list_addresses(
+    client: *mut Client,
+    topic: *const i8,
+    cb: AddrCbackC,
+    udata: *mut libc::c_void,
+) -> bool {
+    if !has_client(client) {
+        return false;
+    }
+    if topic.is_null() {
+        print_error!("null pointer argument");
+        return false;
+    }
+    let Ok(topic) = CStr::from_ptr(topic).to_str() else {
+        return false;
+    };
+    let Some(rows) = (*client).list_addresses(topic) else {
+        return false;
+    };
+    if let Some(cb) = cb {
+        for (addr, name) in rows {
+            let Ok(a) = CString::new(addr) else { continue };
+            let Ok(n) = CString::new(name) else { continue };
+            cb(a.as_ptr(), n.as_ptr(), udata);
+        }
+    }
+    true
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_pending_count(client: *mut Client) -> i64 {
+    if !has_client(client) {
+        return -1;
+    }
+    match (*client).pending_count() {
+        Some(n) => i64::try_from(n).unwrap_or(i64::MAX),
+        None => -1,
+    }
+}
+
+pub type PendingCbackC = Option<
+    extern "C" fn(
+        addr: *const i8,
+        topic: *const i8,
+        unique_name: *const i8,
+        count: i64,
+        udata: *mut libc::c_void,
+    ),
+>;
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_pending_by_peer(
+    client: *mut Client,
+    cb: PendingCbackC,
+    udata: *mut libc::c_void,
+) -> bool {
+    if !has_client(client) {
+        return false;
+    }
+    let Some(rows) = (*client).pending_by_peer() else {
+        return false;
+    };
+    if let Some(cb) = cb {
+        for (addr, topic, name, count) in rows {
+            let Ok(a) = CString::new(addr) else { continue };
+            let Ok(t) = CString::new(topic) else { continue };
+            let Ok(n) = CString::new(name) else { continue };
+            cb(
+                a.as_ptr(),
+                t.as_ptr(),
+                n.as_ptr(),
+                i64::try_from(count).unwrap_or(i64::MAX),
+                udata,
+            );
+        }
+    }
+    true
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_set_max_message_size(bytes: usize) -> bool {
+    settings::set_max_message_size(bytes)
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_get_max_message_size() -> usize {
+    settings::max_message_size()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_set_compress_threshold(bytes: usize) -> bool {
+    settings::set_compress_threshold(bytes)
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_get_compress_threshold() -> usize {
+    settings::compress_threshold()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_set_max_send_queue(n: usize) -> bool {
+    settings::set_max_send_queue(n)
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_get_max_send_queue() -> usize {
+    settings::max_send_queue()
+}
+
+/// Last sync-API error code (`LNR_OK` / `LNR_ERR_*`). Returns `LNR_OK` for a null handle.
+///
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_last_error_code(client: *mut Client) -> i32 {
+    if !has_client(client) {
+        return ErrorCode::Ok.as_i32();
+    }
+    (*client).last_error().as_i32()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_last_error_message(client: *mut Client) -> *const i8 {
+    if !has_client(client) {
+        return std::ptr::null();
+    }
+    (*client).last_error_message_c_str()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_version() -> *const i8 {
+    static VER: OnceLock<CString> = OnceLock::new();
+    VER.get_or_init(|| CString::new(env!("CARGO_PKG_VERSION")).unwrap_or_default())
+        .as_ptr()
+}
+
+/// Set advertise address before `lnr_run`. `addr == NULL` or empty clears.
+///
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_set_advertise_addr(client: *mut Client, addr: *const i8) -> bool {
+    if !has_client(client) {
+        return false;
+    }
+    if addr.is_null() {
+        return (*client).set_advertise_addr(None);
+    }
+    let Ok(addr) = CStr::from_ptr(addr).to_str() else {
+        return false;
+    };
+    (*client).set_advertise_addr(Some(addr))
+}
+
+/// Stop the client (unregister + join threads). Idempotent.
+///
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_stop(client: *mut Client) -> bool {
+    if !has_client(client) {
+        return false;
+    }
+    (*client).stop()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_is_running(client: *mut Client) -> bool {
+    if !has_client(client) {
+        return false;
+    }
+    (*client).is_running()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_advertise_addr(client: *mut Client) -> *const i8 {
+    if !has_client(client) {
+        return std::ptr::null();
+    }
+    (*client).advertise_addr_c_str()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_bound_listen_addr(client: *mut Client) -> *const i8 {
+    if !has_client(client) {
+        return std::ptr::null();
+    }
+    (*client).bound_listen_addr_c_str()
+}
+
+/// # Safety
+#[no_mangle]
+pub unsafe extern "C" fn lnr_published_addr(client: *mut Client) -> *const i8 {
+    if !has_client(client) {
+        return std::ptr::null();
+    }
+    (*client).published_addr_c_str()
 }
 
 /// Launching a client to send messages and listen for incoming messages. 
@@ -549,11 +888,12 @@ pub unsafe extern "C" fn lnr_send_to(client: *mut Client,
         print_error!("topic name empty");
         return false;
     }
-    if data_size == 0{
-        print_error!("data_size empty");
-        return false;
-    }
-    let data = std::slice::from_raw_parts(data, data_size);
+    // Empty payload is rejected inside Client (`LNR_ERR_INVALID_ARG`); allow null `data` when size is 0.
+    let data = if data_size == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(data, data_size)
+    };
     (*client).send_to(topic, data, at_least_once_delivery)
 }
 
@@ -582,11 +922,11 @@ pub unsafe extern "C" fn lnr_send_all(client: *mut Client,
         print_error!("topic.is_empty()");
         return false;
     }
-    if data_size == 0{
-        print_error!("data_size == 0");
-        return false;
-    }
-    let data = std::slice::from_raw_parts(data, data_size);
+    let data = if data_size == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(data, data_size)
+    };
     (*client).send_all(topic, data, at_least_once_delivery)
 }
 
@@ -669,6 +1009,7 @@ pub unsafe extern "C" fn lnr_refresh_address_topic(client: *mut Client,
 mod tests {
     use super::*;
     use std::ptr;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn fns_return_false_on_null_client_without_derefing_args() {
@@ -682,6 +1023,18 @@ mod tests {
             assert!(!lnr_clear_addresses_of_topic(ptr::null_mut()));
             assert!(!lnr_delete_client(ptr::null_mut()));
             assert!(!lnr_set_status_cb(ptr::null_mut(), None, ptr::null_mut()));
+            assert_eq!(lnr_last_error_code(ptr::null_mut()), 0);
+            assert!(!lnr_set_advertise_addr(ptr::null_mut(), ptr::null()));
+            assert!(!lnr_stop(ptr::null_mut()));
+            assert!(!lnr_is_running(ptr::null_mut()));
+            assert!(lnr_advertise_addr(ptr::null_mut()).is_null());
+            assert!(lnr_bound_listen_addr(ptr::null_mut()).is_null());
+            assert!(lnr_published_addr(ptr::null_mut()).is_null());
+            assert!(!lnr_list_addresses(ptr::null_mut(), ptr::null(), None, ptr::null_mut()));
+            assert_eq!(lnr_pending_count(ptr::null_mut()), -1);
+            assert!(!lnr_pending_by_peer(ptr::null_mut(), None, ptr::null_mut()));
+            assert!(lnr_last_error_message(ptr::null_mut()).is_null());
+            assert!(!lnr_version().is_null());
         }
     }
 
@@ -693,6 +1046,65 @@ mod tests {
         }
     }
 
+    extern "C" fn log_hook_sets_flag(msg: *const i8, udata: *mut libc::c_void) {
+        if udata.is_null() || msg.is_null() {
+            return;
+        }
+        let s = unsafe { std::ffi::CStr::from_ptr(msg) };
+        if s.to_bytes().windows(b"Error".len()).any(|w| w == b"Error") {
+            unsafe {
+                (*(udata as *const AtomicBool)).store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    #[test]
+    fn log_hook_receives_print_error_from_null_client() {
+        let _lock = crate::log::test_log_hook_lock();
+        let seen = AtomicBool::new(false);
+        unsafe {
+            assert!(lnr_set_log_cb(
+                Some(log_hook_sets_flag),
+                &seen as *const AtomicBool as *mut libc::c_void,
+            ));
+            assert!(!lnr_delete_client(ptr::null_mut()));
+            assert!(lnr_set_log_cb(None, ptr::null_mut()));
+        }
+        assert!(seen.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn runtime_limits_reject_zero_and_roundtrip() {
+        let _lock = settings::test_limits_lock();
+        let prev_max = unsafe { lnr_get_max_message_size() };
+        let prev_thr = unsafe { lnr_get_compress_threshold() };
+        let prev_q = unsafe { lnr_get_max_send_queue() };
+        unsafe {
+            assert!(!lnr_set_max_message_size(0));
+            assert!(!lnr_set_compress_threshold(0));
+            assert!(lnr_set_max_message_size(12345));
+            assert_eq!(lnr_get_max_message_size(), 12345);
+            assert!(lnr_set_compress_threshold(6789));
+            assert_eq!(lnr_get_compress_threshold(), 6789);
+            assert!(lnr_set_max_send_queue(42));
+            assert_eq!(lnr_get_max_send_queue(), 42);
+            assert!(lnr_set_max_send_queue(0)); // unlimited allowed
+            assert_eq!(lnr_get_max_send_queue(), 0);
+            assert!(lnr_set_max_message_size(prev_max));
+            assert!(lnr_set_compress_threshold(prev_thr));
+            assert!(lnr_set_max_send_queue(prev_q));
+        }
+    }
+
+    #[test]
+    fn version_matches_cargo_pkg() {
+        unsafe {
+            let p = lnr_version();
+            assert!(!p.is_null());
+            let s = std::ffi::CStr::from_ptr(p).to_str().unwrap();
+            assert_eq!(s, env!("CARGO_PKG_VERSION"));
+        }
+    }
 }
 
 
@@ -757,7 +1169,10 @@ fn has_client(client: *mut Client)->bool{
 
 #[macro_export]
 macro_rules! print_error {
-    ($arg:expr) => { eprintln!("Error {}:{}: {}", file!(), line!(), $arg) }
+    ($arg:expr) => {{
+        let line = format!("Error {}:{}: {}", file!(), line!(), $arg);
+        $crate::log::emit_error_line(&line);
+    }}
 }
 
 // The debug version

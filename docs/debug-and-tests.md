@@ -10,7 +10,9 @@ Build with debug output:
 cargo build --release --features liner_debug
 ```
 
-Today, **`print_debug!`** is used only in a few places (for example TCP connect failures in the sender and some listener paths). It does **not** replace structured logging; **`print_error!`** still goes to **stderr** regardless of this flag (see [errors-and-logging.md](errors-and-logging.md)).
+Today, **`print_debug!`** is used only in a few places (for example TCP connect failures in the sender and some listener paths). It does **not** replace structured logging.
+
+**`print_error!`** still emits the usual `Error file:line: …` line regardless of `liner_debug`. By default that goes to **stderr**; you can redirect it with the process-global **log hook** (`lnr_set_log_cb` / Python `set_log_callback`). Sync failures also set **`lnr_last_error_code`**. See [errors-and-logging.md](errors-and-logging.md).
 
 ## Unit tests
 

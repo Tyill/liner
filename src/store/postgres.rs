@@ -400,6 +400,46 @@ impl Store for Postgres {
         Err(DbError::new("!unique_name_cache.contains_key"))
     }
 
+    fn get_topic_directory(&mut self, topic: &str) -> DbResult<Vec<(String, String)>> {
+        let rows = map_pg(self.client.query(
+            "SELECT addr, client_name FROM topic_addr WHERE topic = $1 ORDER BY addr ASC",
+            &[&topic],
+        ))?;
+        let mut out = Vec::new();
+        let mut addrs = Vec::new();
+        for row in rows {
+            let addr: String = map_pg(row.try_get(0))?;
+            let name: String = map_pg(row.try_get(1))?;
+            self.unique_name_cache
+                .insert(cache_name_key(topic, &addr), name.clone());
+            addrs.push(addr.clone());
+            out.push((addr, name));
+        }
+        self.topic_addr_cache.insert(topic.to_string(), addrs);
+        Ok(out)
+    }
+
+    fn count_pending_messages(&mut self, connection_key: i32) -> DbResult<usize> {
+        let row = map_pg(self.client.query_one(
+            "SELECT COUNT(*)::bigint FROM conn_messages WHERE connection_key = $1",
+            &[&connection_key],
+        ))?;
+        let n: i64 = map_pg(row.try_get(0))?;
+        Ok(usize::try_from(n).unwrap_or(0))
+    }
+
+    fn find_connection_key_for_sender(&mut self, listener_name: &str) -> DbResult<Option<i32>> {
+        let composite = connection_composite(&self.unique_name, &self.source_topic, listener_name);
+        if let Some(row) = map_pg(self.client.query_opt(
+            "SELECT connection_key FROM conn_key_map WHERE composite = $1",
+            &[&composite],
+        ))? {
+            Ok(Some(map_pg(row.try_get(0))?))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn get_connection_key_for_sender(&mut self, listener_name: &str) -> DbResult<i32> {
         let composite = connection_composite(&self.unique_name, &self.source_topic, listener_name);
         if let Some(row) = map_pg(self.client.query_opt(

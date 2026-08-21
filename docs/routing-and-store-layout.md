@@ -10,15 +10,17 @@ This document is for **people debugging production**: what gets written to **Red
 |--------|---------|
 | **`unique_name`** | Stable string identity of a **client instance** (per process). Used in store keys and in the composite id for a sender–listener channel. |
 | **`source_topic`** | The client’s **current topic** (the one passed at construction / `set_source_topic`). |
-| **`localhost` (bind string)** | The **TCP listen address** string (for example `127.0.0.1:2255`). Stored as the **field name** in the topic directory (Redis hash field / SQLite `topic_addr.addr`). |
+| **`localhost` (bind string)** | The **TCP listen address** this process binds (for example `127.0.0.1:2255` or `0.0.0.0:0`). Kept on the client as the bind string; not overwritten by advertise. |
+| **Published / advertise address** | String written into the topic directory for peers to dial. Defaults to the bound listen address after `run`; optional `set_advertise_addr` overrides it (port `0` is rewritten from the real bind). Exposed as `published_addr` while registered. |
 | **Topic (string)** | Logical name peers use (`send_to("other_topic", …)`). |
-| **Listener address** | A **reachable TCP endpoint** of another client, taken from the store when sending. |
+| **Listener address** | A **reachable TCP endpoint** of another client, taken from the store when sending (the published catalog field). |
 
 ## How routing works (high level)
 
 1. **Directory: topic → TCP addresses**  
-   When a client registers a topic (`regist_topic`), the store records a mapping: **topic name → (this client’s bind address → this client’s `unique_name`)**.  
-   Senders resolve a destination topic with **`get_addresses_of_topic`**, then open **TCP** to those addresses. Multiple addresses under one topic mean multiple replicas; the Rust client **round-robins** across them (`last_send_index`).
+   When a client registers a topic (`regist_topic`), the store records a mapping: **topic name → (published address → this client’s `unique_name`)**. The published address is the advertise string if set, otherwise the bound listen address.  
+   Senders resolve a destination topic with **`get_addresses_of_topic`**, then open **TCP** to those addresses. Multiple addresses under one topic mean multiple replicas; the Rust client **round-robins** across them (`last_send_index`).  
+   Ops can also call **`list_addresses(topic)`** / `get_topic_directory` to read `(addr, unique_name)` pairs without sending.
 
 2. **Who is on the other end**  
    For each listener address, the sender looks up **`get_listener_unique_name(destination_topic, addr)`** so it knows the **listener’s `unique_name`**. That name is part of the **composite** used to allocate a stable **`connection_key`** (integer) for that sender–listener pair.
@@ -90,9 +92,9 @@ All keys use the literal prefix **`lnr_`**. Placeholders:
 | Symptom | Redis | SQLite / PostgreSQL |
 |---------|-------|---------------------|
 | No addresses for topic `T` | `HGETALL lnr_topic:T:addr` | `SELECT * FROM topic_addr WHERE topic = 'T';` |
-| Offline queue stuck | `LLEN lnr_connection:{id}:messages` | `SELECT COUNT(*) FROM conn_messages WHERE connection_key = ?;` |
+| Offline queue stuck | `LLEN lnr_connection:{id}:messages` (or API `pending_count` for this sender) | `SELECT COUNT(*) FROM conn_messages WHERE connection_key = ?;` (or API `pending_count`) |
 | Dedup / ack cursor | `GET lnr_connection:{id}:mess_number` | `SELECT v FROM conn_mess_number WHERE connection_key = ?;` |
-| Wrong peer / stale port | Check field names in `…:addr` match current bind strings | Same in **`topic_addr.addr`** |
+| Wrong peer / stale port | Check field names in `…:addr` match current **published** addresses (`published_addr` / advertise) | Same in **`topic_addr.addr`** |
 
 ---
 

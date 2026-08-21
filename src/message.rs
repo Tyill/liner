@@ -11,6 +11,21 @@ const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
 /// Wire header: u64 number + i32 connection_key + i32 topic_key + u8 flags.
 const HEADER_LEN: usize = 8 + 4 + 4 + 1;
 
+/// Uncompressed framed message body size for a raw application payload
+/// (what the bytestream `u32` length header carries — excludes that outer length itself).
+/// Compression can only shrink the body; use this for early send-side rejection.
+pub fn framed_body_size_raw(payload_len: usize) -> usize {
+    HEADER_LEN
+        .saturating_add(std::mem::size_of::<u32>())
+        .saturating_add(payload_len)
+}
+
+/// `true` if an uncompressed encoding of `payload_len` would exceed [`settings::max_message_size`].
+pub fn payload_exceeds_max_message_size(payload_len: usize) -> bool {
+    let body = framed_body_size_raw(payload_len);
+    body == 0 || body > settings::max_message_size()
+}
+
 pub struct Message{
     pub number_mess: u64,
     pub listener_topic_key: i32,
@@ -41,7 +56,7 @@ impl Message{
         let listener_topic_key_len = std::mem::size_of::<i32>();
         let flags_len = std::mem::size_of::<u8>();
         let mut cdata: Option<Vec<u8>> = None;
-        if data.len() > settings::MIN_SIZE_DATA_FOR_COMPRESS_BYTE{
+        if data.len() > settings::compress_threshold(){
             if let Some(compressed) = compress(data) {
                 cdata = Some(compressed);
             }
@@ -363,8 +378,9 @@ mod tests {
 
     #[test]
     fn large_payload_roundtrips_with_or_without_compression() {
-        // MIN_SIZE_DATA_FOR_COMPRESS_BYTE is 1MB; use slightly above.
-        let payload = vec![0u8; settings::MIN_SIZE_DATA_FOR_COMPRESS_BYTE + 123];
+        let _lock = settings::test_limits_lock();
+        // compress_threshold default is 1MB; use slightly above.
+        let payload = vec![0u8; settings::compress_threshold() + 123];
         let mempool = Arc::new(Mutex::new(Mempool::new()));
         let msg = Message::new(mempool.clone(), 55, 9, 77, &payload, true).unwrap();
         let mut wire = Vec::new();
@@ -381,6 +397,33 @@ mod tests {
         let len = decoded.get_data(&mempool, &mut out);
         assert_eq!(len, payload.len());
         assert_eq!(&out[..len], payload.as_slice());
+    }
+
+    #[test]
+    fn compress_threshold_change_affects_message_new() {
+        let _lock = settings::test_limits_lock();
+        let prev = settings::compress_threshold();
+        let payload = vec![0u8; 2000];
+
+        assert!(settings::set_compress_threshold(usize::MAX));
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let raw = Message::new(mempool.clone(), 1, 1, 1, &payload, false).unwrap();
+        let mut wire_raw = Vec::new();
+        assert!(raw.to_stream(&mempool, &mut wire_raw));
+
+        assert!(settings::set_compress_threshold(100));
+        let mempool2 = Arc::new(Mutex::new(Mempool::new()));
+        let compressed = Message::new(mempool2.clone(), 1, 1, 1, &payload, false).unwrap();
+        let mut wire_c = Vec::new();
+        assert!(compressed.to_stream(&mempool2, &mut wire_c));
+
+        assert!(
+            wire_c.len() < wire_raw.len(),
+            "expected compressed wire {} < raw {}",
+            wire_c.len(),
+            wire_raw.len()
+        );
+        assert!(settings::set_compress_threshold(prev));
     }
 
     #[test]

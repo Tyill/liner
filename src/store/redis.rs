@@ -204,6 +204,45 @@ impl Redis {
         }
         Ok(self.topic_addr_cache[topic].to_vec())
     }
+
+    pub fn get_topic_directory(&mut self, topic: &str) -> RedisResult<Vec<(String, String)>> {
+        let dbconn = self.get_dbconn()?;
+        let topic_k = redis_safe(topic);
+        let rows: Vec<(String, String)> = dbconn.hgetall(&format!("lnr_topic:{topic_k}:addr"))?;
+        for (addr, name) in &rows {
+            self.unique_name_cache
+                .insert(cache_name_key(topic, addr), name.clone());
+        }
+        let addrs: Vec<String> = rows.iter().map(|(a, _)| a.clone()).collect();
+        self.topic_addr_cache.insert(topic.to_string(), addrs);
+        Ok(rows)
+    }
+
+    pub fn count_pending_messages(&mut self, connection_key: i32) -> RedisResult<usize> {
+        let dbconn = self.get_dbconn()?;
+        let llen: Option<usize> =
+            dbconn.llen(&format!("lnr_connection:{}:messages", connection_key))?;
+        Ok(llen.unwrap_or(0))
+    }
+
+    pub fn find_connection_key_for_sender(
+        &mut self,
+        listener_name: &str,
+    ) -> RedisResult<Option<i32>> {
+        let key = format!(
+            "{}:{}:{}",
+            redis_safe(&self.unique_name),
+            redis_safe(&self.source_topic),
+            redis_safe(listener_name)
+        );
+        let dbconn = self.get_dbconn()?;
+        let res: Option<String> = dbconn.get(format!("lnr_connection:{key}:key"))?;
+        match res {
+            Some(s) => Ok(Some(parse_i32_res(&s, "invalid connection key")?)),
+            None => Ok(None),
+        }
+    }
+
     pub fn get_listener_unique_name(&mut self, topic: &str, address: &str) -> RedisResult<String> {
         if !self.topic_addr_cache.contains_key(topic) {
             self.init_addresses_of_topic(topic)?;
@@ -475,6 +514,18 @@ impl Store for Redis {
 
     fn get_listener_unique_name(&mut self, topic: &str, address: &str) -> DbResult<String> {
         map_db(Redis::get_listener_unique_name(self, topic, address))
+    }
+
+    fn get_topic_directory(&mut self, topic: &str) -> DbResult<Vec<(String, String)>> {
+        map_db(Redis::get_topic_directory(self, topic))
+    }
+
+    fn count_pending_messages(&mut self, connection_key: i32) -> DbResult<usize> {
+        map_db(Redis::count_pending_messages(self, connection_key))
+    }
+
+    fn find_connection_key_for_sender(&mut self, listener_name: &str) -> DbResult<Option<i32>> {
+        map_db(Redis::find_connection_key_for_sender(self, listener_name))
     }
 
     fn get_connection_key_for_sender(&mut self, listener_name: &str) -> DbResult<i32> {

@@ -20,6 +20,8 @@ This guide is for integrators who run the broker with a **SQLite file** instead 
 
 **One shared SQLite file** (same path for cooperating processes): pass **`receivers_json` empty** (`""` / `[]`); peers register into the same store and `conn_sender` / keys stay consistent without catalog JSON.
 
+The **`localhost`** argument on client constructors is the **TCP bind address only**; it does not automatically become the address peers dial when you bind `0.0.0.0` or port `0`. Before **`run`**, call **`set_advertise_addr`** / `lnr_set_advertise_addr` to publish a reachable endpoint (advertise port `0` is rewritten from the actual bind). After **`run`**, use **`published_addr()`** for the catalog string and **`bound_listen_addr()`** for the local socket. Details: [using-the-api.md](using-the-api.md).
+
 ### Isolated DBs: one-to-one only (multi-peer limitation)
 
 If **each process has its own `.sqlite` file**, the catalog seeding path is designed for **one remote peer per process** in `receivers_json` — a classic **one-to-one** link (A lists only B, B lists only A). That is the layout covered by the reference test **`isolated_sqlite_two_clients_via_receivers_json_catalog_file`**.

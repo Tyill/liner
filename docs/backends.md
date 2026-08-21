@@ -64,6 +64,7 @@ Do **not** point different clients at Redis, SQLite, and PostgreSQL for the same
 
 ## Related
 
-- [store-startup-failure-semantics.md](store-startup-failure-semantics.md) — client vs listener/sender when opening the store at `run` time.
+- [store-startup-failure-semantics.md](store-startup-failure-semantics.md) — listener/sender share the client store handle; `run` returns `false` + `LNR_ERR_STARTUP` on listener failure (no panic).
+- [using-the-api.md](using-the-api.md) — bind vs advertise, `published_addr`, stop/restart, introspection.
 - [routing-and-store-layout.md](routing-and-store-layout.md) — Redis keys and SQL tables (SQLite / PostgreSQL).
 - [operations-redis-sqlite.md](operations-redis-sqlite.md) — prefix policy, `clear_*`, Redis 6.2+, SQLite WAL, PostgreSQL backup notes.

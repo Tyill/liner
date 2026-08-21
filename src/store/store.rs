@@ -65,6 +65,18 @@ pub trait Store: Send {
     fn get_addresses_of_topic(&mut self, without_cache: bool, topic: &str) -> DbResult<Vec<String>>;
     fn get_listener_unique_name(&mut self, topic: &str, address: &str) -> DbResult<String>;
 
+    /// Topic catalog rows `(addr, unique_name)` from the store (not only the memory cache).
+    fn get_topic_directory(
+        &mut self,
+        topic: &str,
+    ) -> DbResult<Vec<(String, String)>>;
+
+    /// Offline queue length for `connection_key` (0 if absent).
+    fn count_pending_messages(&mut self, connection_key: i32) -> DbResult<usize>;
+
+    /// Existing sender→listener wire key, or `None` without allocating a new id.
+    fn find_connection_key_for_sender(&mut self, listener_name: &str) -> DbResult<Option<i32>>;
+
     fn get_connection_key_for_sender(&mut self, listener_name: &str) -> DbResult<i32>;
     fn get_topic_key(&mut self, topic: &str) -> DbResult<i32>;
 
