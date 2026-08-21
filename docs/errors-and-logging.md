@@ -78,12 +78,8 @@ Each client keeps a **last error code** updated by synchronous API calls. Succes
 | `lnr_list_addresses` | `TRUE` and zero or more `lnr_addr_cb` invocations (empty topic ⇒ no callbacks). `FALSE` + `LNR_ERR_STORE` on DB error. |
 | `lnr_pending_count` | Non-negative depth of this sender’s offline blobs; `0` if none; `-1` on error (then check `lnr_last_error_code`). |
 | `lnr_pending_by_peer` | `TRUE` + zero or more `lnr_pending_cb` rows; `FALSE` + `STORE` on DB error. |
-| `lnr_send_queue_depth` | Non-negative in-memory sender queue depth; `0` if not running / null handle. |
-| `lnr_send_queue_depth_by_peer` | `TRUE` + zero or more `lnr_queue_cb` rows (`addr`, count). |
-| `lnr_list_subscriptions` / `lnr_list_related_topics` | `TRUE` + topic callbacks (subscriptions exclude internal channel). |
 | `lnr_set_max_message_size` / `lnr_set_compress_threshold` | Process-global. `FALSE` if `bytes == 0`. Prefer set before `run`. |
 | `lnr_set_max_send_queue` | Process-global per-peer in-memory queue cap; **`0` = unlimited** (default). |
-| `lnr_set_stream_check_timeout_ms` / `lnr_set_would_block_timeout_ms` | Process-global; `FALSE` if `ms == 0`. |
 | `lnr_set_status_cb` | `TRUE` if the client handle is valid; `FALSE` on null/unknown handle. Registers or clears (`cb == NULL`) the status callback. |
 | `lnr_send_to`, `lnr_send_all`, subscribe, refresh, clear, … | `FALSE` on logical or I/O errors (including **`LNR_ERR_BUSY`**); inspect **`lnr_last_error_code`** / message and stderr/log hook. |
 

@@ -287,22 +287,6 @@ impl Liner {
         unsafe { lnr_get_max_send_queue() }
     }
 
-    pub fn set_stream_check_timeout_ms(ms: u64) -> bool {
-        unsafe { lnr_set_stream_check_timeout_ms(ms) }
-    }
-
-    pub fn stream_check_timeout_ms() -> u64 {
-        unsafe { lnr_get_stream_check_timeout_ms() }
-    }
-
-    pub fn set_would_block_timeout_ms(ms: u64) -> bool {
-        unsafe { lnr_set_would_block_timeout_ms(ms) }
-    }
-
-    pub fn would_block_timeout_ms() -> u64 {
-        unsafe { lnr_get_would_block_timeout_ms() }
-    }
-
     pub fn list_addresses(&mut self, topic: &str) -> Option<Vec<(String, String)>> {
         unsafe { (*self.hclient).list_addresses(topic) }
     }
@@ -313,22 +297,6 @@ impl Liner {
 
     pub fn pending_by_peer(&mut self) -> Option<Vec<(String, String, String, u64)>> {
         unsafe { (*self.hclient).pending_by_peer() }
-    }
-
-    pub fn send_queue_depth(&self) -> u64 {
-        unsafe { (*self.hclient).send_queue_depth() }
-    }
-
-    pub fn send_queue_depth_by_peer(&self) -> Vec<(String, u64)> {
-        unsafe { (*self.hclient).send_queue_depth_by_peer() }
-    }
-
-    pub fn list_subscriptions(&self) -> Vec<String> {
-        unsafe { (*self.hclient).list_subscriptions() }
-    }
-
-    pub fn list_related_topics(&self) -> Vec<String> {
-        unsafe { (*self.hclient).list_related_topics() }
     }
 
     /// Address published to the store instead of the bind string. `None` clears.
@@ -424,18 +392,6 @@ impl Liner {
     /// Catalog address while registered; `None` after stop.
     pub fn published_addr(&self) -> Option<String> {
         unsafe { (*self.hclient).published_addr().map(|s| s.to_string()) }
-    }
-
-    pub fn unique_name(&self) -> String {
-        unsafe { (*self.hclient).unique_name().to_string() }
-    }
-
-    pub fn topic(&self) -> String {
-        unsafe { (*self.hclient).topic().to_string() }
-    }
-
-    pub fn bind_addr(&self) -> String {
-        unsafe { (*self.hclient).bind_addr().to_string() }
     }
 
     pub fn advertise_addr(&self) -> Option<String> {
@@ -612,29 +568,18 @@ pub unsafe extern "C" fn lnr_new_client(
     std::hint::black_box(lnr_list_addresses);
     std::hint::black_box(lnr_pending_count);
     std::hint::black_box(lnr_pending_by_peer);
-    std::hint::black_box(lnr_send_queue_depth);
-    std::hint::black_box(lnr_send_queue_depth_by_peer);
-    std::hint::black_box(lnr_list_subscriptions);
-    std::hint::black_box(lnr_list_related_topics);
     std::hint::black_box(lnr_set_max_message_size);
     std::hint::black_box(lnr_get_max_message_size);
     std::hint::black_box(lnr_set_compress_threshold);
     std::hint::black_box(lnr_get_compress_threshold);
     std::hint::black_box(lnr_set_max_send_queue);
     std::hint::black_box(lnr_get_max_send_queue);
-    std::hint::black_box(lnr_set_stream_check_timeout_ms);
-    std::hint::black_box(lnr_get_stream_check_timeout_ms);
-    std::hint::black_box(lnr_set_would_block_timeout_ms);
-    std::hint::black_box(lnr_get_would_block_timeout_ms);
     std::hint::black_box(lnr_last_error_code);
     std::hint::black_box(lnr_last_error_message);
     std::hint::black_box(lnr_version);
     std::hint::black_box(lnr_set_advertise_addr);
     std::hint::black_box(lnr_stop);
     std::hint::black_box(lnr_is_running);
-    std::hint::black_box(lnr_unique_name);
-    std::hint::black_box(lnr_topic);
-    std::hint::black_box(lnr_bind_addr);
     std::hint::black_box(lnr_advertise_addr);
     std::hint::black_box(lnr_bound_listen_addr);
     std::hint::black_box(lnr_published_addr);
@@ -743,7 +688,6 @@ pub type PendingCbackC = Option<
         udata: *mut libc::c_void,
     ),
 >;
-pub type TopicCbackC = Option<extern "C" fn(topic: *const i8, udata: *mut libc::c_void)>;
 
 /// # Safety
 #[no_mangle]
@@ -770,82 +714,6 @@ pub unsafe extern "C" fn lnr_pending_by_peer(
                 i64::try_from(count).unwrap_or(i64::MAX),
                 udata,
             );
-        }
-    }
-    true
-}
-
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn lnr_send_queue_depth(client: *mut Client) -> i64 {
-    if !has_client(client) {
-        return 0;
-    }
-    i64::try_from((*client).send_queue_depth()).unwrap_or(i64::MAX)
-}
-
-pub type QueueCbackC =
-    Option<extern "C" fn(addr: *const i8, count: i64, udata: *mut libc::c_void)>;
-
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn lnr_send_queue_depth_by_peer(
-    client: *mut Client,
-    cb: QueueCbackC,
-    udata: *mut libc::c_void,
-) -> bool {
-    if !has_client(client) {
-        return false;
-    }
-    let rows = (*client).send_queue_depth_by_peer();
-    if let Some(cb) = cb {
-        for (addr, count) in rows {
-            let Ok(a) = CString::new(addr) else { continue };
-            cb(
-                a.as_ptr(),
-                i64::try_from(count).unwrap_or(i64::MAX),
-                udata,
-            );
-        }
-    }
-    true
-}
-
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn lnr_list_subscriptions(
-    client: *mut Client,
-    cb: TopicCbackC,
-    udata: *mut libc::c_void,
-) -> bool {
-    if !has_client(client) {
-        return false;
-    }
-    let topics = (*client).list_subscriptions();
-    if let Some(cb) = cb {
-        for topic in topics {
-            let Ok(t) = CString::new(topic) else { continue };
-            cb(t.as_ptr(), udata);
-        }
-    }
-    true
-}
-
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn lnr_list_related_topics(
-    client: *mut Client,
-    cb: TopicCbackC,
-    udata: *mut libc::c_void,
-) -> bool {
-    if !has_client(client) {
-        return false;
-    }
-    let topics = (*client).list_related_topics();
-    if let Some(cb) = cb {
-        for topic in topics {
-            let Ok(t) = CString::new(topic) else { continue };
-            cb(t.as_ptr(), udata);
         }
     }
     true
@@ -885,30 +753,6 @@ pub unsafe extern "C" fn lnr_set_max_send_queue(n: usize) -> bool {
 #[no_mangle]
 pub unsafe extern "C" fn lnr_get_max_send_queue() -> usize {
     settings::max_send_queue()
-}
-
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn lnr_set_stream_check_timeout_ms(ms: u64) -> bool {
-    settings::set_stream_check_timeout_ms(ms)
-}
-
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn lnr_get_stream_check_timeout_ms() -> u64 {
-    settings::stream_check_timeout_ms()
-}
-
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn lnr_set_would_block_timeout_ms(ms: u64) -> bool {
-    settings::set_would_block_timeout_ms(ms)
-}
-
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn lnr_get_would_block_timeout_ms() -> u64 {
-    settings::would_block_timeout_ms()
 }
 
 /// Last sync-API error code (`LNR_OK` / `LNR_ERR_*`). Returns `LNR_OK` for a null handle.
@@ -974,33 +818,6 @@ pub unsafe extern "C" fn lnr_is_running(client: *mut Client) -> bool {
         return false;
     }
     (*client).is_running()
-}
-
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn lnr_unique_name(client: *mut Client) -> *const i8 {
-    if !has_client(client) {
-        return std::ptr::null();
-    }
-    (*client).unique_name_c_str()
-}
-
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn lnr_topic(client: *mut Client) -> *const i8 {
-    if !has_client(client) {
-        return std::ptr::null();
-    }
-    (*client).topic_c_str()
-}
-
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn lnr_bind_addr(client: *mut Client) -> *const i8 {
-    if !has_client(client) {
-        return std::ptr::null();
-    }
-    (*client).bind_addr_c_str()
 }
 
 /// # Safety
@@ -1210,19 +1027,12 @@ mod tests {
             assert!(!lnr_set_advertise_addr(ptr::null_mut(), ptr::null()));
             assert!(!lnr_stop(ptr::null_mut()));
             assert!(!lnr_is_running(ptr::null_mut()));
-            assert!(lnr_unique_name(ptr::null_mut()).is_null());
-            assert!(lnr_topic(ptr::null_mut()).is_null());
-            assert!(lnr_bind_addr(ptr::null_mut()).is_null());
             assert!(lnr_advertise_addr(ptr::null_mut()).is_null());
             assert!(lnr_bound_listen_addr(ptr::null_mut()).is_null());
             assert!(lnr_published_addr(ptr::null_mut()).is_null());
             assert!(!lnr_list_addresses(ptr::null_mut(), ptr::null(), None, ptr::null_mut()));
             assert_eq!(lnr_pending_count(ptr::null_mut()), -1);
             assert!(!lnr_pending_by_peer(ptr::null_mut(), None, ptr::null_mut()));
-            assert_eq!(lnr_send_queue_depth(ptr::null_mut()), 0);
-            assert!(!lnr_send_queue_depth_by_peer(ptr::null_mut(), None, ptr::null_mut()));
-            assert!(!lnr_list_subscriptions(ptr::null_mut(), None, ptr::null_mut()));
-            assert!(!lnr_list_related_topics(ptr::null_mut(), None, ptr::null_mut()));
             assert!(lnr_last_error_message(ptr::null_mut()).is_null());
             assert!(!lnr_version().is_null());
         }
@@ -1269,13 +1079,9 @@ mod tests {
         let prev_max = unsafe { lnr_get_max_message_size() };
         let prev_thr = unsafe { lnr_get_compress_threshold() };
         let prev_q = unsafe { lnr_get_max_send_queue() };
-        let prev_sc = unsafe { lnr_get_stream_check_timeout_ms() };
-        let prev_wb = unsafe { lnr_get_would_block_timeout_ms() };
         unsafe {
             assert!(!lnr_set_max_message_size(0));
             assert!(!lnr_set_compress_threshold(0));
-            assert!(!lnr_set_stream_check_timeout_ms(0));
-            assert!(!lnr_set_would_block_timeout_ms(0));
             assert!(lnr_set_max_message_size(12345));
             assert_eq!(lnr_get_max_message_size(), 12345);
             assert!(lnr_set_compress_threshold(6789));
@@ -1284,15 +1090,9 @@ mod tests {
             assert_eq!(lnr_get_max_send_queue(), 42);
             assert!(lnr_set_max_send_queue(0)); // unlimited allowed
             assert_eq!(lnr_get_max_send_queue(), 0);
-            assert!(lnr_set_stream_check_timeout_ms(1234));
-            assert_eq!(lnr_get_stream_check_timeout_ms(), 1234);
-            assert!(lnr_set_would_block_timeout_ms(5678));
-            assert_eq!(lnr_get_would_block_timeout_ms(), 5678);
             assert!(lnr_set_max_message_size(prev_max));
             assert!(lnr_set_compress_threshold(prev_thr));
             assert!(lnr_set_max_send_queue(prev_q));
-            assert!(lnr_set_stream_check_timeout_ms(prev_sc));
-            assert!(lnr_set_would_block_timeout_ms(prev_wb));
         }
     }
 

@@ -81,11 +81,41 @@ LINER_API lnr_hClient lnr_new_client_postgres(const char* unique_name, const cha
 /// @return lnr_hClient
 LINER_API LINER_DEPRECATED lnr_hClient lnr_new_client(const char* unique_name, const char* topic, const char* localhost, const char* redis_path);
 
+/// Sync API last-error codes (`lnr_last_error_code`). Detail text still goes to stderr / log hook / `lnr_last_error_message`.
+enum {
+    LNR_OK = 0,
+    LNR_ERR_NOT_RUNNING = 1,
+    LNR_ERR_ALREADY_RUNNING = 2,
+    LNR_ERR_SELF_TOPIC = 3,
+    LNR_ERR_INTERNAL_TOPIC = 4,
+    LNR_ERR_NO_ADDR = 5,
+    LNR_ERR_BIND = 6,
+    LNR_ERR_STORE = 7,
+    LNR_ERR_INVALID_ARG = 8,
+    LNR_ERR_CLEAR_WHILE_RUNNING = 9,
+    /** Listener startup after TCP bind (mio / topic_key). */
+    LNR_ERR_STARTUP = 10,
+    /** Sender in-memory queue full for a peer. */
+    LNR_ERR_BUSY = 11
+};
+
+/// Last sync-API error code for this client (`LNR_OK` after success). See `LNR_ERR_*`.
+LINER_API int lnr_last_error_code(lnr_hClient client);
+
+/// Detail for last sync failure. Empty when OK. NULL if bad handle. Valid until next sync call or delete.
+LINER_API const char* lnr_last_error_message(lnr_hClient client);
+
 /// Run transfer data
 /// @param lnr_hClient
 /// @param receive_cb - callback for receive data from other topics
 /// @return true - ok
 LINER_API BOOL lnr_run(lnr_hClient client, lnr_receive_cb receive_cb, lnr_uData);
+
+/// Stop listener/sender and unregister from the store (idempotent). Allows `clear_*` / `run` again.
+LINER_API BOOL lnr_stop(lnr_hClient client);
+
+/// Whether the client is currently running (`lnr_run` succeeded and not yet stopped).
+LINER_API BOOL lnr_is_running(lnr_hClient client);
 
 /// Send data to other topic - only to one
 /// @param lnr_hClient
@@ -123,27 +153,6 @@ LINER_API BOOL lnr_subscribe(lnr_hClient client, const char* topic);
 /// @return true - ok
 LINER_API BOOL lnr_unsubscribe(lnr_hClient client, const char* topic);
 
-/// Delete client
-/// @param lnr_hClient
-/// @return true - ok
-LINER_API BOOL lnr_delete_client(lnr_hClient client);
-  
-
-
-/// Extended API
-
-/// Last sync-API error code for this client (`LNR_OK` after success). See `LNR_ERR_*`.
-LINER_API int lnr_last_error_code(lnr_hClient client);
-
-/// Detail for last sync failure. Empty when OK. NULL if bad handle. Valid until next sync call or delete.
-LINER_API const char* lnr_last_error_message(lnr_hClient client);
- 
-/// Stop listener/sender and unregister from the store (idempotent). Allows `clear_*` / `run` again.
-LINER_API BOOL lnr_stop(lnr_hClient client);
-
-/// Whether the client is currently running (`lnr_run` succeeded and not yet stopped).
-LINER_API BOOL lnr_is_running(lnr_hClient client);
-
 /// Refresh address of topic (actual for new clients)
 /// @param lnr_hClient
 /// @param topic
@@ -159,6 +168,14 @@ LINER_API BOOL lnr_clear_stored_messages(lnr_hClient client);
 /// @param lnr_hClient
 /// @return true - ok
 LINER_API BOOL lnr_clear_addresses_of_topic(lnr_hClient client);
+
+/// Delete client
+/// @param lnr_hClient
+/// @return true - ok
+LINER_API BOOL lnr_delete_client(lnr_hClient client);
+
+
+/// Extended API
 
 /// Status / background-error callback kinds (passed as `kind` to `lnr_status_cb`).
 enum {
@@ -176,24 +193,6 @@ enum {
     LNR_LISTENER_STORE_ERROR = 8,
     /** Sender: in-memory send queue full for a peer (`max_send_queue`). */
     LNR_SENDER_BUSY = 9
-};
-
-/// Sync API last-error codes (`lnr_last_error_code`). Detail text still goes to stderr / log hook / `lnr_last_error_message`.
-enum {
-    LNR_OK = 0,
-    LNR_ERR_NOT_RUNNING = 1,
-    LNR_ERR_ALREADY_RUNNING = 2,
-    LNR_ERR_SELF_TOPIC = 3,
-    LNR_ERR_INTERNAL_TOPIC = 4,
-    LNR_ERR_NO_ADDR = 5,
-    LNR_ERR_BIND = 6,
-    LNR_ERR_STORE = 7,
-    LNR_ERR_INVALID_ARG = 8,
-    LNR_ERR_CLEAR_WHILE_RUNNING = 9,
-    /** Listener startup after TCP bind (mio / topic_key). */
-    LNR_ERR_STARTUP = 10,
-    /** Sender in-memory queue full for a peer. */
-    LNR_ERR_BUSY = 11
 };
 
 /// Asynchronous status and background errors. Pointers are valid only for the duration of the call.
@@ -222,18 +221,6 @@ LINER_API long long lnr_pending_count(lnr_hClient client);
 typedef void(*lnr_pending_cb)(const char* addr, const char* topic, const char* unique_name, long long count, lnr_uData);
 LINER_API BOOL lnr_pending_by_peer(lnr_hClient client, lnr_pending_cb cb, lnr_uData);
 
-/// Total in-memory sender queue depth (not store/offline). `0` if not running / null handle.
-LINER_API long long lnr_send_queue_depth(lnr_hClient client);
-
-/// Per-peer in-memory sender queue depth for known routes. Empty → success with zero callbacks.
-typedef void(*lnr_queue_cb)(const char* addr, long long count, lnr_uData);
-LINER_API BOOL lnr_send_queue_depth_by_peer(lnr_hClient client, lnr_queue_cb cb, lnr_uData);
-
-/// App subscriptions (excludes internal channel) / related topics (status filter set).
-typedef void(*lnr_topic_cb)(const char* topic, lnr_uData);
-LINER_API BOOL lnr_list_subscriptions(lnr_hClient client, lnr_topic_cb cb, lnr_uData);
-LINER_API BOOL lnr_list_related_topics(lnr_hClient client, lnr_topic_cb cb, lnr_uData);
-
 /// Max framed TCP message size in bytes (default 1GiB). Prefer before `lnr_run`.
 LINER_API BOOL lnr_set_max_message_size(size_t bytes);
 LINER_API size_t lnr_get_max_message_size(void);
@@ -246,26 +233,9 @@ LINER_API size_t lnr_get_compress_threshold(void);
 LINER_API BOOL lnr_set_max_send_queue(size_t n);
 LINER_API size_t lnr_get_max_send_queue(void);
 
-/// Stream availability poll interval (ms). Prefer before `lnr_run`. `0` rejected.
-LINER_API BOOL lnr_set_stream_check_timeout_ms(unsigned long long ms);
-LINER_API unsigned long long lnr_get_stream_check_timeout_ms(void);
-
-/// Bytestream would-block wait (ms). Prefer before `lnr_run`. `0` rejected.
-LINER_API BOOL lnr_set_would_block_timeout_ms(unsigned long long ms);
-LINER_API unsigned long long lnr_get_would_block_timeout_ms(void);
-
 /// Optional address published to the store catalog instead of the bind string.
 /// Call before `lnr_run`. `NULL` or `""` clears. Fails with `LNR_ERR_ALREADY_RUNNING` while running.
 LINER_API BOOL lnr_set_advertise_addr(lnr_hClient client, const char* addr);
-
-/// Client `unique_name` (owned by client; valid until `lnr_delete_client`).
-LINER_API const char* lnr_unique_name(lnr_hClient client);
-
-/// Source topic from the constructor (owned by client; valid until delete).
-LINER_API const char* lnr_topic(lnr_hClient client);
-
-/// Constructor TCP bind string (`localhost` argument). Not rewritten by ephemeral bind.
-LINER_API const char* lnr_bind_addr(lnr_hClient client);
 
 /// Configured advertise string; NULL if never set / cleared. Independent of `lnr_published_addr`.
 LINER_API const char* lnr_advertise_addr(lnr_hClient client);

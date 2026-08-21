@@ -28,19 +28,15 @@ C-интерфейс задаётся **`include/liner.h`** и точками в
 - `lnr_version`
 - `lnr_set_advertise_addr`
 - `lnr_stop`, `lnr_is_running`
-- `lnr_unique_name`, `lnr_topic`, `lnr_bind_addr`, `lnr_advertise_addr`, `lnr_bound_listen_addr`, `lnr_published_addr`
+- `lnr_advertise_addr`, `lnr_bound_listen_addr`, `lnr_published_addr`
 
 **Интроспекция и лимиты**
 
 - `lnr_list_addresses`, `lnr_addr_cb`
 - `lnr_pending_count`, `lnr_pending_by_peer`
-- `lnr_send_queue_depth`, `lnr_send_queue_depth_by_peer`
-- `lnr_list_subscriptions`, `lnr_list_related_topics`
 - `lnr_set_max_message_size`, `lnr_get_max_message_size`
 - `lnr_set_compress_threshold`, `lnr_get_compress_threshold`
 - `lnr_set_max_send_queue`, `lnr_get_max_send_queue`
-- `lnr_set_stream_check_timeout_ms`, `lnr_get_stream_check_timeout_ms`
-- `lnr_set_would_block_timeout_ms`, `lnr_get_would_block_timeout_ms`
 
 Сигнатуры существующих конструкторов (`lnr_new_client_*`), `lnr_run` и `lnr_send_*` не менялись.
 

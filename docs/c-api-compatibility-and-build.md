@@ -28,19 +28,15 @@ The following symbols were added without changing existing function signatures. 
 - `lnr_version`
 - `lnr_set_advertise_addr`
 - `lnr_stop`, `lnr_is_running`
-- `lnr_unique_name`, `lnr_topic`, `lnr_bind_addr`, `lnr_advertise_addr`, `lnr_bound_listen_addr`, `lnr_published_addr`
+- `lnr_advertise_addr`, `lnr_bound_listen_addr`, `lnr_published_addr`
 
 **Introspection and limits**
 
 - `lnr_list_addresses`, `lnr_addr_cb`
 - `lnr_pending_count`, `lnr_pending_by_peer`, `lnr_pending_cb`
-- `lnr_send_queue_depth`, `lnr_send_queue_depth_by_peer`, `lnr_queue_cb`
-- `lnr_list_subscriptions`, `lnr_list_related_topics`, `lnr_topic_cb`
 - `lnr_set_max_message_size`, `lnr_get_max_message_size`
 - `lnr_set_compress_threshold`, `lnr_get_compress_threshold`
 - `lnr_set_max_send_queue`, `lnr_get_max_send_queue`
-- `lnr_set_stream_check_timeout_ms`, `lnr_get_stream_check_timeout_ms`
-- `lnr_set_would_block_timeout_ms`, `lnr_get_would_block_timeout_ms`
 
 **Status**
 

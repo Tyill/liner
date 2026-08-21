@@ -65,12 +65,11 @@
 
 | Геттер | Пока running | После `stop` |
 |--------|--------------|--------------|
-| `unique_name` | Всегда доступен | Всегда доступен |
-| `topic` | Исходный топик из конструктора | То же |
-| `bind_addr` | Строка TCP bind из конструктора | То же (не переписывается эфемерным bind) |
 | `advertise_addr` | Сконфигурированный advertise, если задан | То же (независимо от каталога) |
 | `bound_listen_addr` | Фактический local bind после успешного `run` | **Сохраняется** (последний успешный bind) |
 | `published_addr` | Строка, сейчас зарегистрированная в store | **Очищается** (`NULL` / `None`) |
+
+`unique_name` / `topic` / строка bind — то, что вы передали в конструктор; на C/Python они не дублируются геттерами.
 
 ---
 
@@ -109,29 +108,21 @@
 - Возвращает **`-1`** (C) или **`None`** (Rust) при ошибке store; смотрите `lnr_last_error_code`.
 - Глубина может **отставать**, пока at-least-once полезные нагрузки ещё лежат в in-memory очередях sender. Типичные моменты, когда store догоняет: после потери пира или после **`stop`** (teardown sender сбрасывает в store).
 
-### In-memory очередь отправки
-
-**`lnr_send_queue_depth` / `Client::send_queue_depth`** — сумма сообщений в **RAM**-worklist sender (то, что ограничивает `max_send_queue` / `LNR_ERR_BUSY`). **`0`**, если клиент не running. Это **не** offline-глубина store.
-
-**`lnr_send_queue_depth_by_peer`** — `(addr, count)` по известным маршрутам.
-
-**`lnr_list_subscriptions`** / **`lnr_list_related_topics`** — in-memory списки (подписки без internal channel).
-
 ---
 
 ## Runtime-лимиты
 
-Два процессно-глобальных параметра влияют на кадрирование и сжатие:
+Процессно-глобальные параметры:
 
 | Параметр | По умолчанию | Setters / getters |
 |----------|--------------|-------------------|
 | Максимальный размер кадрированного TCP-сообщения | 1 ГиБ | `lnr_set_max_message_size` / `lnr_get_max_message_size` |
 | Max in-memory send queue **на пира** | unlimited (`0`) | `lnr_set_max_send_queue` |
-| Stream-check / would-block timeout | 10 с | `lnr_set_stream_check_timeout_ms` / `lnr_set_would_block_timeout_ms` |
 | Минимальный размер payload, с которого пробуется zstd | 1 МиБ | `lnr_set_compress_threshold` / `lnr_get_compress_threshold` |
 
-- Значение **`0`** отвергается (`FALSE` / `false`).
-- Лучше задавать **до** `run`. Менять позже можно, но новые значения видят только **новые** кадры / новые вызовы `Message::new`.
+- Значение **`0`** отвергается (`FALSE` / `false`), кроме **`max_send_queue`**, где **`0` = без лимита**.
+- Лучше задавать **до** `run`. Менять позже можно, но новые значения видят только **новые** кадры / enqueue.
+- Таймауты stream-check / would-block остаются **10 с** (константы крейта, не публичные tunables).
 - Подробности и заметки по DoS: [capacity-and-limits.md](capacity-and-limits.md).
 
 ---

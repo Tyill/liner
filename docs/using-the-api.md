@@ -65,12 +65,11 @@ Rules:
 
 | Getter | While running | After `stop` |
 |--------|---------------|--------------|
-| `unique_name` | Always available | Always available |
-| `topic` | Constructor source topic | Same |
-| `bind_addr` | Constructor TCP bind string | Same (not rewritten by ephemeral bind) |
 | `advertise_addr` | Configured advertise, if set | Same (independent of catalog) |
 | `bound_listen_addr` | Actual local bind address after successful `run` | **Kept** (last successful bind) |
 | `published_addr` | String currently registered in the store | **Cleared** (`NULL` / `None`) |
+
+Constructor `unique_name` / `topic` / bind string are the values you passed in; they are not re-exported on the C/Python surface.
 
 ---
 
@@ -109,19 +108,6 @@ Full code table and per-function outcomes: [errors-and-logging.md](errors-and-lo
 
 **`lnr_pending_by_peer` / `Client::pending_by_peer`** walks the same routes and reports **per peer** `(addr, topic, unique_name, count)`. Sum of counts matches `pending_count` when both succeed.
 
-### In-memory send queue
-
-**`lnr_send_queue_depth` / `Client::send_queue_depth`** sums messages waiting in the sender’s **RAM** worklists (what `max_send_queue` / `LNR_ERR_BUSY` constrain). Returns **`0`** if the client is not running. This is **not** the store offline depth.
-
-**`lnr_send_queue_depth_by_peer`** reports `(addr, count)` for known send routes. Sum of counts matches `send_queue_depth` for those routes.
-
-### Subscriptions and related topics
-
-- **`lnr_list_subscriptions`**: app-facing subscriptions (excludes `__#internal_channel`).
-- **`lnr_list_related_topics`**: topics this client has sent to, subscribed to, or refreshed — same set as the status peer-event filter.
-
-Both are in-memory only (no store round-trip); empty → success with zero callbacks.
-
 ---
 
 ## Runtime limits
@@ -133,12 +119,11 @@ Process-global tunables:
 | Max framed TCP message size | 1 GiB | `lnr_set_max_message_size` / `lnr_get_max_message_size` |
 | Min payload size before zstd is attempted | 1 MiB | `lnr_set_compress_threshold` / `lnr_get_compress_threshold` |
 | Max in-memory sender messages **per peer** | unlimited (`0`) | `lnr_set_max_send_queue` / `lnr_get_max_send_queue` |
-| Stream availability poll interval | 10 s | `lnr_set_stream_check_timeout_ms` / getter |
-| Bytestream would-block wait | 10 s | `lnr_set_would_block_timeout_ms` / getter |
 
-- Size / timeout setters reject **`0`** (`FALSE`), except **`max_send_queue`** where **`0` means unlimited**.
-- Prefer setting values **before** `run`. Changing later is allowed, but only **new** frames / waits / enqueues see the new values.
+- Size setters reject **`0`** (`FALSE`), except **`max_send_queue`** where **`0` means unlimited**.
+- Prefer setting values **before** `run`. Changing later is allowed, but only **new** frames / enqueues see the new values.
 - When `max_send_queue > 0` and a peer’s in-memory worklist is full, `send_to` / `send_all` return **`FALSE`** + **`LNR_ERR_BUSY`** (and may emit **`LNR_SENDER_BUSY`**). Other peers are unaffected.
+- Stream-check / would-block waits stay at **10 s** (crate constants, not public tunables).
 - Details: [capacity-and-limits.md](capacity-and-limits.md).
 
 ---

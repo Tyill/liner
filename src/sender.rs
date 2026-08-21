@@ -224,7 +224,7 @@ impl Sender {
     }
 
     /// Total in-memory messages waiting to send (all peer slots). Not store/offline depth.
-    pub fn send_queue_depth(&self) -> u64 {
+    pub(crate) fn send_queue_depth(&self) -> u64 {
         let Ok(mess) = self.messages.lock() else {
             return 0;
         };
@@ -234,7 +234,7 @@ impl Sender {
     }
 
     /// Per-peer in-memory send queue depth for known routes (`addrs_for`).
-    pub fn send_queue_depth_by_peer(&self) -> Vec<(String, u64)> {
+    pub(crate) fn send_queue_depth_by_peer(&self) -> Vec<(String, u64)> {
         let Ok(mess) = self.messages.lock() else {
             return Vec::new();
         };

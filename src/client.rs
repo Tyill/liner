@@ -22,15 +22,9 @@ use std::collections::{HashMap, HashSet};
 #[doc(hidden)]
 pub struct ClientRepr {
     unique_name: String,
-    /// NUL-terminated copy for C `lnr_unique_name`.
-    c_unique_name: CString,
     source_topic: String,
-    /// NUL-terminated copy for C `lnr_topic`.
-    c_source_topic: CString,
     /// TCP bind string from the constructor (not overwritten by advertise / ephemeral port).
     localhost: String,
-    /// NUL-terminated copy for C `lnr_bind_addr`.
-    c_localhost: CString,
     /// Optional address published to the store catalog (see [`Client::set_advertise_addr`]).
     advertise: Option<String>,
     c_advertise: Option<CString>,
@@ -92,17 +86,11 @@ fn client_fields(
     localhost: String,
     db: Arc<Mutex<dyn Store>>,
 ) -> Client {
-    let c_unique_name = cstring_lossy(&unique_name);
-    let c_source_topic = cstring_lossy(&source_topic);
-    let c_localhost = cstring_lossy(&localhost);
     Client {
         inner: Box::new(ClientRepr {
             unique_name,
-            c_unique_name,
             source_topic,
-            c_source_topic,
             localhost,
-            c_localhost,
             advertise: None,
             c_advertise: None,
             db,
@@ -289,27 +277,14 @@ impl ClientRepr {
         &self.unique_name
     }
 
-    /// C-compatible pointer owned by this client (stable until the client is dropped).
-    pub fn unique_name_c_str(&self) -> *const i8 {
-        self.c_unique_name.as_ptr()
-    }
-
     /// Source topic from the constructor (registration / self-topic).
     pub fn topic(&self) -> &str {
         &self.source_topic
     }
 
-    pub fn topic_c_str(&self) -> *const i8 {
-        self.c_source_topic.as_ptr()
-    }
-
     /// Constructor TCP bind string (`localhost` argument). Not rewritten by ephemeral bind.
     pub fn bind_addr(&self) -> &str {
         &self.localhost
-    }
-
-    pub fn bind_addr_c_str(&self) -> *const i8 {
-        self.c_localhost.as_ptr()
     }
 
     /// Configured advertise string, if any (`None` when cleared / never set).
@@ -483,6 +458,15 @@ impl ClientRepr {
             &mut self.listener,
             &mut self.subscriptions,
         ) {
+            // Catalog was registered before listener start; `stop()` is a no-op
+            // when `is_run` is false, so roll back here (same as LNR_ERR_STARTUP).
+            rollback_run_catalog(
+                &self.db,
+                &self.source_topic,
+                true,
+                &mut self.listener,
+                &mut self.subscriptions,
+            );
             self.is_run = false;
             self.published_addr = None;
             self.c_published_addr = None;
@@ -977,7 +961,7 @@ impl ClientRepr {
     }
 
     /// App-facing subscriptions (excludes `__#internal_channel`).
-    pub fn list_subscriptions(&self) -> Vec<String> {
+    pub(crate) fn list_subscriptions(&self) -> Vec<String> {
         let _lock = self.mtx.lock();
         self.subscriptions
             .values()
@@ -987,7 +971,7 @@ impl ClientRepr {
     }
 
     /// Topics this client has sent to, subscribed to, or refreshed (status peer filter).
-    pub fn list_related_topics(&self) -> Vec<String> {
+    pub(crate) fn list_related_topics(&self) -> Vec<String> {
         let _lock = self.mtx.lock();
         self.related_topics.iter().cloned().collect()
     }
@@ -1031,7 +1015,7 @@ impl ClientRepr {
     }
 
     /// Total in-memory sender queue depth (not store/offline). `0` if not running.
-    pub fn send_queue_depth(&self) -> u64 {
+    pub(crate) fn send_queue_depth(&self) -> u64 {
         let _lock = self.mtx.lock();
         match &self.sender {
             Some(s) => s.send_queue_depth(),
@@ -1040,13 +1024,62 @@ impl ClientRepr {
     }
 
     /// Per-peer in-memory sender queue depths for known routes. Empty if not running.
-    pub fn send_queue_depth_by_peer(&self) -> Vec<(String, u64)> {
+    pub(crate) fn send_queue_depth_by_peer(&self) -> Vec<(String, u64)> {
         let _lock = self.mtx.lock();
         match &self.sender {
             Some(s) => s.send_queue_depth_by_peer(),
             None => Vec::new(),
         }
     }
+}
+
+/// Unregister source topic and the internal channel after a failed `run`.
+/// Must run while `source_localhost` on the store still matches the catalog row
+/// (before clearing [`ClientRepr::published_addr`] is fine — store keeps the addr).
+fn rollback_run_catalog(
+    db: &Arc<Mutex<dyn Store>>,
+    source_topic: &str,
+    listener_up: bool,
+    listener: &mut Option<Listener>,
+    subscriptions: &mut HashMap<i32, String>,
+) {
+    let mut db = db.lock().unwrap();
+    let _ = db.unregist_topic(source_topic);
+    let _ = unsubscribe_inner(
+        INTERNAL_CHANNEL_TOPIC,
+        source_topic,
+        &mut *db,
+        listener_up && listener.is_some(),
+        listener,
+        subscriptions,
+    );
+}
+
+#[cfg(test)]
+static FORCE_INTERNAL_SUBSCRIBE_ERR: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+fn test_force_internal_subscribe_error_load() -> bool {
+    FORCE_INTERNAL_SUBSCRIBE_ERR.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Clears the inject flag on drop (hold [`tests::client_run_test_lock`] while using).
+#[cfg(test)]
+pub struct ForceInternalSubscribeErrorGuard;
+
+#[cfg(test)]
+impl Drop for ForceInternalSubscribeErrorGuard {
+    fn drop(&mut self) {
+        FORCE_INTERNAL_SUBSCRIBE_ERR.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Test-only: force internal-channel `subscribe_inner` to fail until the guard is dropped.
+#[cfg(test)]
+pub fn test_force_internal_subscribe_error() -> ForceInternalSubscribeErrorGuard {
+    FORCE_INTERNAL_SUBSCRIBE_ERR.store(true, std::sync::atomic::Ordering::SeqCst);
+    ForceInternalSubscribeErrorGuard
 }
 
 fn subscribe_inner(
@@ -1057,6 +1090,11 @@ fn subscribe_inner(
     listener: &mut Option<Listener>,
     subscriptions: &mut HashMap<i32, String>,
 ) -> bool {
+    #[cfg(test)]
+    if test_force_internal_subscribe_error_load() && topic == INTERNAL_CHANNEL_TOPIC {
+        print_error!("test inject: internal subscribe failed");
+        return false;
+    }
     if topic == source_topic {
         print_error!("you can't subscribe on your own topic");
         return false;
@@ -1508,6 +1546,51 @@ mod tests {
         assert!(!ok);
         assert_eq!(c.last_error(), ErrorCode::Startup);
         assert!(!c.is_running());
+        let rows = c.list_addresses("t_startup").expect("list");
+        assert!(rows.is_empty(), "startup fail must unregist catalog, got {rows:?}");
+    }
+
+    #[test]
+    fn run_internal_subscribe_fail_unregisters_catalog() {
+        let _run_lock = client_run_test_lock();
+        let path = format!(
+            "{}/liner_int_sub_fail_{}_{}.sqlite",
+            std::env::temp_dir().display(),
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let _ = std::fs::remove_file(&path);
+        let topic = "t_int_sub_fail";
+        let name = "u_int_sub_fail";
+        let mut c = Client::new_sqlite(name, topic, "127.0.0.1:0", &path, "")
+            .expect("sqlite client");
+        {
+            let _force = test_force_internal_subscribe_error();
+            assert!(!c.run(recv_noop, UData::null()));
+        }
+        assert_eq!(c.last_error(), ErrorCode::Store);
+        assert!(!c.is_running());
+        assert!(c.published_addr().is_none());
+        let rows = c.list_addresses(topic).expect("list");
+        assert!(
+            rows.is_empty(),
+            "failed run must not leave a catalog row, got {rows:?}"
+        );
+        assert!(c.stop());
+        assert!(c.run(recv_noop, UData::null()));
+        assert!(c.is_running());
+        let rows = c.list_addresses(topic).expect("list after retry");
+        assert!(
+            rows.iter().any(|(_, n)| n == name),
+            "retry run should register, got {rows:?}"
+        );
+        assert!(c.stop());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path}-wal"));
+        let _ = std::fs::remove_file(format!("{path}-shm"));
     }
 
     #[test]

@@ -114,42 +114,6 @@ def get_max_send_queue() -> int:
     return int(pfun())
 
 
-def set_stream_check_timeout_ms(ms: int) -> bool:
-    if not lib_:
-        raise Exception('lib not load')
-    pfun = lib_.lnr_set_stream_check_timeout_ms
-    pfun.restype = ctypes.c_bool
-    pfun.argtypes = (ctypes.c_ulonglong,)
-    return pfun(ms)
-
-
-def get_stream_check_timeout_ms() -> int:
-    if not lib_:
-        raise Exception('lib not load')
-    pfun = lib_.lnr_get_stream_check_timeout_ms
-    pfun.restype = ctypes.c_ulonglong
-    pfun.argtypes = ()
-    return int(pfun())
-
-
-def set_would_block_timeout_ms(ms: int) -> bool:
-    if not lib_:
-        raise Exception('lib not load')
-    pfun = lib_.lnr_set_would_block_timeout_ms
-    pfun.restype = ctypes.c_bool
-    pfun.argtypes = (ctypes.c_ulonglong,)
-    return pfun(ms)
-
-
-def get_would_block_timeout_ms() -> int:
-    if not lib_:
-        raise Exception('lib not load')
-    pfun = lib_.lnr_get_would_block_timeout_ms
-    pfun.restype = ctypes.c_ulonglong
-    pfun.argtypes = ()
-    return int(pfun())
-
-
 _logCBack = None
 
 
@@ -361,61 +325,6 @@ class Client:
             return None
         return out
 
-    def send_queue_depth(self) -> int:
-        """In-memory sender queue depth (not store/offline); ``0`` if not running."""
-        pfun = lib_.lnr_send_queue_depth
-        pfun.restype = ctypes.c_longlong
-        pfun.argtypes = (ctypes.c_void_p,)
-        return int(pfun(self.hClient_))
-
-    def send_queue_depth_by_peer(self):
-        """Return ``[(addr, count), ...]`` for known in-memory send routes."""
-        out = []
-        QueueCb = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_longlong, ctypes.c_void_p)
-
-        def c_cb(addr, count, _udata):
-            out.append((addr.decode("utf-8") if addr else "", int(count)))
-
-        cb = QueueCb(c_cb)
-        pfun = lib_.lnr_send_queue_depth_by_peer
-        pfun.restype = ctypes.c_bool
-        pfun.argtypes = (ctypes.c_void_p, QueueCb, ctypes.c_void_p)
-        if not pfun(self.hClient_, cb, None):
-            return None
-        return out
-
-    def list_subscriptions(self):
-        """App-facing subscription topics (excludes internal channel)."""
-        out = []
-        TopicCb = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_void_p)
-
-        def c_cb(topic, _udata):
-            out.append(topic.decode("utf-8") if topic else "")
-
-        cb = TopicCb(c_cb)
-        pfun = lib_.lnr_list_subscriptions
-        pfun.restype = ctypes.c_bool
-        pfun.argtypes = (ctypes.c_void_p, TopicCb, ctypes.c_void_p)
-        if not pfun(self.hClient_, cb, None):
-            return None
-        return out
-
-    def list_related_topics(self):
-        """Topics this client has sent to / subscribed / refreshed."""
-        out = []
-        TopicCb = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_void_p)
-
-        def c_cb(topic, _udata):
-            out.append(topic.decode("utf-8") if topic else "")
-
-        cb = TopicCb(c_cb)
-        pfun = lib_.lnr_list_related_topics
-        pfun.restype = ctypes.c_bool
-        pfun.argtypes = (ctypes.c_void_p, TopicCb, ctypes.c_void_p)
-        if not pfun(self.hClient_, cb, None):
-            return None
-        return out
-
     def set_advertise_addr(self, addr)->bool:
         """Publish ``addr`` to the store catalog instead of the bind string. Call before ``run``.
 
@@ -440,29 +349,6 @@ class Client:
         pfun.restype = ctypes.c_bool
         pfun.argtypes = (ctypes.c_void_p,)
         return pfun(self.hClient_)
-
-    def unique_name(self):
-        pfun = lib_.lnr_unique_name
-        pfun.restype = ctypes.c_char_p
-        pfun.argtypes = (ctypes.c_void_p,)
-        raw = pfun(self.hClient_)
-        return raw.decode("utf-8") if raw else None
-
-    def topic(self):
-        """Source topic from the constructor."""
-        pfun = lib_.lnr_topic
-        pfun.restype = ctypes.c_char_p
-        pfun.argtypes = (ctypes.c_void_p,)
-        raw = pfun(self.hClient_)
-        return raw.decode("utf-8") if raw else None
-
-    def bind_addr(self):
-        """Constructor TCP bind string (``localhost`` argument)."""
-        pfun = lib_.lnr_bind_addr
-        pfun.restype = ctypes.c_char_p
-        pfun.argtypes = (ctypes.c_void_p,)
-        raw = pfun(self.hClient_)
-        return raw.decode("utf-8") if raw else None
 
     def advertise_addr(self):
         """Configured advertise string; ``None`` if never set / cleared."""

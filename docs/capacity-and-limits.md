@@ -106,13 +106,13 @@ These affect syscall batching, not the logical max message size.
 1. **Per application payload:** size ≤ compression threshold (1 MiB default) → no zstd attempt; **above threshold** → zstd may run (CPU cost; smaller wire if data is compressible).
 2. **Per framed TCP message:** declared length must be **≤ runtime `max_message_size`** (1 GiB default) or the connection is aborted for that read path.
 3. **RAM:** plan for **peak concurrent messages × mempool footprint** per active connection (listener and sender each use mempools for their worklists). Add headroom for **fragmentation** (the allocator may keep extra chunks when the 20% rule blocks merging).
-4. **Disk / Redis memory:** **at-least-once** offline queues store **encoded** message blobs; size ≈ wire size (compressed if compression was used). Use **`lnr_pending_count`** / **`lnr_pending_by_peer`** for offline depth; **`lnr_send_queue_depth`** / **`lnr_send_queue_depth_by_peer`** for live in-memory depth.
+4. **Disk / Redis memory:** **at-least-once** offline queues store **encoded** message blobs; size ≈ wire size (compressed if compression was used). Use **`lnr_pending_count`** / **`lnr_pending_by_peer`** for offline depth.
 5. **DoS / untrusted peers:** lower **`lnr_set_max_message_size`** before `run` if the default 1 GiB cap is too high. Cap in-memory send queues with **`lnr_set_max_send_queue`** when producers can outrun drains.
 
 ### Send queue and timeouts
 
-- **`max_send_queue`** (default **`0` = unlimited**): max in-memory messages **per peer slot**. Full queue → `LNR_ERR_BUSY` / `LNR_SENDER_BUSY`. Inspect live depth with **`lnr_send_queue_depth`**.
-- Stream-check / would-block timeouts default to 10 s; tunable via **`lnr_set_stream_check_timeout_ms`** / **`lnr_set_would_block_timeout_ms`** (`0` rejected). Prefer before `run`.
+- **`max_send_queue`** (default **`0` = unlimited**): max in-memory messages **per peer slot**. Full queue → `LNR_ERR_BUSY` / `LNR_SENDER_BUSY`.
+- Stream-check / would-block timeouts default to 10 s (crate constants; not runtime-tunable on the public API).
 
 ---
 
