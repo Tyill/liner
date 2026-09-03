@@ -1,3 +1,4 @@
+use crate::bytestream::{FeedOutcome, FrameReadState};
 use crate::message::Message;
 use crate::mempool::Mempool;
 use crate::store::Store;
@@ -14,7 +15,7 @@ use std::thread;
 use std::time::Duration;
 use std::sync::{ Arc, Mutex, Condvar};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::io::{self,BufReader};
+use std::io;
 use std::ffi::CString;
 
 use std::net::SocketAddr;
@@ -23,8 +24,9 @@ use mio::{Events, Interest, Poll, Token, Waker};
 
 struct ReadStream{
     stream: Option<TcpStream>,
-    is_active: bool,
-    is_close: bool
+    is_close: bool,
+    frame: FrameReadState,
+    mempool: Arc<Mutex<Mempool>>,
 }
 
 struct Sender{
@@ -38,7 +40,7 @@ struct Sender{
 type MessList = Vec<Option<Vec<Message>>>; 
 type MempoolList = Vec<Arc<Mutex<Mempool>>>; 
 type SenderList = Vec<Sender>;
-type ReadStreamList = Vec<Arc<Mutex<ReadStream>>>; 
+type ReadStreamList = Vec<ReadStream>; 
 
 /// Accept/token index `ix` is shared across `streams[ix]`, `senders[ix]`, `mempools[ix]`,
 /// and `messages[ix]`, and is owned by one `SocketAddr` in the accept map for the life of
@@ -123,9 +125,9 @@ impl Listener {
                             break;
                         }
                         client =>{
-                            if let Some(stream) = streams.get(client.0){
+                            if let Some(stream) = streams.get_mut(client.0){
                                 read_stream(client, stream, &senders,
-                                            db.clone(), &mempools, &messages_, &receive_thread_cvar_,
+                                            db.clone(), &messages_, &receive_thread_cvar_,
                                             status_emitter_stream.clone());
                             }
                         }                        
@@ -321,18 +323,20 @@ fn listener_accept(poll: &Poll,
                 }          
                 if let Ok(()) = poll.registry().register(&mut stream, token, Interest::READABLE){
                     if ix == usize::MAX{
-                        streams.push(Arc::new(Mutex::new(ReadStream{
+                        let mempool = Arc::new(Mutex::new(Mempool::new()));
+                        streams.push(ReadStream{
                             stream: Some(stream),
-                            is_active: false,
                             is_close: false,
-                        })));    
+                            frame: FrameReadState::new(),
+                            mempool: mempool.clone(),
+                        });    
                         if let Ok(mut s) = senders.lock() {
                             s.push(Sender{sender_topic: "".to_owned(), connection_key: -1, last_mess_num: 0, last_mess_num_preview: 0, last_mess_num_saved: 0});
                         } else {
                             print_error!("listener_accept: senders lock poisoned");
                         }
                         if let Ok(mut mp) = mempools.lock() {
-                            mp.push(Arc::new(Mutex::new(Mempool::new())));
+                            mp.push(mempool);
                         } else {
                             print_error!("listener_accept: mempools lock poisoned");
                         }
@@ -345,11 +349,14 @@ fn listener_accept(poll: &Poll,
                     }else{
                         // Same SocketAddr reconnects: keep index + mempool/sender/`last_mess_num`.
                         // Only replace the TCP stream — do not reset parallel slot vectors.
-                        streams[ix] = Arc::new(Mutex::new(ReadStream{
+                        let mempool = streams[ix].mempool.clone();
+                        streams[ix].frame.abort(&mempool);
+                        streams[ix] = ReadStream{
                             stream: Some(stream),
-                            is_active: false,
                             is_close: false,
-                        }));    
+                            frame: FrameReadState::new(),
+                            mempool,
+                        };
                     }
                 }else{
                     print_error!(format!("couldn't poll.registry() stream"));
@@ -368,156 +375,153 @@ fn listener_accept(poll: &Poll,
 }
 
 fn read_stream(token: Token,
-               stream: &Arc<Mutex<ReadStream>>,
+               stream: &mut ReadStream,
                senders: &Arc<Mutex<SenderList>>,
                db: Arc<Mutex<dyn Store>>,
-               mempools: &Arc<Mutex<MempoolList>>,
                messages: &Arc<Mutex<MessList>>,
                receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>,
                status_emitter: StatusEmitter){
-    if let Ok(mut stream) = stream.lock(){
-        if !stream.is_active && !stream.is_close{
-            stream.is_active = true;
-        }else{
-            return;
-        }
-    }else{
+    let mempool = stream.mempool.clone();
+    if stream.is_close {
         return;
     }
-    let stream = stream.clone();
-    let senders = senders.clone();
-    let mempool = match mempools.lock() {
-        Ok(mp) => match mp.get(token.0) {
-            Some(m) => m.clone(),
-            None => {
-                print_error!(&format!("read_stream: mempool index out of bounds for token {}", token.0));
-                if let Ok(mut s) = stream.lock() {
-                    s.is_active = false;
-                }
-                return;
-            }
-        },
-        Err(_) => {
-            print_error!("read_stream: mempools lock poisoned");
-            if let Ok(mut s) = stream.lock() {
-                s.is_active = false;
-            }
-            return;
-        }
-    };
-    let tcp_stream = match stream.lock() {
-        Ok(mut s) => match s.stream.take() {
-            Some(ts) => ts,
-            None => {
-                s.is_active = false;
-                return;
-            }
-        },
-        Err(_) => {
-            print_error!("read_stream: stream lock poisoned");
-            return;
-        }
-    };
-    let messages = messages.clone();
-    let receive_thread_cvar = receive_thread_cvar.clone();
 
-    rayon::spawn(move || {           
-        let mut mess_buff: Vec<Message> = Vec::with_capacity(settings::LISTENER_RECEIVE_FLUSH_BATCH);      
-        let mut last_mess_num = 0;
-        if let Ok(senders) = senders.lock(){
-            if let Some(sender) = senders.get(token.0) {
-                last_mess_num = sender.last_mess_num_preview;
-            } else {
-                print_error!(&format!("read_stream: sender index out of bounds for token {}", token.0));
-            }
+    let mut mess_buff: Vec<Message> = Vec::with_capacity(settings::LISTENER_RECEIVE_FLUSH_BATCH);
+    let mut last_mess_num = 0;
+    if let Ok(senders) = senders.lock(){
+        if let Some(sender) = senders.get(token.0) {
+            last_mess_num = sender.last_mess_num_preview;
+        } else {
+            print_error!(&format!("read_stream: sender index out of bounds for token {}", token.0));
         }
-        let reader_stream = tcp_stream;
-        let mut is_shutdown = false;
-        {
-            let mut reader = BufReader::with_capacity(settings::READ_BUFFER_CAPASITY, &reader_stream);
-            while let Some(mess) = Message::from_stream(&mempool, reader.by_ref(), &mut is_shutdown){
-                if last_mess_num == 0{
-                    let mut connection_key = None;
-                    let mut sender_topic = String::new();
-                    if let Ok(mut senders) = senders.lock() {
-                        if let Some(sender) = senders.get_mut(token.0) {
-                            if sender.connection_key == -1{
-                                sender.connection_key = mess.connection_key(&mempool);
-                                sender.sender_topic = get_sender_topic(&db, sender.connection_key, &status_emitter);
+    }
+
+    let mut is_shutdown = false;
+    let mut scratch = [0u8; settings::BYTESTREAM_READ_BUFFER_SIZE];
+    loop {
+        let n = {
+            let Some(tcp) = stream.stream.as_mut() else {
+                break;
+            };
+            match tcp.read(&mut scratch) {
+                Ok(0) => {
+                    stream.frame.abort(&mempool);
+                    is_shutdown = true;
+                    break;
+                }
+                Ok(n) => n,
+                Err(err) => {
+                    let k = err.kind();
+                    if k == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    if k == io::ErrorKind::WouldBlock {
+                        break;
+                    }
+                    print_error!(&format!("read_stream: {}", k));
+                    stream.frame.abort(&mempool);
+                    is_shutdown = true;
+                    break;
+                }
+            }
+        };
+        let mut off = 0;
+        while off < n {
+            let (used, outcome) = stream.frame.feed(&scratch[off..n], &mempool);
+            if used == 0 {
+                break;
+            }
+            off += used;
+            match outcome {
+                FeedOutcome::NeedMore => break,
+                FeedOutcome::Shutdown => {
+                    is_shutdown = true;
+                    break;
+                }
+                FeedOutcome::Frame { mem_pos, mem_len } => {
+                    let Some(mess) = Message::from_alloc(&mempool, mem_pos, mem_len) else {
+                        is_shutdown = true;
+                        break;
+                    };
+                    if last_mess_num == 0 {
+                        let mut connection_key = None;
+                        let mut sender_topic = String::new();
+                        if let Ok(mut senders) = senders.lock() {
+                            if let Some(sender) = senders.get_mut(token.0) {
+                                if sender.connection_key == -1 {
+                                    sender.connection_key = mess.connection_key(&mempool);
+                                    sender.sender_topic = get_sender_topic(&db, sender.connection_key, &status_emitter);
+                                }
+                                connection_key = Some(sender.connection_key);
+                                sender_topic = sender.sender_topic.clone();
+                            } else {
+                                print_error!(&format!("read_stream: sender index out of bounds for token {}", token.0));
                             }
-                            connection_key = Some(sender.connection_key);
-                            sender_topic = sender.sender_topic.clone();
                         } else {
-                            print_error!(&format!("read_stream: sender index out of bounds for token {}", token.0));
+                            print_error!("read_stream: senders lock poisoned (init)");
+                        }
+                        if let Some(connection_key) = connection_key {
+                            last_mess_num = get_last_mess_number(
+                                &db,
+                                connection_key,
+                                0,
+                                &sender_topic,
+                                &status_emitter,
+                            );
+                        }
+                    }
+                    if mess.number_mess > last_mess_num {
+                        last_mess_num = mess.number_mess;
+                        mess_buff.push(mess);
+                        if mess_buff.len() >= settings::LISTENER_RECEIVE_FLUSH_BATCH {
+                            flush_received_messages(
+                                token.0,
+                                &mut mess_buff,
+                                messages,
+                                receive_thread_cvar,
+                                &mempool,
+                            );
                         }
                     } else {
-                        print_error!("read_stream: senders lock poisoned (init)");
+                        mess.free(&mempool);
                     }
-                    if let Some(connection_key) = connection_key {
-                        last_mess_num = get_last_mess_number(
-                            &db,
-                            connection_key,
-                            0,
-                            &sender_topic,
-                            &status_emitter,
-                        );
-                    }
-                }
-                if mess.number_mess > last_mess_num{
-                    last_mess_num = mess.number_mess;
-                    mess_buff.push(mess);
-                    if mess_buff.len() >= settings::LISTENER_RECEIVE_FLUSH_BATCH {
-                        flush_received_messages(
-                            token.0,
-                            &mut mess_buff,
-                            &messages,
-                            &receive_thread_cvar,
-                            &mempool,
-                        );
-                    }
-                }else{
-                    mess.free(&mempool);
                 }
             }
         }
-        flush_received_messages(
-            token.0,
-            &mut mess_buff,
-            &messages,
-            &receive_thread_cvar,
-            &mempool,
-        );
-        if let Ok(mut senders) = senders.lock(){
-            if let Some(sender) = senders.get_mut(token.0){
-                sender.last_mess_num_preview = last_mess_num;
-            } else {
-                print_error!(&format!("read_stream: sender index out of bounds for token {}", token.0));
-            }    
-        }
         if is_shutdown {
-            let _ = reader_stream.shutdown(std::net::Shutdown::Read);
+            break;
         }
-        if let Ok(mut stream) = stream.lock() {
-            // Put stream back so the poll thread can deregister it if needed.
-            stream.stream = Some(reader_stream);
-            stream.is_close = is_shutdown;
-            stream.is_active = false;
+    }
+    flush_received_messages(
+        token.0,
+        &mut mess_buff,
+        messages,
+        receive_thread_cvar,
+        &mempool,
+    );
+    if let Ok(mut senders) = senders.lock(){
+        if let Some(sender) = senders.get_mut(token.0){
+            sender.last_mess_num_preview = last_mess_num;
+        } else {
+            print_error!(&format!("read_stream: sender index out of bounds for token {}", token.0));
         }
-    });
+    }
+    if is_shutdown {
+        if let Some(tcp) = stream.stream.as_ref() {
+            let _ = tcp.shutdown(std::net::Shutdown::Read);
+        }
+        stream.is_close = true;
+    }
 }
 
 fn cleanup_closed_streams(poll: &Poll, streams: &mut ReadStreamList) {
     // Drop the TCP fd only. Leave `address` → index and mempool/sender slots intact so a later
     // accept from the same SocketAddr reclaims its own index (see module docs on `Listener`).
-    for stream_lock in streams.iter() {
-        let mut to_deregister: Option<TcpStream> = None;
-        if let Ok(mut s) = stream_lock.lock() {
-            if s.is_close {
-                to_deregister = s.stream.take();
+    for s in streams.iter_mut() {
+        if s.is_close {
+            if let Some(mut tcp) = s.stream.take() {
+                let _ = poll.registry().deregister(&mut tcp);
             }
-        }
-        if let Some(mut stream) = to_deregister {
-            let _ = poll.registry().deregister(&mut stream);
         }
     }
 }
@@ -1002,5 +1006,114 @@ mod tests {
         unsafe { drop(Box::from_raw(raw_mutex)); }
 
         assert_eq!(records.len(), expected);
+    }
+
+    #[test]
+    fn tcp_split_frame_does_not_spin_on_wouldblock() {
+        use std::io::{ErrorKind, Write};
+        use std::net::TcpListener;
+        use std::time::Instant;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let _ = server.set_nodelay(true);
+
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let msg = Message::new(mempool.clone(), 1, 7, 1, b"split-tcp", false).unwrap();
+        let mut wire = Vec::new();
+        assert!(msg.to_stream(&mempool, &mut wire));
+        assert!(wire.len() > 4);
+
+        client.write_all(&wire[..2]).unwrap();
+        client.flush().unwrap();
+
+        let mut frame = FrameReadState::new();
+        let mut scratch = [0u8; settings::BYTESTREAM_READ_BUFFER_SIZE];
+        let mut got_partial = false;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(2) {
+            match server.read(&mut scratch) {
+                Ok(0) => panic!("peer closed before split header"),
+                Ok(n) => {
+                    let mut off = 0;
+                    while off < n {
+                        let (used, outcome) = frame.feed(&scratch[off..n], &mempool);
+                        off += used;
+                        match outcome {
+                            FeedOutcome::NeedMore => {
+                                got_partial = true;
+                                break;
+                            }
+                            FeedOutcome::Frame { .. } => panic!("complete frame from header fragment"),
+                            FeedOutcome::Shutdown => panic!("shutdown on header fragment"),
+                        }
+                    }
+                }
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    if got_partial {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+                Err(err) => panic!("{err}"),
+            }
+        }
+        assert!(got_partial, "expected 2-byte header to reach feed");
+        let spin_start = Instant::now();
+        match server.read(&mut scratch) {
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {}
+            Ok(0) => panic!("eof while waiting for rest of frame"),
+            Ok(_) => {}
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) => panic!("{err}"),
+        }
+        assert!(
+            spin_start.elapsed() < Duration::from_millis(200),
+            "WouldBlock after partial header spun {:?}",
+            spin_start.elapsed()
+        );
+
+        client.write_all(&wire[2..]).unwrap();
+        client.flush().unwrap();
+
+        let mut decoded = None;
+        let rest_start = Instant::now();
+        while rest_start.elapsed() < Duration::from_secs(2) {
+            match server.read(&mut scratch) {
+                Ok(0) => panic!("eof before complete frame"),
+                Ok(n) => {
+                    let mut off = 0;
+                    while off < n {
+                        let (used, outcome) = frame.feed(&scratch[off..n], &mempool);
+                        off += used;
+                        match outcome {
+                            FeedOutcome::Frame { mem_pos, mem_len } => {
+                                decoded = Message::from_alloc(&mempool, mem_pos, mem_len);
+                                break;
+                            }
+                            FeedOutcome::NeedMore => break,
+                            FeedOutcome::Shutdown => panic!("shutdown finishing split frame"),
+                        }
+                    }
+                    if decoded.is_some() {
+                        break;
+                    }
+                }
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+                Err(err) => panic!("{err}"),
+            }
+        }
+        let decoded = decoded.expect("split TCP frame should complete without 10s spin");
+        assert!(rest_start.elapsed() < Duration::from_secs(2));
+        let mut out = Vec::new();
+        let n = decoded.get_data(&mempool, &mut out);
+        assert_eq!(&out[..n], b"split-tcp");
     }
 }

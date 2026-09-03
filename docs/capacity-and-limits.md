@@ -94,7 +94,7 @@ The mempool is a bump-style arena backed by **`Vec<Vec<u8>>`** in chunks of **`M
 
 | Constant | Default | Where |
 |----------|---------|--------|
-| **`READ_BUFFER_CAPASITY`** | 64 KiB | `BufReader` around TCP read in listener. |
+| **`BYTESTREAM_READ_BUFFER_SIZE`** | 8 KiB | Scratch `read()` on the listener poll thread; bytes go into the connection mempool (no `BufReader`). |
 | **`WRITE_BUFFER_CAPASITY`** | 64 KiB | `BufWriter` around TCP write in sender. |
 
 These affect syscall batching, not the logical max message size.

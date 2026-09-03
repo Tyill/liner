@@ -125,13 +125,13 @@ impl Message{
         // If the lock is poisoned, leave `freed == false` so Drop/retry can try again.
     }
     
-    pub fn from_stream<T>(mempool: &Arc<Mutex<Mempool>>, stream: &mut T, is_shutdown: &mut bool) -> Option<Message>
-        where T: Read{
-        let (mem_alloc_pos, mem_alloc_length, is_shutdown_) = bytestream::read_stream(stream, mempool);
-        if mem_alloc_length == 0{
-            *is_shutdown = is_shutdown_;
-            return None;
-        }
+    /// Build a message from a complete bytestream payload already in `mempool`.
+    /// On error the allocation is freed.
+    pub fn from_alloc(
+        mempool: &Arc<Mutex<Mempool>>,
+        mem_alloc_pos: usize,
+        mem_alloc_length: usize,
+    ) -> Option<Message> {
         if mem_alloc_length < HEADER_LEN + std::mem::size_of::<u32>() {
             print_error!(&format!(
                 "message too short: {} (min {})",
@@ -141,7 +141,6 @@ impl Message{
             if let Ok(mut mp) = mempool.lock() {
                 mp.free(mem_alloc_pos, mem_alloc_length);
             }
-            *is_shutdown = true;
             return None;
         }
         if let Ok(mp) = mempool.lock(){
@@ -171,7 +170,6 @@ impl Message{
                 if let Ok(mut mp) = mempool.lock() {
                     mp.free(mem_alloc_pos, mem_alloc_length);
                 }
-                *is_shutdown = true;
                 return None;
             }
 
@@ -189,7 +187,23 @@ impl Message{
         if let Ok(mut mp) = mempool.lock() {
             mp.free(mem_alloc_pos, mem_alloc_length);
         }
-        None        
+        None
+    }
+
+    pub fn from_stream<T>(mempool: &Arc<Mutex<Mempool>>, stream: &mut T, is_shutdown: &mut bool) -> Option<Message>
+        where T: Read{
+        let (mem_alloc_pos, mem_alloc_length, is_shutdown_) = bytestream::read_stream(stream, mempool);
+        if mem_alloc_length == 0{
+            *is_shutdown = is_shutdown_;
+            return None;
+        }
+        match Message::from_alloc(mempool, mem_alloc_pos, mem_alloc_length) {
+            Some(m) => Some(m),
+            None => {
+                *is_shutdown = true;
+                None
+            }
+        }
     }
     pub fn to_stream<T>(&self, mempool: &Arc<Mutex<Mempool>>, stream: &mut T)->bool 
         where T: Write{        

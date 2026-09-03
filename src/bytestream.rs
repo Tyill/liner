@@ -10,6 +10,121 @@ fn would_block_timeout() -> Duration {
     Duration::from_millis(settings::BYTESTREAM_WOULD_BLOCK_TIMEOUT_MS)
 }
 
+/// Incremental framed-message reader: 4-byte BE length, then payload into mempool.
+/// `msize == 0` means the length header is still incomplete.
+pub struct FrameReadState {
+    msize: usize,
+    hdr: [u8; 4],
+    hdr_got: u8,
+    mem_pos: usize,
+    mem_fill: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum FeedOutcome {
+    NeedMore,
+    Frame { mem_pos: usize, mem_len: usize },
+    Shutdown,
+}
+
+impl Default for FrameReadState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FrameReadState {
+    pub fn new() -> Self {
+        Self {
+            msize: 0,
+            hdr: [0; 4],
+            hdr_got: 0,
+            mem_pos: 0,
+            mem_fill: 0,
+        }
+    }
+
+    /// Incomplete payload alloc still held in `mempool`.
+    #[cfg(test)]
+    pub fn has_in_progress_alloc(&self) -> bool {
+        self.msize > 0
+    }
+
+    pub fn abort(&mut self, mempool: &Arc<Mutex<Mempool>>) {
+        if self.msize > 0 {
+            let len = self.msize;
+            if let Ok(mut mp) = mempool.lock() {
+                mp.free(self.mem_pos, len);
+            }
+        }
+        *self = Self::new();
+    }
+
+    /// Consume a prefix of `data`. Returns bytes used and whether a frame finished,
+    /// more input is needed, or the stream should be closed.
+    pub fn feed(&mut self, data: &[u8], mempool: &Arc<Mutex<Mempool>>) -> (usize, FeedOutcome) {
+        if data.is_empty() {
+            return (0, FeedOutcome::NeedMore);
+        }
+        let mut consumed = 0usize;
+
+        if self.msize == 0 {
+            let need = 4 - self.hdr_got as usize;
+            let take = need.min(data.len());
+            let start = self.hdr_got as usize;
+            self.hdr[start..start + take].copy_from_slice(&data[..take]);
+            self.hdr_got += take as u8;
+            consumed += take;
+            if self.hdr_got < 4 {
+                return (consumed, FeedOutcome::NeedMore);
+            }
+            let msg_len = u32::from_be_bytes(self.hdr) as usize;
+            if msg_len == 0 || msg_len > settings::max_message_size() {
+                print_error!(&format!(
+                    "invalid bytestream length: {} (max {})",
+                    msg_len,
+                    settings::max_message_size()
+                ));
+                *self = Self::new();
+                return (consumed, FeedOutcome::Shutdown);
+            }
+            let Ok(mut mp) = mempool.lock() else {
+                print_error!("FrameReadState: mempool lock poisoned");
+                *self = Self::new();
+                return (consumed, FeedOutcome::Shutdown);
+            };
+            let (mem_pos, mem_alloc_length) = mp.alloc(msg_len);
+            assert_eq!(msg_len, mem_alloc_length);
+            drop(mp);
+            self.msize = msg_len;
+            self.mem_pos = mem_pos;
+            self.mem_fill = 0;
+        }
+
+        let rest = &data[consumed..];
+        let remain = self.msize - self.mem_fill;
+        let take = remain.min(rest.len());
+        if take > 0 {
+            let Ok(mut mp) = mempool.lock() else {
+                print_error!("FrameReadState: mempool lock poisoned");
+                self.abort(mempool);
+                return (consumed, FeedOutcome::Shutdown);
+            };
+            mp.write_data(self.mem_pos + self.mem_fill, &rest[..take]);
+            drop(mp);
+            self.mem_fill += take;
+            consumed += take;
+        }
+        if self.mem_fill == self.msize {
+            let mem_pos = self.mem_pos;
+            let mem_len = self.msize;
+            *self = Self::new();
+            return (consumed, FeedOutcome::Frame { mem_pos, mem_len });
+        }
+        (consumed, FeedOutcome::NeedMore)
+    }
+}
+
 // return: mem_pos, mem_alloc_length, is_shutdown
 pub fn read_stream<T>(stream: &mut T, mempool: &Arc<Mutex<Mempool>>) -> (usize, usize, bool)
 where
@@ -464,5 +579,110 @@ mod tests {
         let ok = write_stream(&mut w, pos, len, &mp);
         assert!(ok);
         assert_eq!(w.into_inner(), expected);
+    }
+
+    fn wire_frame(payload: &[u8]) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        msg.extend_from_slice(payload);
+        msg
+    }
+
+    #[test]
+    fn feed_split_header_then_payload() {
+        let mp = mp();
+        let payload = b"hello-feed";
+        let msg = wire_frame(payload);
+        let mut st = FrameReadState::new();
+
+        let (n, o) = st.feed(&msg[..2], &mp);
+        assert_eq!(n, 2);
+        assert_eq!(o, FeedOutcome::NeedMore);
+        assert!(!st.has_in_progress_alloc());
+
+        let (n, o) = st.feed(&msg[2..4], &mp);
+        assert_eq!(n, 2);
+        assert_eq!(o, FeedOutcome::NeedMore);
+        assert!(st.has_in_progress_alloc());
+
+        let (n, o) = st.feed(&msg[4..8], &mp);
+        assert_eq!(n, 4);
+        assert_eq!(o, FeedOutcome::NeedMore);
+
+        let (n, o) = st.feed(&msg[8..], &mp);
+        assert_eq!(n, payload.len() - 4);
+        match o {
+            FeedOutcome::Frame { mem_pos, mem_len } => {
+                assert_eq!(mem_len, payload.len());
+                assert_eq!(read_from_mp(&mp, mem_pos, mem_len), payload);
+            }
+            other => panic!("{:?}", other),
+        }
+        assert!(!st.has_in_progress_alloc());
+    }
+
+    #[test]
+    fn feed_two_frames_in_one_scratch() {
+        let mp = mp();
+        let a = b"aa";
+        let b = b"bbb";
+        let mut msg = wire_frame(a);
+        msg.extend_from_slice(&wire_frame(b));
+        let mut st = FrameReadState::new();
+
+        let (n1, o1) = st.feed(&msg, &mp);
+        match o1 {
+            FeedOutcome::Frame { mem_pos, mem_len } => {
+                assert_eq!(mem_len, a.len());
+                assert_eq!(read_from_mp(&mp, mem_pos, mem_len), a);
+            }
+            other => panic!("{:?}", other),
+        }
+        let (n2, o2) = st.feed(&msg[n1..], &mp);
+        match o2 {
+            FeedOutcome::Frame { mem_pos, mem_len } => {
+                assert_eq!(mem_len, b.len());
+                assert_eq!(read_from_mp(&mp, mem_pos, mem_len), b);
+            }
+            other => panic!("{:?}", other),
+        }
+        assert_eq!(n1 + n2, msg.len());
+    }
+
+    #[test]
+    fn feed_rejects_zero_and_too_large_length() {
+        let mp = mp();
+        let mut st = FrameReadState::new();
+        let (n, o) = st.feed(&0u32.to_be_bytes(), &mp);
+        assert_eq!(n, 4);
+        assert_eq!(o, FeedOutcome::Shutdown);
+
+        let _lock = settings::test_limits_lock();
+        let mut st = FrameReadState::new();
+        let too_big = (settings::max_message_size() as u32).saturating_add(1);
+        let (n, o) = st.feed(&too_big.to_be_bytes(), &mp);
+        assert_eq!(n, 4);
+        assert_eq!(o, FeedOutcome::Shutdown);
+        assert!(!st.has_in_progress_alloc());
+    }
+
+    #[test]
+    fn feed_abort_frees_partial_payload() {
+        let mp = mp();
+        let payload = vec![7u8; 32];
+        let msg = wire_frame(&payload);
+        let mut st = FrameReadState::new();
+        let (_n, o) = st.feed(&msg[..10], &mp);
+        assert_eq!(o, FeedOutcome::NeedMore);
+        assert!(st.has_in_progress_alloc());
+        st.abort(&mp);
+        assert!(!st.has_in_progress_alloc());
+        // Subsequent full frame still allocates.
+        let (n, o) = st.feed(&msg, &mp);
+        assert_eq!(n, msg.len());
+        match o {
+            FeedOutcome::Frame { mem_len, .. } => assert_eq!(mem_len, payload.len()),
+            other => panic!("{:?}", other),
+        }
     }
 }
