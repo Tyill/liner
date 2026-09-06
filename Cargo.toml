@@ -26,10 +26,12 @@ crate-type = ["cdylib", "rlib"]
 [[bin]]
 name = "bench_pair_sendto_redis"
 path = "benchmark/bench_pair_sendto_redis.rs"
+required-features = ["redis"]
 
 [[bin]]
 name = "bench_pair_sendto_sqlite"
 path = "benchmark/bench_pair_sendto_sqlite.rs"
+required-features = ["sqlite"]
 
 [[bin]]
 name = "bench_pair_sendto_postgres"
@@ -39,28 +41,33 @@ required-features = ["postgres"]
 [[bin]]
 name = "one_to_one"
 path = "rust/one_to_one.rs"
+required-features = ["redis"]
 
 [[bin]]
 name = "one_to_one_for_many"
 path = "rust/one_to_one_for_many.rs"
+required-features = ["redis"]
 
 [[bin]]
 name = "one_to_many"
 path = "rust/one_to_many.rs"
+required-features = ["redis"]
 
 [[bin]]
 name = "many_to_many"
 path = "rust/many_to_many.rs"
+required-features = ["redis"]
 
 [[bin]]
 name = "producer_consumer"
 path = "rust/producer_consumer.rs"
+required-features = ["redis"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-redis = "0.26.1"
-rusqlite = { version = "0.32", features = ["bundled"] }
+redis = { version = "0.26.1", optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 rayon = "1.10"
 zstd = "0.13"
 libc = "0.2"
@@ -68,7 +75,10 @@ mio = { version = "1", features = ["os-poll", "net"] }
 postgres = { version = "0.19", optional = true }
 
 [features]
+default = ["redis", "sqlite"]
 liner_debug = []
+redis = ["dep:redis"]
+sqlite = ["dep:rusqlite"]
 postgres = ["dep:postgres"]
 
 [profile.release]

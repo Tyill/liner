@@ -87,6 +87,14 @@ PostgreSQL backend:
 cargo build --release --features postgres
 ```
 
+Omit Redis or SQLite (and their crates) with `--no-default-features` and the backends you want:
+
+```bash
+cargo build --release --no-default-features --features sqlite
+cargo build --release --no-default-features --features redis
+cargo build --release --no-default-features --features postgres
+```
+
 ---
 
 ### Architecture

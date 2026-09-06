@@ -136,17 +136,19 @@ class Client:
                ):
         if not lib_:
             raise Exception('lib not load')
-        
+        if not hasattr(lib_, 'lnr_new_client_redis'):
+            raise Exception('lib built without redis support (rebuild with feature redis)')
+
         c_redisPath = redisPath.encode("utf-8")
         c_uniqName = uniqName.encode("utf-8")
         c_topic = topic.encode("utf-8")
         c_localhost = localhost.encode("utf-8")
-        
+
         pfun = lib_.lnr_new_client_redis
         pfun.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p)
         pfun.restype = ctypes.c_void_p
         self.hClient_ = ctypes.c_void_p(pfun(c_uniqName, c_topic, c_localhost, c_redisPath))
-    
+
         if not self.hClient_:
             raise Exception('error init client, check redisPath') 
 
@@ -163,6 +165,8 @@ class Client:
         global lib_
         if not lib_:
             raise Exception('lib not load')
+        if not hasattr(lib_, 'lnr_new_client_sqlite'):
+            raise Exception('lib built without sqlite support (rebuild with feature sqlite)')
         inst = cls.__new__(cls)
         pfun = lib_.lnr_new_client_sqlite
         pfun.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p)
