@@ -2,7 +2,7 @@ use crate::bytestream::{FeedOutcome, FrameReadState};
 use crate::message::Message;
 use crate::mempool::Mempool;
 use crate::store::Store;
-use crate::settings;
+use crate::settings::{self, INTERNAL_CHANNEL_TOPIC};
 use crate::common;
 use crate::{UCbackIntern, UData};
 use crate::{print_error, print_debug};
@@ -100,6 +100,7 @@ impl Listener {
         let waker = Arc::new(
             Waker::new(poll.registry(), WAKER).map_err(|e| format!("couldn't create Waker: {}", e))?,
         );
+        let listener_topic_stream = listener_topic.clone();
         let stream_thread = thread::spawn(move|| {            
             let mut streams: ReadStreamList = Vec::new();
             // Sticky SocketAddr → slot index. Kept across TCP close so reconnect reuses the
@@ -128,6 +129,7 @@ impl Listener {
                             if let Some(stream) = streams.get_mut(client.0){
                                 read_stream(client, stream, &senders,
                                             db.clone(), &messages_, &receive_thread_cvar_,
+                                            &listener_topic_stream,
                                             status_emitter_stream.clone());
                             }
                         }                        
@@ -347,10 +349,19 @@ fn listener_accept(poll: &Poll,
                         }
                         address.insert(addr, streams.len() - 1);
                     }else{
-                        // Same SocketAddr reconnects: keep index + mempool/sender/`last_mess_num`.
-                        // Only replace the TCP stream — do not reset parallel slot vectors.
+                        // Same SocketAddr reconnects: keep index + mempool. New TCP is a new
+                        // session — reset message-number cursor so a restarted peer (numbers
+                        // from 1) is not treated as a duplicate replay. Internal events
+                        // (unsubscribe) must still be delivered.
                         let mempool = streams[ix].mempool.clone();
                         streams[ix].frame.abort(&mempool);
+                        if let Ok(mut s) = senders.lock() {
+                            if let Some(sender) = s.get_mut(ix) {
+                                sender.connection_key = -1;
+                                sender.last_mess_num = 0;
+                                sender.last_mess_num_preview = 0;
+                            }
+                        }
                         streams[ix] = ReadStream{
                             stream: Some(stream),
                             is_close: false,
@@ -374,12 +385,20 @@ fn listener_accept(poll: &Poll,
     }
 }
 
+fn topic_is_internal(listener_topic: &Arc<Mutex<HashMap<i32, String>>>, topic_key: i32) -> bool {
+    match listener_topic.lock() {
+        Ok(lt) => lt.get(&topic_key).map(|t| t == INTERNAL_CHANNEL_TOPIC).unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 fn read_stream(token: Token,
                stream: &mut ReadStream,
                senders: &Arc<Mutex<SenderList>>,
                db: Arc<Mutex<dyn Store>>,
                messages: &Arc<Mutex<MessList>>,
                receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>,
+               listener_topic: &Arc<Mutex<HashMap<i32, String>>>,
                status_emitter: StatusEmitter){
     let mempool = stream.mempool.clone();
     if stream.is_close {
@@ -443,6 +462,7 @@ fn read_stream(token: Token,
                         is_shutdown = true;
                         break;
                     };
+                    let internal = topic_is_internal(listener_topic, mess.listener_topic_key);
                     if last_mess_num == 0 {
                         let mut connection_key = None;
                         let mut sender_topic = String::new();
@@ -470,8 +490,13 @@ fn read_stream(token: Token,
                             );
                         }
                     }
-                    if mess.number_mess > last_mess_num {
-                        last_mess_num = mess.number_mess;
+                    // Replay filter is for application payloads. Internal subscribe/unsubscribe
+                    // events must still run after a peer restarts (message numbers reset to 1)
+                    // or the same SocketAddr is reused for a new TCP session.
+                    if internal || mess.number_mess > last_mess_num {
+                        if mess.number_mess > last_mess_num {
+                            last_mess_num = mess.number_mess;
+                        }
                         mess_buff.push(mess);
                         if mess_buff.len() >= settings::LISTENER_RECEIVE_FLUSH_BATCH {
                             flush_received_messages(
