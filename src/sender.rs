@@ -65,6 +65,7 @@ pub struct Sender{
     mempools: Arc<Mutex<MempoolList>>, 
     last_mess_number: Vec<u64>,
     connection_key: Vec<i32>,
+    peer_mempools: Vec<Arc<Mutex<Mempool>>>,
     topic_keys: HashMap<String, i32>, // listener_topic -> wire topic_key
     failed_addrs: Arc<Mutex<HashSet<String>>>,
     has_failed_addrs: Arc<AtomicBool>,
@@ -195,6 +196,7 @@ impl Sender {
             mempools,
             last_mess_number: Vec::new(),
             connection_key: Vec::new(),
+            peer_mempools: Vec::new(),
             topic_keys: HashMap::new(),
             failed_addrs,
             has_failed_addrs,
@@ -351,32 +353,13 @@ impl Sender {
         };
 
         let cap = settings::max_send_queue();
-        if cap > 0 {
-            if let Ok(mess_lock) = self.messages.lock() {
-                let depth = mess_lock
-                    .get(ix)
-                    .and_then(|s| s.as_ref())
-                    .map(|v| v.len())
-                    .unwrap_or(0);
-                if depth >= cap {
-                    return EnqueueResult::Busy;
-                }
-            }
-        }
-
-        let mempool = match self.mempools.lock() {
-            Ok(mps) => match mps.get(ix) {
-                Some(mp) => mp.clone(),
-                None => {
-                    print_error!(&format!(
-                        "send_to: mempool index out of bounds: ix={}, addr={}",
-                        ix, addr_to
-                    ));
-                    return EnqueueResult::Fail;
-                }
-            },
-            Err(_) => {
-                print_error!("send_to: mempools lock poisoned");
+        let mempool = match self.peer_mempools.get(ix) {
+            Some(mp) => mp.clone(),
+            None => {
+                print_error!(&format!(
+                    "send_to: mempool index out of bounds: ix={}, addr={}",
+                    ix, addr_to
+                ));
                 return EnqueueResult::Fail;
             }
         };
@@ -490,12 +473,14 @@ impl Sender {
         // Commit related index vectors together so a mid-function Err cannot leave them desynced.
         self.connection_key.push(connection_key);
         self.last_mess_number.push(last_mess_num);
+        self.peer_mempools.push(mempool.clone());
         if let Ok(mut mps) = self.mempools.lock() {
             mps.push(mempool);
         } else {
             print_error!("append_new_state: mempools lock poisoned at push");
             self.connection_key.pop();
             self.last_mess_number.pop();
+            self.peer_mempools.pop();
             return false;
         }
         if let Ok(mut messages) = self.messages.lock() {
@@ -504,6 +489,7 @@ impl Sender {
             print_error!("append_new_state: messages lock poisoned at push");
             self.connection_key.pop();
             self.last_mess_number.pop();
+            self.peer_mempools.pop();
             if let Ok(mut mps) = self.mempools.lock() {
                 mps.pop();
             }
@@ -860,18 +846,13 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
     
     rayon::spawn(move || {
         let mut is_shutdown = false;
-        let mut ix = 0;
-        let mut last_send_mess_number = 0;
-        let mut arc_stream = Arc::new(None);
-        let mut topic = String::new();
-        let mut address = String::new();
-        if let Ok(stream) = stream.lock(){
-            ix = stream.ix;
-            last_send_mess_number = stream.last_send_mess_number;
-            arc_stream = stream.stream.clone();
-            topic = stream.topic.clone();
-            address = stream.address.clone();
-        }
+        let (ix, mut last_send_mess_number, arc_stream) = match stream.lock() {
+            Ok(s) => (s.ix, s.last_send_mess_number, s.stream.clone()),
+            Err(_) => {
+                wdelay_thread_notify(&delay_write_cvar);
+                return;
+            }
+        };
         if let Some(tcp_stream) = arc_stream.as_ref(){
             let mut buff: Vec<Message> = Vec::new();
             let mut writer = BufWriter::with_capacity(settings::WRITE_BUFFER_CAPASITY, tcp_stream); 
@@ -917,6 +898,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                         last_send_mess_number = num_mess;
                         if !mess.to_stream(&mempool, &mut writer){
                             is_shutdown = true;
+                            let (topic, address) = write_stream_route_labels(&stream);
                             status_emitter.emit_msg(
                                 LNR_SENDER_SEND_ERROR,
                                 &topic,
@@ -937,6 +919,7 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 if status_emitter.is_enabled() {
                     let err_s = err.to_string();
                     let kind_s = err.kind().to_string();
+                    let (topic, address) = write_stream_route_labels(&stream);
                     status_emitter.emit_msg(
                         LNR_SENDER_SEND_ERROR,
                         &topic,
@@ -996,6 +979,13 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
         // for SENDER_THREAD_WAIT_TIMEOUT_MS.
         wdelay_thread_notify(&delay_write_cvar);
     });
+}
+
+fn write_stream_route_labels(stream: &Arc<Mutex<WriteStream>>) -> (String, String) {
+    match stream.lock() {
+        Ok(s) => (s.topic.clone(), s.address.clone()),
+        Err(_) => (String::new(), String::new()),
+    }
 }
 
 fn check_streams_close(streams: &mut WriteStreamList,
@@ -1234,7 +1224,8 @@ mod tests {
         assert_eq!(received.connection_key(&recv_mempool), 777);
 
         let mut out = Vec::new();
-        let len = received.get_data(&recv_mempool, &mut out);
+        let mut scratch = Vec::new();
+        let len = received.get_data(&recv_mempool, &mut out, &mut scratch);
         assert_eq!(&out[..len], b"hello");
 
         // For "at most once" we should not requeue the message after successful send.

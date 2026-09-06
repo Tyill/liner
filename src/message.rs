@@ -210,44 +210,45 @@ impl Message{
         bytestream::write_stream(stream, self.mem_alloc_pos, self.mem_alloc_length, mempool)       
     }
 
-    pub fn get_data(&self, mempool: &Arc<Mutex<Mempool>>, out: &mut Vec<u8>)->usize{ 
+    pub fn get_data(&self, mempool: &Arc<Mutex<Mempool>>, out: &mut Vec<u8>, scratch: &mut Vec<u8>)->usize{ 
         let data_pos = data_pos();
         let size_u32 = std::mem::size_of::<u32>() as usize;
         if self.mem_alloc_length < data_pos + size_u32 {
             print_error!("get_data: alloc shorter than header+len");
             return 0;
         }
-        let data_len = {
-            let Ok(mp) = mempool.lock() else {
-                return 0;
-            };
-            let data_len = mp.read_u32(self.mem_alloc_pos + data_pos) as usize;
-            if data_pos + size_u32 + data_len > self.mem_alloc_length {
-                print_error!("get_data: payload overruns alloc");
-                return 0;
-            }
-            data_len
+        let compressed = self.is_compressed();
+        let Ok(mp) = mempool.lock() else {
+            return 0;
         };
-        if out.len() < data_len {
-            out.resize(data_len, 0);
+        let data_len = mp.read_u32(self.mem_alloc_pos + data_pos) as usize;
+        if data_pos + size_u32 + data_len > self.mem_alloc_length {
+            print_error!("get_data: payload overruns alloc");
+            return 0;
         }
-        {
-            let Ok(mp) = mempool.lock() else {
-                return 0;
-            };
-            mp.read_data(self.mem_alloc_pos + data_pos + size_u32, &mut out[..data_len]);
+        let payload_off = self.mem_alloc_pos + data_pos + size_u32;
+        if compressed {
+            if scratch.len() < data_len {
+                scratch.resize(data_len, 0);
+            }
+            mp.read_data(payload_off, &mut scratch[..data_len]);
+            drop(mp);
+            // Vec as Write appends; leftover bytes would leak into the callback length.
+            out.clear();
+            match zstd::stream::copy_decode(&scratch[..data_len], &mut *out) {
+                Ok(_) => out.len(),
+                Err(err) => {
+                    print_error!(format!("decompress error, dsz {}, err {}", data_len, err));
+                    0
+                }
+            }
+        } else {
+            if out.len() < data_len {
+                out.resize(data_len, 0);
+            }
+            mp.read_data(payload_off, &mut out[..data_len]);
+            data_len
         }
-        if self.is_compressed(){            
-            let Some(decomp_data) = decompress(&out[..data_len]) else {
-                return 0;
-            };
-            if out.len() < decomp_data.len(){
-                out.resize(decomp_data.len(), 0);
-            } 
-            out[..decomp_data.len()].copy_from_slice(&decomp_data);
-            return decomp_data.len()
-        }
-        data_len
     }
         
     pub fn at_least_once_delivery(&self)->bool{
@@ -283,17 +284,6 @@ fn compress(data: &[u8])->Option<Vec<u8>>{
         },
         Err(err)=>{
             print_error!(format!("compress error, dsz {}, err {}", data.len(), err));
-            None
-        }
-    }
-}
-fn decompress(cdata: &[u8])->Option<Vec<u8>>{
-    match zstd::stream::decode_all(cdata){
-        Ok(data_)=>{
-            Some(data_)
-        },
-        Err(err)=>{
-            print_error!(format!("decompress error, dsz {}, err {}", cdata.len(), err));
             None
         }
     }
@@ -350,7 +340,8 @@ mod tests {
         assert_eq!(decoded.connection_key(&mempool), 123);
 
         let mut out = Vec::new();
-        let len = decoded.get_data(&mempool, &mut out);
+        let mut scratch = Vec::new();
+        let len = decoded.get_data(&mempool, &mut out, &mut scratch);
         assert_eq!(&out[..len], payload);
     }
 
@@ -385,7 +376,8 @@ mod tests {
         let mempool = Arc::new(Mutex::new(Mempool::new()));
         let msg = Message::new(mempool.clone(), 1, 1, 1, payload, false).unwrap();
         let mut out = vec![0u8; 1];
-        let len = msg.get_data(&mempool, &mut out);
+        let mut scratch = Vec::new();
+        let len = msg.get_data(&mempool, &mut out, &mut scratch);
         assert_eq!(len, payload.len());
         assert_eq!(&out[..len], payload);
     }
@@ -408,9 +400,26 @@ mod tests {
         assert!(decoded.at_least_once_delivery());
 
         let mut out = Vec::new();
-        let len = decoded.get_data(&mempool, &mut out);
+        let mut scratch = Vec::new();
+        let len = decoded.get_data(&mempool, &mut out, &mut scratch);
         assert_eq!(len, payload.len());
         assert_eq!(&out[..len], payload.as_slice());
+    }
+
+    #[test]
+    fn get_data_compressed_clears_output_before_decode() {
+        let _lock = settings::test_limits_lock();
+        let prev = settings::compress_threshold();
+        assert!(settings::set_compress_threshold(32));
+        let payload = vec![7u8; 2000];
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let msg = Message::new(mempool.clone(), 1, 1, 1, &payload, false).unwrap();
+        let mut out = vec![0xAAu8; 64];
+        let mut scratch = Vec::new();
+        let len = msg.get_data(&mempool, &mut out, &mut scratch);
+        assert_eq!(len, payload.len());
+        assert_eq!(&out[..len], payload.as_slice());
+        assert!(settings::set_compress_threshold(prev));
     }
 
     #[test]

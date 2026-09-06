@@ -720,24 +720,27 @@ impl ClientRepr {
         // Disjoint field borrows: addresses from cache, mutable sender — no addr Vec clone.
         let addrs = self.address_topic.get(topic).unwrap().as_slice();
         let sender = self.sender.as_mut().unwrap();
-        let mut warm_ok = vec![true; addr_len];
-        if addrs
+        let warm_ok = if addrs
             .iter()
             .any(|addr| sender.needs_store_for_send(addr, topic))
         {
+            let mut flags = vec![true; addr_len];
             let mut db = self.db.lock().unwrap();
             for (i, addr) in addrs.iter().enumerate() {
                 if sender.needs_store_for_send(addr, topic)
                     && !sender.ensure_send_route(&mut *db, addr, topic)
                 {
-                    warm_ok[i] = false;
+                    flags[i] = false;
                 }
             }
-        }
+            Some(flags)
+        } else {
+            None
+        };
         let mut ok = true;
         let mut saw_busy = false;
         for (i, addr) in addrs.iter().enumerate() {
-            if !warm_ok[i] {
+            if warm_ok.as_ref().is_some_and(|w| !w[i]) {
                 ok = false;
                 continue;
             }
@@ -1935,6 +1938,94 @@ mod tests {
 
         drop(listener);
         drop(sender);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shared_sqlite_send_after_listener_restart_delivers() {
+        let _run_lock = client_run_test_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "liner_reconn_{}_{}",
+            std::process::id(),
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("shared.sqlite");
+        let db = db_path.to_str().unwrap();
+        let pid = std::process::id();
+        let listener_topic = format!("re_l_{pid}");
+        let sender_topic = format!("re_s_{pid}");
+        let name_l = format!("re_listener_{pid}");
+
+        let flag = Box::new(AtomicBool::new(false));
+        let raw_flag = Box::into_raw(flag);
+
+        let mut listener = Client::new_sqlite(&name_l, &listener_topic, "127.0.0.1:0", db, "")
+            .expect("listener");
+        assert!(listener.run(
+            recv_ping_flag,
+            UData(raw_flag as *mut libc::c_void),
+        ));
+
+        let mut sender = Client::new_sqlite(
+            &format!("re_sender_{pid}"),
+            &sender_topic,
+            "127.0.0.1:0",
+            db,
+            "",
+        )
+        .expect("sender");
+        assert!(sender.run(recv_noop, UData::null()));
+        assert!(sender.refresh_address_topic(&listener_topic));
+        assert!(sender.send_to(&listener_topic, b"ping", true));
+        for _ in 0..80 {
+            if unsafe { (*raw_flag).load(Ordering::SeqCst) } {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            unsafe { (*raw_flag).load(Ordering::SeqCst) },
+            "first delivery before restart"
+        );
+
+        drop(listener);
+        unsafe {
+            (*raw_flag).store(false, Ordering::SeqCst);
+        }
+
+        let mut listener = Client::new_sqlite(&name_l, &listener_topic, "127.0.0.1:0", db, "")
+            .expect("listener restart");
+        assert!(listener.run(
+            recv_ping_flag,
+            UData(raw_flag as *mut libc::c_void),
+        ));
+        assert!(sender.refresh_address_topic(&listener_topic));
+        let mut sent = false;
+        for _ in 0..80 {
+            if sender.send_to(&listener_topic, b"ping", true) {
+                sent = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(sent, "send after listener restart");
+        for _ in 0..80 {
+            if unsafe { (*raw_flag).load(Ordering::SeqCst) } {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            unsafe { (*raw_flag).load(Ordering::SeqCst) },
+            "delivery after listener restart (handshake CString / topic_from)"
+        );
+
+        drop(listener);
+        drop(sender);
+        unsafe {
+            drop(Box::from_raw(raw_flag));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
