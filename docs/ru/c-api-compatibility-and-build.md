@@ -64,8 +64,8 @@ cargo build --release
 
 ## Зависимости времени выполнения
 
-- **Бэкенд Redis:** доступный **Redis**, совместимый с версиями из [operations-redis-sqlite.md](operations-redis-sqlite.md).
-- **Бэкенд SQLite:** отдельного сервера нет; используется встроенный в бинарник Rust SQLite.
+- **Бэкенд Redis:** опционально; включён по умолчанию. Не компилировать крейт: **`--no-default-features --features sqlite`** (и/или `postgres`).
+- **Бэкенд SQLite:** опционально; включён по умолчанию (bundled SQLite). Не компилировать крейт: **`--no-default-features --features redis`** (и/или `postgres`).
 - **Бэкенд PostgreSQL:** опционально; сборка с **`cargo build --features postgres`**. Нужен доступный **PostgreSQL** и символ **`lnr_new_client_postgres`** в слинкованном артефакте. См. [using-postgres.md](using-postgres.md).
 - **Платформа:** стандартная библиотека Rust и **libc** (на Unix), как у любой другой `cdylib`; сборки под Windows используют обычное MSVC или GNU runtime для вашего тулчейна Rust.
 

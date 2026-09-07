@@ -6,31 +6,33 @@
 //! # Examples
 //!
 //! ```no_run
+//! # #[cfg(feature = "redis")] {
 //! use liner_broker::Liner;
-//! 
+//!
 //! fn  main() {
-//! 
+//!
 //!     let mut client1 = Liner::new("client1", "topic_client1", "localhost:2255", "redis://localhost/");
 //!     let mut client2 = Liner::new("client2", "topic_client2", "localhost:2256", "redis://localhost/");
-//!    
+//!
 //!     client1.run(Box::new(|_to: &str, _from: &str, _data: &[u8]|{
 //!         println!("receive_from {}", _from);
 //!     }));
 //!     client2.run(Box::new(|_to: &str, _from: &str, _data: &[u8]|{
 //!         println!("receive_from {}", _from);
 //!     }));
-//!  
+//!
 //!     let array = [0; 100];
 //!     for _ in 0..10{
 //!         client1.send_to("topic_client2", array.as_slice(), true);
-//!         println!("send_to client2");       
+//!         println!("send_to client2");
 //!     }
 //! }
-//! 
+//! # }
 //! ```
 
 mod store;
 pub use store::{open_store, open_store_mutex, ReceiverSeedEntry, Store, StoreBackend};
+#[cfg(feature = "redis")]
 pub use store::redis;
 
 mod status;
@@ -148,6 +150,7 @@ pub struct Liner{
 
 impl Liner {
     /// Creates a client backed by **Redis** (`redis_path` is a Redis URL, e.g. `redis://127.0.0.1/`).
+    #[cfg(feature = "redis")]
     pub fn new(unique_name: &str, topic: &str, localhost: &str, redis_path: &str) -> Liner {
         unsafe {
             let unique = cstring_or_empty(unique_name);
@@ -167,6 +170,7 @@ impl Liner {
     /// Creates a client backed by **SQLite** (`sqlite_path` is the database file path).
     /// Use empty `receivers_json` (`""` / `[]`) when sharing one DB file so the catalog and
     /// `conn_sender` come from the store; with isolated empty files, pass JSON per `docs/using-sqlite.md`.
+    #[cfg(feature = "sqlite")]
     pub fn new_sqlite(
         unique_name: &str,
         topic: &str,
@@ -407,6 +411,7 @@ impl Drop for Liner {
     }
 }
 
+#[cfg(any(feature = "redis", feature = "sqlite"))]
 unsafe fn new_client_inner(
     unique_name: *const i8,
     topic: *const i8,
@@ -457,9 +462,26 @@ unsafe fn new_client_inner(
     };
 
     let client_opt = if sqlite {
-        Client::new_sqlite(unique_name, topic, localhost, store_path, receivers_ref)
+        #[cfg(feature = "sqlite")]
+        {
+            Client::new_sqlite(unique_name, topic, localhost, store_path, receivers_ref)
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = receivers_ref;
+            print_error!("SQLite backend disabled (rebuild with --features sqlite)");
+            None
+        }
     } else {
-        Client::new_redis(unique_name, topic, localhost, store_path)
+        #[cfg(feature = "redis")]
+        {
+            Client::new_redis(unique_name, topic, localhost, store_path)
+        }
+        #[cfg(not(feature = "redis"))]
+        {
+            print_error!("Redis backend disabled (rebuild with --features redis)");
+            None
+        }
     };
     if let Some(c) = client_opt {
         let ptr = Box::into_raw(Box::new(c));
@@ -473,6 +495,7 @@ unsafe fn new_client_inner(
 /// Create new client (Redis URL).
 ///
 /// # Safety
+#[cfg(feature = "redis")]
 #[no_mangle]
 pub unsafe extern "C" fn lnr_new_client_redis(
     unique_name: *const i8,
@@ -486,6 +509,7 @@ pub unsafe extern "C" fn lnr_new_client_redis(
 /// Create new client (SQLite database file path).
 ///
 /// # Safety
+#[cfg(feature = "sqlite")]
 #[no_mangle]
 pub unsafe extern "C" fn lnr_new_client_sqlite(
     unique_name: *const i8,
@@ -553,6 +577,7 @@ pub unsafe extern "C" fn lnr_new_client_postgres(
 /// Deprecated: use `lnr_new_client_redis`. Same behavior as `lnr_new_client_redis`.
 ///
 /// # Safety
+#[cfg(feature = "redis")]
 #[no_mangle]
 pub unsafe extern "C" fn lnr_new_client(
     unique_name: *const i8,
@@ -560,8 +585,15 @@ pub unsafe extern "C" fn lnr_new_client(
     localhost: *const i8,
     redis_path: *const i8,
 ) -> *mut Client {
+    keep_c_exports_live();
+    lnr_new_client_redis(unique_name, topic, localhost, redis_path)
+}
+
+fn keep_c_exports_live() {
     // Keep additive C symbols in the cdylib export table (linker GC otherwise drops them).
+    #[cfg(feature = "redis")]
     std::hint::black_box(lnr_new_client_redis);
+    #[cfg(feature = "sqlite")]
     std::hint::black_box(lnr_new_client_sqlite);
     std::hint::black_box(lnr_set_status_cb);
     std::hint::black_box(lnr_set_log_cb);
@@ -576,7 +608,6 @@ pub unsafe extern "C" fn lnr_new_client(
     std::hint::black_box(lnr_get_max_send_queue);
     std::hint::black_box(lnr_last_error_code);
     std::hint::black_box(lnr_last_error_message);
-    std::hint::black_box(lnr_version);
     std::hint::black_box(lnr_set_advertise_addr);
     std::hint::black_box(lnr_stop);
     std::hint::black_box(lnr_is_running);
@@ -588,7 +619,6 @@ pub unsafe extern "C" fn lnr_new_client(
         std::hint::black_box(lnr_new_client_postgres);
         std::hint::black_box(lnr_postgres_enabled);
     }
-    lnr_new_client_redis(unique_name, topic, localhost, redis_path)
 }
 
 pub struct UData(*mut libc::c_void);
@@ -778,6 +808,7 @@ pub unsafe extern "C" fn lnr_last_error_message(client: *mut Client) -> *const i
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn lnr_version() -> *const i8 {
+    keep_c_exports_live();
     static VER: OnceLock<CString> = OnceLock::new();
     VER.get_or_init(|| CString::new(env!("CARGO_PKG_VERSION")).unwrap_or_default())
         .as_ptr()

@@ -94,7 +94,7 @@ Mempool — арена в стиле bump на базе **`Vec<Vec<u8>>`** ча�
 
 | Константа | По умолчанию | Где |
 |-----------|---------------|-----|
-| **`READ_BUFFER_CAPASITY`** | 64 КиБ | `BufReader` вокруг TCP read в listener. |
+| **`BYTESTREAM_READ_BUFFER_SIZE`** | 8 КиБ | Scratch `read()` на poll-потоке listener; байты сразу в mempool соединения (без `BufReader`). |
 | **`WRITE_BUFFER_CAPASITY`** | 64 КиБ | `BufWriter` вокруг TCP write в sender. |
 
 Влияют на пакетирование syscall, не на логический максимум сообщения.

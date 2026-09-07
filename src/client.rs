@@ -166,6 +166,7 @@ macro_rules! client_fail {
 }
 
 impl Client {
+    #[cfg(feature = "redis")]
     pub fn new_redis(unique_name: &str, topic: &str, localhost: &str, redis_url: &str) -> Option<Client> {
         let store_backend = crate::store::StoreBackend::Redis {
             url: redis_url.to_string(),
@@ -184,6 +185,7 @@ impl Client {
         ))
     }
 
+    #[cfg(feature = "sqlite")]
     pub fn new_sqlite(
         unique_name: &str,
         topic: &str,
@@ -251,6 +253,7 @@ impl Client {
         ))
     }
 
+    #[cfg(feature = "redis")]
     pub fn new(unique_name: &str, topic: &str, localhost: &str, redis_path: &str) -> Option<Client> {
         Client::new_redis(unique_name, topic, localhost, redis_path)
     }
@@ -720,24 +723,27 @@ impl ClientRepr {
         // Disjoint field borrows: addresses from cache, mutable sender — no addr Vec clone.
         let addrs = self.address_topic.get(topic).unwrap().as_slice();
         let sender = self.sender.as_mut().unwrap();
-        let mut warm_ok = vec![true; addr_len];
-        if addrs
+        let warm_ok = if addrs
             .iter()
             .any(|addr| sender.needs_store_for_send(addr, topic))
         {
+            let mut flags = vec![true; addr_len];
             let mut db = self.db.lock().unwrap();
             for (i, addr) in addrs.iter().enumerate() {
                 if sender.needs_store_for_send(addr, topic)
                     && !sender.ensure_send_route(&mut *db, addr, topic)
                 {
-                    warm_ok[i] = false;
+                    flags[i] = false;
                 }
             }
-        }
+            Some(flags)
+        } else {
+            None
+        };
         let mut ok = true;
         let mut saw_busy = false;
         for (i, addr) in addrs.iter().enumerate() {
-            if !warm_ok[i] {
+            if warm_ok.as_ref().is_some_and(|w| !w[i]) {
                 ok = false;
                 continue;
             }
@@ -1540,6 +1546,7 @@ mod tests {
         assert_eq!(published, "127.0.0.1:34567");
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn run_maps_listener_startup_err_to_startup_code() {
         let _run_lock = client_run_test_lock();
@@ -1554,6 +1561,7 @@ mod tests {
         assert!(rows.is_empty(), "startup fail must unregist catalog, got {rows:?}");
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn run_internal_subscribe_fail_unregisters_catalog() {
         let _run_lock = client_run_test_lock();
@@ -1597,6 +1605,7 @@ mod tests {
         let _ = std::fs::remove_file(format!("{path}-shm"));
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn send_to_not_running_sets_last_error() {
         let mut c = Client::new_sqlite("u_err", "t", "127.0.0.1:0", ":memory:", "")
@@ -1607,6 +1616,7 @@ mod tests {
         assert!(c.last_error_message().contains("not is running") || c.last_error_message().contains("not running"));
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn send_rejects_empty_or_oversized_payload() {
         let _run_lock = client_run_test_lock();
@@ -1629,6 +1639,7 @@ mod tests {
         assert!(c.stop());
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn advertise_while_running_sets_already_running() {
         let _run_lock = client_run_test_lock();
@@ -1640,6 +1651,7 @@ mod tests {
         assert!(c.stop());
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn run_idempotent_clears_last_error_to_ok() {
         let _run_lock = client_run_test_lock();
@@ -1653,6 +1665,7 @@ mod tests {
         assert!(c.stop());
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn stop_clears_published_keeps_bound_allows_clear_and_rerun() {
         let _run_lock = client_run_test_lock();
@@ -1686,6 +1699,7 @@ mod tests {
         let _ = std::fs::remove_file(format!("{path}-shm"));
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn advertise_host_with_ephemeral_port_published() {
         let _run_lock = client_run_test_lock();
@@ -1711,6 +1725,7 @@ mod tests {
         let _ = std::fs::remove_file(format!("{path}-shm"));
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn new_sqlite_rejects_invalid_receivers_json() {
         assert!(Client::new_sqlite("u", "t", "127.0.0.1:0", ":memory:", "not-json").is_none());
@@ -1784,6 +1799,7 @@ mod tests {
         crate::store::postgres::test_reset_tables_inner(&url);
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn isolated_sqlite_two_clients_via_receivers_json_catalog_file() {
         let _run_lock = client_run_test_lock();
@@ -1868,6 +1884,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "redis")]
     fn liner_test_redis_url() -> Option<String> {
         let url = std::env::var("LINER_TEST_REDIS_URL")
             .unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
@@ -1886,6 +1903,7 @@ mod tests {
         Some(url)
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn shared_sqlite_send_to_fails_after_runtime_unsubscribe() {
         let _run_lock = client_run_test_lock();
@@ -1938,6 +1956,96 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn shared_sqlite_send_after_listener_restart_delivers() {
+        let _run_lock = client_run_test_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "liner_reconn_{}_{}",
+            std::process::id(),
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("shared.sqlite");
+        let db = db_path.to_str().unwrap();
+        let pid = std::process::id();
+        let listener_topic = format!("re_l_{pid}");
+        let sender_topic = format!("re_s_{pid}");
+        let name_l = format!("re_listener_{pid}");
+
+        let flag = Box::new(AtomicBool::new(false));
+        let raw_flag = Box::into_raw(flag);
+
+        let mut listener = Client::new_sqlite(&name_l, &listener_topic, "127.0.0.1:0", db, "")
+            .expect("listener");
+        assert!(listener.run(
+            recv_ping_flag,
+            UData(raw_flag as *mut libc::c_void),
+        ));
+
+        let mut sender = Client::new_sqlite(
+            &format!("re_sender_{pid}"),
+            &sender_topic,
+            "127.0.0.1:0",
+            db,
+            "",
+        )
+        .expect("sender");
+        assert!(sender.run(recv_noop, UData::null()));
+        assert!(sender.refresh_address_topic(&listener_topic));
+        assert!(sender.send_to(&listener_topic, b"ping", true));
+        for _ in 0..80 {
+            if unsafe { (*raw_flag).load(Ordering::SeqCst) } {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            unsafe { (*raw_flag).load(Ordering::SeqCst) },
+            "first delivery before restart"
+        );
+
+        drop(listener);
+        unsafe {
+            (*raw_flag).store(false, Ordering::SeqCst);
+        }
+
+        let mut listener = Client::new_sqlite(&name_l, &listener_topic, "127.0.0.1:0", db, "")
+            .expect("listener restart");
+        assert!(listener.run(
+            recv_ping_flag,
+            UData(raw_flag as *mut libc::c_void),
+        ));
+        assert!(sender.refresh_address_topic(&listener_topic));
+        let mut sent = false;
+        for _ in 0..80 {
+            if sender.send_to(&listener_topic, b"ping", true) {
+                sent = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(sent, "send after listener restart");
+        for _ in 0..80 {
+            if unsafe { (*raw_flag).load(Ordering::SeqCst) } {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            unsafe { (*raw_flag).load(Ordering::SeqCst) },
+            "delivery after listener restart (handshake CString / topic_from)"
+        );
+
+        drop(listener);
+        drop(sender);
+        unsafe {
+            drop(Box::from_raw(raw_flag));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "sqlite")]
     #[test]
     fn apply_internal_channel_event_ignores_invalid_json() {
         let _run_lock = client_run_test_lock();
@@ -1971,6 +2079,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "redis")]
     #[test]
     fn client_receive_wrapper_routes_internal_channel_without_user_cb() {
         let _run_lock = client_run_test_lock();
@@ -2038,6 +2147,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "redis")]
     #[test]
     fn internal_client_connected_not_delivered_to_self() {
         let _run_lock = client_run_test_lock();
@@ -2079,6 +2189,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "redis")]
     #[test]
     fn redis_internal_channel_peer_address_without_manual_refresh() {
         let _run_lock = client_run_test_lock();
@@ -2174,6 +2285,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn status_cb_skips_unrelated_peer_events() {
         let _run_lock = client_run_test_lock();
@@ -2210,6 +2322,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn status_cb_emits_related_peer_disconnect() {
         let _run_lock = client_run_test_lock();
@@ -2254,6 +2367,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn status_cb_route_lost_on_unreachable_peer() {
         let _run_lock = client_run_test_lock();
@@ -2340,6 +2454,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn shared_sqlite_list_addresses_sees_peer() {
         let _run_lock = client_run_test_lock();
@@ -2384,6 +2499,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn shared_sqlite_pending_count_after_offline_enqueue() {
         let _run_lock = client_run_test_lock();
@@ -2452,6 +2568,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn list_subscriptions_excludes_internal_and_related_tracks_send() {
         let _run_lock = client_run_test_lock();
@@ -2501,6 +2618,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn max_send_queue_busy_is_per_peer() {
         let _run_lock = client_run_test_lock();
@@ -2572,6 +2690,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "sqlite")]
     #[test]
     fn topic_bind_advertise_getters() {
         let dir = std::env::temp_dir().join(format!(

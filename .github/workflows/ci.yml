@@ -22,6 +22,12 @@ jobs:
       - name: Build
         run: cargo build --release
 
+      - name: Check optional backends
+        run: |
+          cargo check --no-default-features --features sqlite
+          cargo check --no-default-features --features redis
+          cargo check --no-default-features --features postgres
+
       - name: Test
         run: cargo test
 

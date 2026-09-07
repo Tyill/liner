@@ -45,6 +45,7 @@ typedef void* lnr_hClient;
 LINER_API const char* lnr_version(void);
 
 /// Create new client backed by Redis.
+/// Available when liner_broker is built with Cargo feature `redis` (default).
 /// @param unique_name
 /// @param topic - current topic
 /// @param localhost - local ip
@@ -53,6 +54,7 @@ LINER_API const char* lnr_version(void);
 LINER_API lnr_hClient lnr_new_client_redis(const char* unique_name, const char* topic, const char* localhost, const char* redis_url);
 
 /// Create new client backed by SQLite (single database file).
+/// Available when liner_broker is built with Cargo feature `sqlite` (default).
 /// @param unique_name
 /// @param topic - current topic
 /// @param localhost - local ip
