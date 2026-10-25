@@ -9,7 +9,7 @@ use crate::status::{
 };
 
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1145,6 +1145,7 @@ fn close_streams(streams: &WriteStreamList,
             stream.has_close_request = true;
         }
     }
+    wait_streams_idle(streams);
     let mut pending: Vec<(usize, i32, Vec<Message>)> = Vec::new();
     {
         let mut messages = messages.lock().unwrap();
@@ -1175,6 +1176,41 @@ fn close_streams(streams: &WriteStreamList,
     }
     for (ix, connection_key, mess_for_send) in pending {
         save_mess_to_db(mess_for_send, db, ix, connection_key, mempools, status_emitter);
+    }
+}
+
+/// Wait for in-flight `write_stream` tasks (`has_close_request` already blocks new ones).
+/// A running task holds messages taken from the slot and puts them back (slot / `unacked`)
+/// only when it ends; draining before that loses them. A write blocked on a stalled peer
+/// (blocking socket, no write timeout) is cut by `shutdown` after `SENDER_CLOSE_WAIT_MS`.
+fn wait_streams_idle(streams: &WriteStreamList) {
+    let wait = Duration::from_millis(settings::SENDER_CLOSE_WAIT_MS);
+    let mut deadline = Instant::now() + wait;
+    let mut is_cut = false;
+    loop {
+        let active: Vec<&Arc<Mutex<WriteStream>>> = streams
+            .iter()
+            .filter(|s| s.lock().map_or(false, |s| s.is_active))
+            .collect();
+        if active.is_empty() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            if is_cut {
+                print_error!(&format!("close_streams: {} write task(s) still active, their messages are lost", active.len()));
+                return;
+            }
+            for stream in active {
+                if let Ok(stream) = stream.lock() {
+                    if let Some(tcp) = stream.stream.as_ref() {
+                        let _ = tcp.shutdown(std::net::Shutdown::Both);
+                    }
+                }
+            }
+            is_cut = true;
+            deadline = Instant::now() + wait;
+        }
+        thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -1452,6 +1488,53 @@ mod tests {
             .map(|v| v.iter().map(|m| m.number_mess).collect())
             .unwrap_or_default();
         assert_eq!(slot, vec![1, 2], "unacked go back ahead of unsent for check_streams_close");
+    }
+
+    #[test]
+    fn close_streams_waits_for_blocked_write_and_saves_its_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Peer never reads: a big write fills the socket buffers and blocks.
+        let _client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(vec![None]));
+        let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(vec![mempool.clone()]));
+        let db: Arc<Mutex<dyn Store>> = Arc::new(Mutex::new(
+            crate::store::sqlite::Sqlite::new("sender_close_test", ":memory:").unwrap()));
+
+        let mut ws = WriteStream::new();
+        ws.connection_key = 5;
+        ws.address = addr.to_string();
+        ws.stream = Arc::new(Some(server));
+        ws.has_close_request = false;
+        ws.is_closed = false;
+        let stream = Arc::new(Mutex::new(ws));
+        // Below MIN_SIZE_DATA_FOR_COMPRESS_BYTE, so ~20 MB really hit the socket.
+        let payload = vec![7u8; settings::MIN_SIZE_DATA_FOR_COMPRESS_BYTE - 1];
+        messages.lock().unwrap()[0] = Some(
+            (1..=20u64)
+                .map(|n| Message::new(mempool.clone(), 5, 7, n, &payload, true).unwrap())
+                .collect(),
+        );
+
+        let cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        write_stream(&stream, &messages, &mempools, cvar, StatusEmitter::new());
+        assert!(
+            wait_until(Duration::from_secs(2), || messages.lock().unwrap()[0].is_none()),
+            "write task should take the message from the slot"
+        );
+        assert!(stream.lock().unwrap().is_active);
+
+        let streams: WriteStreamList = vec![stream.clone()];
+        let addrs_new: Arc<Mutex<Vec<Address>>> = Arc::new(Mutex::new(Vec::new()));
+        close_streams(&streams, &addrs_new, &db, &messages, &mempools, &StatusEmitter::new());
+
+        assert!(!stream.lock().unwrap().is_active, "close_streams returns after the task ends");
+        let saved = db.lock().unwrap().load_messages_for_sender(&mempool, 5).unwrap();
+        let nums: Vec<u64> = saved.iter().map(|m| m.number_mess).collect();
+        assert_eq!(nums, (1..=20).collect::<Vec<u64>>(), "messages held by the write task reach the store");
     }
 
     #[test]

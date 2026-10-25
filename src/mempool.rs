@@ -197,11 +197,11 @@ impl Mempool{
         // accounting drifted. Recreate it — never silently drop a free.
         // No contains() — Message::freed already guards double-free; O(n) scan
         // on every free was hurting receive throughput under load.
+        // Keep count >= free positions: a recreated bucket did not count its live
+        // segments, and coalescing would drop the key while positions remain.
         let entry = self.free_mem.entry(length).or_insert_with(|| (0, Vec::new()));
         entry.1.push(pos);
-        if entry.0 == 0 {
-            entry.0 = 1;
-        }
+        entry.0 = entry.0.max(entry.1.len());
         self.free_len += length;
         self.free_count += 1;
         if self.free_count > settings::MEMPOOL_FREE_COUNT_FOR_RESIZE{
@@ -743,5 +743,22 @@ mod tests {
         assert!(mp.free_mem.get(&l).is_some_and(|e| e.1.contains(&p)));
         let (p2, l2) = mp.alloc(128);
         assert_eq!((p2, l2), (p, l));
+    }
+
+    #[test]
+    fn coalesce_after_restored_bucket_does_not_panic() {
+        let mut mp = Mempool::new();
+        let (p1, l) = mp.alloc(128);
+        let (p2, _) = mp.alloc(128);
+        let _live = mp.alloc(128);
+        assert_eq!(p2, p1 + l);
+        // Drift: the bucket vanished while its segments were still live.
+        mp.free_mem.remove(&l);
+        mp.free(p1, l);
+        mp.free(p2, l);
+        assert!(mp.free_mem[&l].0 >= mp.free_mem[&l].1.len());
+        mp.check_free_mem(0);
+        assert!(mp.free_mem.get(&(2 * l)).is_some_and(|e| e.1.contains(&p1)));
+        assert_eq!(mp.alloc(2 * l), (p1, 2 * l));
     }
 }

@@ -24,8 +24,13 @@ use mio::{Events, Interest, Poll, Token, Waker};
 struct Sender{
     sender_topic: Arc<CString>,
     connection_key: i32,
+    /// Highest number delivered to the callback: the ack to save.
     last_mess_num: u64,
     last_mess_num_saved: u64,
+    /// Bumped on a store reset: a batch taken before it no longer moves `last_mess_num`.
+    epoch: u64,
+    /// The ack write found the stored number gone or lowered; the next session resets the slot.
+    store_reset: bool,
 }
 
 type MessList = Vec<Option<Vec<Message>>>;
@@ -48,10 +53,6 @@ struct Bound {
     ix: usize,
     mempool: Arc<Mutex<Mempool>>,
     frame: FrameReadState,
-    /// Replay filter cursor, per TCP: a restarted peer (numbers from 1) is not dropped as a
-    /// duplicate, and the old TCP's tail is not filtered by numbers already seen on the new one.
-    /// `0` until loaded from the store on the first frame.
-    last_mess_num: u64,
 }
 
 /// Open TCPs by poll token (`0..WAKER`).
@@ -59,6 +60,17 @@ struct Bound {
 struct Conns {
     map: HashMap<Token, Conn>,
     seq: usize,
+}
+
+/// Stream-thread side of the slots.
+#[derive(Default)]
+struct Slots {
+    /// Sticky connection_key → slot index. Kept across TCP close so reconnect reuses the
+    /// same senders/mempools/messages index (never hand a freed ix to another peer).
+    by_key: HashMap<i32, usize>,
+    /// Replay filter by slot: the highest number accepted from any of its TCPs, so a resend on
+    /// a new TCP is not delivered twice while the stored ack lags. Lowered only by a store reset.
+    cursor: Vec<u64>,
 }
 
 /// Shared state the stream thread delivers into.
@@ -153,9 +165,7 @@ impl Listener {
                 status_emitter: status_emitter_stream,
             };
             let mut conns = Conns::default();
-            // Sticky connection_key → slot index. Kept across TCP close so reconnect reuses the
-            // same senders/mempools/messages index (never hand a freed ix to another peer).
-            let mut conn_slots: HashMap<i32, usize> = HashMap::new();
+            let mut slots = Slots::default();
             let mut events = Events::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
             loop{ 
                 if let Err(err) = poll.poll(&mut events, None){
@@ -175,7 +185,7 @@ impl Listener {
                             break;
                         }
                         token => {
-                            conns.on_ready(&poll, token, ev.is_read_closed(), &ctx, &mut conn_slots);
+                            conns.on_ready(&poll, token, ev.is_read_closed(), &ctx, &mut slots);
                         }
                     }
                 }
@@ -277,9 +287,17 @@ fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,
                  udata: &UData){
 
     mess_from_buff.clear();
-    for m in message_buffer.lock().unwrap().iter_mut(){
-        mess_from_buff.push(m.take());
-    }
+    let epochs: Vec<u64> = {
+        let mut buffer = message_buffer.lock().unwrap();
+        for m in buffer.iter_mut(){
+            mess_from_buff.push(m.take());
+        }
+        // Under the buffer lock: a store reset empties the buffer and bumps the epoch under it too.
+        match senders.lock() {
+            Ok(s) => s.iter().map(|s| s.epoch).collect(),
+            Err(_) => Vec::new(),
+        }
+    };
     for (ix, mess) in mess_from_buff.drain(..).enumerate(){
         if let Some(mess) = mess{
             let topic_from = match senders.lock() {
@@ -345,7 +363,7 @@ fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,
             drop(topic_from);
             if let Ok(mut senders) = senders.lock() {
                 if let Some(sender) = senders.get_mut(ix) {
-                    if sender.last_mess_num < last_mess_num {
+                    if Some(&sender.epoch) == epochs.get(ix) && sender.last_mess_num < last_mess_num {
                         sender.last_mess_num = last_mess_num;
                     }
                 } else {
@@ -397,8 +415,13 @@ impl Conns {
             match listener.accept() {
                 Ok((mut tcp, _addr)) => {
                     let _ = tcp.set_nodelay(true);
-                    let token = Token(self.seq % WAKER.0);
+                    // Skip tokens still held by live TCPs once `seq` wraps.
+                    let mut token = Token(self.seq % WAKER.0);
                     self.seq = self.seq.wrapping_add(1);
+                    while self.map.contains_key(&token) {
+                        token = Token(self.seq % WAKER.0);
+                        self.seq = self.seq.wrapping_add(1);
+                    }
                     if let Ok(()) = poll.registry().register(&mut tcp, token, Interest::READABLE){
                         self.map.insert(token, Conn{tcp, bound: None});
                     }else{
@@ -424,7 +447,7 @@ impl Conns {
                 token: Token,
                 read_closed: bool,
                 ctx: &ReadCtx,
-                conn_slots: &mut HashMap<i32, usize>) {
+                slots: &mut Slots) {
         let Some(conn) = self.map.get_mut(&token) else {
             return;
         };
@@ -433,17 +456,23 @@ impl Conns {
                 Peek::Wait => return,
                 Peek::Drop => {}
                 Peek::Key(connection_key) => {
-                    conn.bound = slot_for_connection_key(connection_key, conn_slots, ctx).map(|(ix, mempool)| Bound {
-                        ix,
-                        mempool,
-                        frame: FrameReadState::new(),
-                        last_mess_num: 0,
-                    });
+                    if let Some((ix, mempool)) = slot_for_connection_key(connection_key, slots, ctx) {
+                        if start_session(ix, &mempool, &mut slots.cursor[ix], ctx) {
+                            // The sender cleared its store: TCPs of its old session are stale.
+                            self.close_slot(poll, ix);
+                        }
+                        if let Some(conn) = self.map.get_mut(&token) {
+                            conn.bound = Some(Bound { ix, mempool, frame: FrameReadState::new() });
+                        }
+                    }
                 }
             }
         }
+        let Some(conn) = self.map.get_mut(&token) else {
+            return;
+        };
         let is_open = match conn.bound.as_mut() {
-            Some(bound) => read_conn(&mut conn.tcp, bound, ctx),
+            Some(bound) => read_conn(&mut conn.tcp, bound, &mut slots.cursor[bound.ix], ctx),
             None => false,
         };
         if !is_open {
@@ -455,24 +484,40 @@ impl Conns {
             }
         }
     }
+
+    /// Drop every TCP bound to slot `ix`.
+    fn close_slot(&mut self, poll: &Poll, ix: usize) {
+        self.map.retain(|_, conn| {
+            let Some(bound) = conn.bound.as_mut() else {
+                return true;
+            };
+            if bound.ix != ix {
+                return true;
+            }
+            bound.frame.abort(&bound.mempool);
+            let _ = poll.registry().deregister(&mut conn.tcp);
+            false
+        });
+    }
 }
 
 /// Slot owned by `connection_key`, created on first sight. Returns its index and mempool.
 fn slot_for_connection_key(connection_key: i32,
-                           conn_slots: &mut HashMap<i32, usize>,
+                           slots: &mut Slots,
                            ctx: &ReadCtx) -> Option<(usize, Arc<Mutex<Mempool>>)> {
     let Ok(mut mempools) = ctx.mempools.lock() else {
         print_error!("slot_for_connection_key: mempools lock poisoned");
         return None;
     };
-    if let Some(&ix) = conn_slots.get(&connection_key) {
+    if let Some(&ix) = slots.by_key.get(&connection_key) {
         return mempools.get(ix).map(|mp| (ix, mp.clone()));
     }
     let mempool = Arc::new(Mutex::new(Mempool::new()));
     mempools.push(mempool.clone());
     let ix = mempools.len() - 1;
     if let Ok(mut s) = ctx.senders.lock() {
-        s.push(Sender{sender_topic: topic_cstring(""), connection_key, last_mess_num: 0, last_mess_num_saved: 0});
+        s.push(Sender{sender_topic: topic_cstring(""), connection_key, last_mess_num: 0, last_mess_num_saved: 0,
+                      epoch: 0, store_reset: false});
     } else {
         print_error!("slot_for_connection_key: senders lock poisoned");
     }
@@ -481,14 +526,16 @@ fn slot_for_connection_key(connection_key: i32,
     } else {
         print_error!("slot_for_connection_key: messages lock poisoned");
     }
-    conn_slots.insert(connection_key, ix);
+    slots.by_key.insert(connection_key, ix);
+    slots.cursor.push(0);
     Some((ix, mempool))
 }
 
 /// Read everything available on a bound TCP into its slot. Returns `false` once the TCP is done.
-fn read_conn(tcp: &mut TcpStream, bound: &mut Bound, ctx: &ReadCtx) -> bool {
+/// `last_mess_num` is the slot's replay cursor ([`Slots::cursor`]).
+fn read_conn(tcp: &mut TcpStream, bound: &mut Bound, last_mess_num: &mut u64, ctx: &ReadCtx) -> bool {
     let ReadCtx { messages, receive_thread_cvar, internal_topic_key, .. } = ctx;
-    let Bound { ix, mempool, frame, last_mess_num } = bound;
+    let Bound { ix, mempool, frame } = bound;
     let ix = *ix;
     let mut mess_buff: Vec<Message> = Vec::with_capacity(settings::LISTENER_RECEIVE_FLUSH_BATCH);
     let mut is_shutdown = false;
@@ -533,9 +580,6 @@ fn read_conn(tcp: &mut TcpStream, bound: &mut Bound, ctx: &ReadCtx) -> bool {
                     };
                     let ik = internal_topic_key.load(Ordering::Relaxed);
                     let internal = ik >= 0 && mess.listener_topic_key == ik;
-                    if *last_mess_num == 0 {
-                        *last_mess_num = session_start_mess_number(ix, ctx);
-                    }
                     // Replay filter is for application payloads. Internal subscribe/unsubscribe
                     // events must still run after a peer restarts (message numbers reset to 1)
                     // or the same peer reconnects with a new TCP session.
@@ -561,24 +605,68 @@ fn read_conn(tcp: &mut TcpStream, bound: &mut Bound, ctx: &ReadCtx) -> bool {
     !is_shutdown
 }
 
-/// Replay cursor for a new TCP session: the last number the store has for the sender.
-/// Resolves the sender topic on first use (retried per session until the store has it).
-fn session_start_mess_number(ix: usize, ctx: &ReadCtx) -> u64 {
-    let (connection_key, sender_topic) = {
-        let Ok(mut senders) = ctx.senders.lock() else {
-            print_error!("read_conn: senders lock poisoned (init)");
-            return 0;
+/// A new TCP on slot `ix`: re-read the stored ack and lift the replay `cursor` to it.
+/// A stored ack below the one this listener saved (or a failed ack write) means the sender ran
+/// `clear_stored_messages` and numbers from the stored ack again: the slot restarts from it,
+/// queued messages are dropped and batches already taken by the receive thread no longer move
+/// the ack. Returns `true` on such a reset. Resolves the sender topic on first use.
+fn start_session(ix: usize, mempool: &Arc<Mutex<Mempool>>, cursor: &mut u64, ctx: &ReadCtx) -> bool {
+    let (connection_key, has_topic) = {
+        let Ok(senders) = ctx.senders.lock() else {
+            print_error!("start_session: senders lock poisoned");
+            return false;
         };
-        let Some(sender) = senders.get_mut(ix) else {
-            print_error!(&format!("read_conn: sender index out of bounds {}", ix));
-            return 0;
+        let Some(sender) = senders.get(ix) else {
+            print_error!(&format!("start_session: sender index out of bounds {}", ix));
+            return false;
         };
-        if sender.sender_topic.as_bytes().is_empty() {
-            sender.sender_topic = topic_cstring(&get_sender_topic(&ctx.db, sender.connection_key, &ctx.status_emitter));
-        }
-        (sender.connection_key, sender.sender_topic.clone())
+        (sender.connection_key, !sender.sender_topic.as_bytes().is_empty())
     };
-    get_last_mess_number(&ctx.db, connection_key, 0, sender_topic.to_str().unwrap_or(""), &ctx.status_emitter)
+    if !has_topic {
+        let topic = topic_cstring(&get_sender_topic(&ctx.db, connection_key, &ctx.status_emitter));
+        if let Some(sender) = ctx.senders.lock().ok().as_mut().and_then(|s| s.get_mut(ix)) {
+            sender.sender_topic = topic;
+        }
+    }
+    // Lock order: db, messages, senders. The db stays locked through the compare: an ack
+    // written in between would otherwise look like a reset.
+    let Ok(mut db) = ctx.db.lock() else {
+        print_error!("start_session: db lock poisoned");
+        return false;
+    };
+    let Some(stored) = get_last_mess_number(&mut *db, ix, ctx) else {
+        return false;
+    };
+    let Ok(mut messages) = ctx.messages.lock() else {
+        print_error!("start_session: messages lock poisoned");
+        return false;
+    };
+    let Ok(mut senders) = ctx.senders.lock() else {
+        print_error!("start_session: senders lock poisoned");
+        return false;
+    };
+    let Some(sender) = senders.get_mut(ix) else {
+        return false;
+    };
+    if !sender.store_reset && stored >= sender.last_mess_num_saved {
+        sender.last_mess_num_saved = stored;
+        sender.last_mess_num = sender.last_mess_num.max(stored);
+        *cursor = (*cursor).max(stored);
+        return false;
+    }
+    print_debug!(&format!("store reset for connection_key {}: ack {} -> {}",
+                          connection_key, sender.last_mess_num_saved, stored));
+    if let Some(queued) = messages.get_mut(ix).and_then(Option::take) {
+        for m in queued {
+            m.free(mempool);
+        }
+    }
+    sender.epoch += 1;
+    sender.store_reset = false;
+    sender.last_mess_num = stored;
+    sender.last_mess_num_saved = stored;
+    *cursor = stored;
+    true
 }
 
 fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
@@ -593,15 +681,18 @@ fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
 fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
                            db: &Arc<Mutex<dyn Store>>,
                            status_emitter: &StatusEmitter){
-    let updates: Vec<(usize, i32, u64, Arc<CString>)> = {
+    let updates: Vec<(usize, i32, u64, u64, u64, Arc<CString>)> = {
         let senders = senders.lock().unwrap();
         let mut out = Vec::new();
         for (ix, sender) in senders.iter().enumerate() {
-            if sender.connection_key >= 0 && sender.last_mess_num_saved < sender.last_mess_num {
+            if sender.connection_key >= 0 && !sender.store_reset
+                && sender.last_mess_num_saved < sender.last_mess_num {
                 out.push((
                     ix,
                     sender.connection_key,
+                    sender.last_mess_num_saved,
                     sender.last_mess_num,
+                    sender.epoch,
                     sender.sender_topic.clone(),
                 ));
             }
@@ -611,12 +702,13 @@ fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
     if updates.is_empty() {
         return;
     }
-    let mut succeeded: Vec<(usize, u64)> = Vec::with_capacity(updates.len());
+    // (ix, epoch, written ack or `None` when the store was reset under us)
+    let mut succeeded: Vec<(usize, u64, Option<u64>)> = Vec::with_capacity(updates.len());
     {
         let mut db = db.lock().unwrap();
-        for (ix, connection_key, last_mess_num, sender_topic) in updates {
-            match db.set_last_mess_number_from_listener(connection_key, last_mess_num) {
-                Ok(()) => succeeded.push((ix, last_mess_num)),
+        for (ix, connection_key, saved, last_mess_num, epoch, sender_topic) in updates {
+            match db.set_last_mess_number_from_listener(connection_key, saved, last_mess_num) {
+                Ok(written) => succeeded.push((ix, epoch, written.then_some(last_mess_num))),
                 Err(err) => {
                     print_error!(&format!("couldn't db.set_last_mess_number: {}", err));
                     if status_emitter.is_enabled() {
@@ -638,34 +730,48 @@ fn update_last_mess_number(senders: &Arc<Mutex<SenderList>>,
         return;
     }
     let mut senders = senders.lock().unwrap();
-    for (ix, last_mess_num) in succeeded {
-        if let Some(sender) = senders.get_mut(ix) {
-            if sender.connection_key >= 0 && sender.last_mess_num_saved < last_mess_num {
-                sender.last_mess_num_saved = last_mess_num;
+    for (ix, epoch, written) in succeeded {
+        let Some(sender) = senders.get_mut(ix) else {
+            continue;
+        };
+        if sender.epoch != epoch {
+            continue;
+        }
+        match written {
+            Some(last_mess_num) => {
+                if sender.last_mess_num_saved < last_mess_num {
+                    sender.last_mess_num_saved = last_mess_num;
+                }
             }
+            None => sender.store_reset = true,
         }
     }
 }
 
-fn get_last_mess_number(db: &Arc<Mutex<dyn Store>>, connection_key: i32, default_mess_number: u64,
-                        sender_topic: &str, status_emitter: &StatusEmitter)->u64{
-    match db.lock().unwrap().get_last_mess_number_for_listener(connection_key){
+/// Stored ack of slot `ix`, `None` on a store error (reported).
+fn get_last_mess_number(db: &mut dyn Store, ix: usize, ctx: &ReadCtx) -> Option<u64> {
+    let (connection_key, sender_topic) = {
+        let senders = ctx.senders.lock().ok()?;
+        let sender = senders.get(ix)?;
+        (sender.connection_key, sender.sender_topic.clone())
+    };
+    match db.get_last_mess_number_for_listener(connection_key){
         Ok(num)=>{
-            num
+            Some(num)
         },
         Err(err)=>{
             print_error!(&format!("couldn't get_last_mess_number_for_listener: {}", err));
-            if status_emitter.is_enabled() {
+            if ctx.status_emitter.is_enabled() {
                 let err_s = err.to_string();
-                status_emitter.emit_msg(
+                ctx.status_emitter.emit_msg(
                     LNR_LISTENER_STORE_ERROR,
-                    sender_topic,
+                    sender_topic.to_str().unwrap_or(""),
                     "",
                     StatusMsg::GetLastMessNumberForListener,
                     &[&err_s],
                 );
             }
-            default_mess_number
+            None
         }
     }
 }
@@ -836,6 +942,8 @@ mod tests {
             connection_key: 1,
             last_mess_num: 0,
             last_mess_num_saved: 0,
+            epoch: 0,
+            store_reset: false,
         }
     }
 
@@ -1200,7 +1308,7 @@ mod tests {
         poll: Poll,
         listener: TcpListener,
         conns: Conns,
-        conn_slots: HashMap<i32, usize>,
+        slots: Slots,
         ctx: ReadCtx,
     }
 
@@ -1209,7 +1317,7 @@ mod tests {
             let poll = Poll::new().unwrap();
             let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
             poll.registry().register(&mut listener, SERVER, Interest::READABLE).unwrap();
-            Harness { poll, listener, conns: Conns::default(), conn_slots: HashMap::new(), ctx: test_ctx() }
+            Harness { poll, listener, conns: Conns::default(), slots: Slots::default(), ctx: test_ctx() }
         }
 
         fn addr(&self) -> std::net::SocketAddr {
@@ -1227,7 +1335,7 @@ mod tests {
                     match ev.token() {
                         SERVER => self.conns.accept(&self.poll, &self.listener),
                         token => self.conns.on_ready(&self.poll, token, ev.is_read_closed(),
-                                                     &self.ctx, &mut self.conn_slots),
+                                                     &self.ctx, &mut self.slots),
                     }
                 }
             }
@@ -1248,16 +1356,20 @@ mod tests {
         let mut first = connect_and_send(addr, 42, 1);
         h.pump_until(|h| h.received(0).len() == 1);
 
-        // Reconnect from a new ephemeral port: same slot, both TCPs stay open.
-        let second = connect_and_send(addr, 42, 1);
+        // Reconnect from a new ephemeral port: same slot, both TCPs stay open. The resend of 1
+        // is a duplicate even though the stored ack (0) lags.
+        let mut second = connect_and_send(addr, 42, 1);
         assert_ne!(second.local_addr().unwrap().port(), first.local_addr().unwrap().port());
+        h.pump_until(|h| h.conns.map.values().all(|c| c.bound.is_some()) && h.conns.map.len() == 2);
+        second.write_all(&wire_frame(42, 2)).unwrap();
         h.pump_until(|h| h.received(0).len() == 2);
-        assert_eq!(h.conns.map.len(), 2);
 
-        // Tail written to the old TCP after the new one is bound is still delivered.
+        // Tail written to the old TCP after the new one is bound: the slot cursor filters
+        // what the new TCP already delivered.
         first.write_all(&wire_frame(42, 2)).unwrap();
-        h.pump_until(|h| h.received(0).len() == 3);
-        assert_eq!(h.received(0), vec![1, 1, 2]);
+        first.write_all(&wire_frame(42, 3)).unwrap();
+        h.pump_until(|h| h.received(0).last() == Some(&3));
+        assert_eq!(h.received(0), vec![1, 2, 3]);
         assert_eq!(h.ctx.mempools.lock().unwrap().len(), 1);
 
         // Old TCP closes; the slot and the new TCP stay.
@@ -1269,11 +1381,55 @@ mod tests {
         let s = h.ctx.senders.lock().unwrap();
         assert_eq!((s[0].connection_key, s[1].connection_key), (42, 7));
         assert_eq!(h.ctx.mempools.lock().unwrap().len(), 2);
-        assert_eq!(h.conn_slots.len(), 2);
+        assert_eq!(h.slots.by_key.len(), 2);
     }
 
     #[test]
-    fn replay_filter_is_per_tcp() {
+    fn store_reset_restarts_slot() {
+        use std::io::Write;
+        let mut h = Harness::new();
+        let mut old = connect_and_send(h.addr(), 42, 1);
+        old.write_all(&wire_frame(42, 2)).unwrap();
+        h.pump_until(|h| h.received(0).len() == 2);
+        // The listener saved ack 2, then the sender cleared its store (stored ack is 0 again).
+        {
+            let mut s = h.ctx.senders.lock().unwrap();
+            s[0].last_mess_num = 2;
+            s[0].last_mess_num_saved = 2;
+        }
+
+        // Restarted sender numbers from 1: the old session's TCP and queue are dropped.
+        let _new = connect_and_send(h.addr(), 42, 1);
+        h.pump_until(|h| h.received(0) == vec![1]);
+        assert_eq!(h.conns.map.len(), 1);
+        let s = h.ctx.senders.lock().unwrap();
+        assert_eq!((s[0].epoch, s[0].last_mess_num, s[0].last_mess_num_saved), (1, 0, 0));
+        assert_eq!(h.slots.cursor[0], 1);
+    }
+
+    #[test]
+    fn ack_write_detects_store_reset() {
+        let ctx = test_ctx();
+        let mut db = ctx.db.lock().unwrap();
+        // No row yet (bind-time read failed): counts as 0 for the first save only.
+        assert!(!db.set_last_mess_number_from_listener(41, 2, 4).unwrap());
+        assert!(db.set_last_mess_number_from_listener(41, 0, 4).unwrap());
+        assert_eq!(db.get_last_mess_number_for_listener(41).unwrap(), 4);
+        assert_eq!(db.get_last_mess_number_for_listener(42).unwrap(), 0);
+        assert!(db.set_last_mess_number_from_listener(42, 0, 3).unwrap());
+        assert_eq!(db.get_last_mess_number_for_listener(42).unwrap(), 3);
+        drop(db);
+
+        // Saved 5 but the store holds 3: a reset, nothing written.
+        ctx.senders.lock().unwrap().push(Sender{sender_topic: topic_cstring("s"), connection_key: 42,
+            last_mess_num: 7, last_mess_num_saved: 5, epoch: 0, store_reset: false});
+        update_last_mess_number(&ctx.senders, &ctx.db, &ctx.status_emitter);
+        assert!(ctx.senders.lock().unwrap()[0].store_reset);
+        assert_eq!(ctx.db.lock().unwrap().get_last_mess_number_for_listener(42).unwrap(), 3);
+    }
+
+    #[test]
+    fn replay_is_dropped() {
         use std::io::Write;
         let mut h = Harness::new();
         let mut tcp = connect_and_send(h.addr(), 42, 1);

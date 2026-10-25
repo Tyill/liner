@@ -12,6 +12,9 @@ public:
   LinerBroker(const std::string& clientName, const std::string& topic, const std::string& addr, const std::string& redisAddr){
       m_hClient = lnr_new_client_redis(clientName.c_str(), topic.c_str(), addr.c_str(), redisAddr.c_str());
   }
+  // Owns m_hClient: a copy would delete it twice.
+  LinerBroker(const LinerBroker&) = delete;
+  LinerBroker& operator=(const LinerBroker&) = delete;
   ~LinerBroker(){
       if (m_hClient){
           lnr_delete_client(m_hClient);
