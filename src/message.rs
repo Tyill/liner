@@ -10,6 +10,22 @@ const AT_LEAST_ONCE_DELIVERY: u8 = 0x02;
 
 /// Wire header: u64 number + i32 connection_key + i32 topic_key + u8 flags.
 const HEADER_LEN: usize = 8 + 4 + 4 + 1;
+/// Offset of `connection_key` in the framed body.
+const CONNECTION_KEY_POS: usize = 8;
+/// Bytes of a wire frame (u32 length prefix + body) needed by [`connection_key_from_wire`].
+pub const WIRE_CONNECTION_KEY_END: usize = 4 + CONNECTION_KEY_POS + 4;
+
+/// `connection_key` from the start of a wire frame, u32 length prefix included.
+/// `None` if fewer than [`WIRE_CONNECTION_KEY_END`] bytes or the frame length is invalid.
+pub fn connection_key_from_wire(frame: &[u8]) -> Option<i32> {
+    let frame = frame.get(..WIRE_CONNECTION_KEY_END)?;
+    let body_len = u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize;
+    if body_len < framed_body_size_raw(0) || body_len > settings::max_message_size() {
+        return None;
+    }
+    let key_pos = 4 + CONNECTION_KEY_POS;
+    Some(i32::from_be_bytes(frame[key_pos..key_pos + 4].try_into().unwrap()))
+}
 
 /// Uncompressed framed message body size for a raw application payload
 /// (what the bytestream `u32` length header carries — excludes that outer length itself).
@@ -258,8 +274,7 @@ impl Message{
         self.flags & COMPRESS > 0
     }
     pub fn connection_key(&self, mempool: &Arc<Mutex<Mempool>>)->i32{
-        let number_mess_len = std::mem::size_of::<u64>(); 
-        let key_pos = self.mem_alloc_pos + number_mess_len;
+        let key_pos = self.mem_alloc_pos + CONNECTION_KEY_POS;
         mempool.lock().unwrap().read_u32(key_pos) as i32
     }   
 }
@@ -357,6 +372,19 @@ mod tests {
         let mut shutdown = false;
         let decoded = Message::from_stream(&mempool, &mut &wire[..], &mut shutdown).unwrap();
         assert!(decoded.at_least_once_delivery());
+    }
+
+    #[test]
+    fn connection_key_from_wire_matches_encoded_message() {
+        let mp = Arc::new(Mutex::new(Mempool::new()));
+        let m = Message::new(mp.clone(), -42, 7, 3, b"wire", false).unwrap();
+        let mut wire = Vec::new();
+        assert!(m.to_stream(&mp, &mut wire));
+        assert_eq!(connection_key_from_wire(&wire), Some(-42));
+        assert_eq!(connection_key_from_wire(&wire[..WIRE_CONNECTION_KEY_END - 1]), None);
+        let mut bad = wire.clone();
+        bad[..4].copy_from_slice(&3u32.to_be_bytes());
+        assert_eq!(connection_key_from_wire(&bad), None);
     }
 
     #[test]

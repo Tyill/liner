@@ -1,5 +1,5 @@
 use crate::bytestream::{FeedOutcome, FrameReadState};
-use crate::message::Message;
+use crate::message::{self, Message};
 use crate::mempool::Mempool;
 use crate::store::Store;
 use crate::settings::{self, INTERNAL_CHANNEL_TOPIC};
@@ -18,35 +18,66 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::io;
 use std::ffi::CString;
 
-use std::net::SocketAddr;
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token, Waker};
-
-struct ReadStream{
-    stream: Option<TcpStream>,
-    is_close: bool,
-    frame: FrameReadState,
-    mempool: Arc<Mutex<Mempool>>,
-}
 
 struct Sender{
     sender_topic: Arc<CString>,
     connection_key: i32,
     last_mess_num: u64,
-    last_mess_num_preview: u64,
     last_mess_num_saved: u64,
 }
 
-type MessList = Vec<Option<Vec<Message>>>; 
-type MempoolList = Vec<Arc<Mutex<Mempool>>>; 
+type MessList = Vec<Option<Vec<Message>>>;
+type MempoolList = Vec<Arc<Mutex<Mempool>>>;
 type SenderList = Vec<Sender>;
-type ReadStreamList = Vec<ReadStream>; 
 
-/// Accept/token index `ix` is shared across `streams[ix]`, `senders[ix]`, `mempools[ix]`,
-/// and `messages[ix]`, and is owned by one `SocketAddr` in the accept map for the life of
-/// that peer identity. Do **not** recycle `ix` into a free-list for a different address:
+const SERVER: Token = Token(usize::MAX);
+const WAKER: Token = Token(usize::MAX - 1);
+
+/// One accepted TCP. Bound to a slot once its first frame header names the sender.
+/// A slot may hold several: after a reconnect the old TCP keeps draining to EOF
+/// next to the new one.
+struct Conn {
+    tcp: TcpStream,
+    bound: Option<Bound>,
+}
+
+/// Read state of a TCP bound to slot `ix`.
+struct Bound {
+    ix: usize,
+    mempool: Arc<Mutex<Mempool>>,
+    frame: FrameReadState,
+    /// Replay filter cursor, per TCP: a restarted peer (numbers from 1) is not dropped as a
+    /// duplicate, and the old TCP's tail is not filtered by numbers already seen on the new one.
+    /// `0` until loaded from the store on the first frame.
+    last_mess_num: u64,
+}
+
+/// Open TCPs by poll token (`0..WAKER`).
+#[derive(Default)]
+struct Conns {
+    map: HashMap<Token, Conn>,
+    seq: usize,
+}
+
+/// Shared state the stream thread delivers into.
+struct ReadCtx {
+    senders: Arc<Mutex<SenderList>>,
+    messages: Arc<Mutex<MessList>>,
+    mempools: Arc<Mutex<MempoolList>>,
+    db: Arc<Mutex<dyn Store>>,
+    receive_thread_cvar: Arc<(Mutex<bool>, Condvar)>,
+    internal_topic_key: Arc<AtomicI32>,
+    status_emitter: StatusEmitter,
+}
+
+/// Slot index `ix` is shared across `senders[ix]`, `mempools[ix]` and `messages[ix]`,
+/// and is owned by one `connection_key` for the life of the listener.
+/// Do **not** recycle `ix` into a free-list for a different peer:
 /// the mempool and `last_mess_num` / `connection_key` on that slot belong to the original peer.
-/// Same `SocketAddr` reconnecting must reuse its own `ix` (see `listener_accept`).
+/// The sender connects from an ephemeral port, so a reconnect is recognised by the
+/// `connection_key` in its first frame header, not by `SocketAddr` (see [`Conns::on_ready`]).
 pub struct Listener{
     stream_thread: Option<JoinHandle<()>>,
     receive_thread: Option<JoinHandle<()>>,
@@ -71,10 +102,10 @@ impl Listener {
         }
         let mut poll = Poll::new().map_err(|e| format!("couldn't create poll queue: {}", e))?;
         let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(Vec::new()));
-        let mut messages_ = messages.clone();
-        let mut mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(Vec::new()));
+        let messages_ = messages.clone();
+        let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(Vec::new()));
         let mempools_= mempools.clone();
-        let mut senders: Arc<Mutex<SenderList>> = Arc::new(Mutex::new(Vec::new()));
+        let senders: Arc<Mutex<SenderList>> = Arc::new(Mutex::new(Vec::new()));
         let senders_ = senders.clone();
         db.lock().map_err(|_| "db lock poisoned".to_string())?.set_source_topic(source_topic);
         let db_ = db.clone();
@@ -103,9 +134,7 @@ impl Listener {
 
         let receive_thread_cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
         let receive_thread_cvar_ = receive_thread_cvar.clone();
-      
-        const SERVER: Token = Token(usize::MAX);
-        const WAKER: Token = Token(usize::MAX - 1);
+
         poll.registry()
             .register(&mut listener, SERVER, Interest::READABLE)
             .map_err(|e| format!("couldn't register listener: {}", e))?;
@@ -114,10 +143,19 @@ impl Listener {
         );
         let internal_topic_key_stream = internal_topic_key.clone();
         let stream_thread = thread::spawn(move|| {            
-            let mut streams: ReadStreamList = Vec::new();
-            // Sticky SocketAddr → slot index. Kept across TCP close so reconnect reuses the
-            // same streams/senders/mempools/messages index (never hand a freed ix to another addr).
-            let mut address: HashMap<SocketAddr, usize> = HashMap::new();
+            let ctx = ReadCtx {
+                senders,
+                messages: messages_,
+                mempools,
+                db,
+                receive_thread_cvar: receive_thread_cvar_,
+                internal_topic_key: internal_topic_key_stream,
+                status_emitter: status_emitter_stream,
+            };
+            let mut conns = Conns::default();
+            // Sticky connection_key → slot index. Kept across TCP close so reconnect reuses the
+            // same senders/mempools/messages index (never hand a freed ix to another peer).
+            let mut conn_slots: HashMap<i32, usize> = HashMap::new();
             let mut events = Events::with_capacity(settings::EPOLL_LISTEN_EVENTS_COUNT);
             loop{ 
                 if let Err(err) = poll.poll(&mut events, None){
@@ -130,29 +168,22 @@ impl Listener {
                 for ev in &events {
                     match ev.token() {                    
                         SERVER => {
-                            listener_accept(&poll, &mut address, &mut streams, &mut senders, &listener, 
-                                &mut mempools, &mut messages_);
+                            conns.accept(&poll, &listener);
                         }
                         WAKER => {
                             has_wake = true;
                             break;
                         }
-                        client =>{
-                            if let Some(stream) = streams.get_mut(client.0){
-                                read_stream(client, stream, &senders,
-                                            &db, &messages_, &receive_thread_cvar_,
-                                            &internal_topic_key_stream,
-                                            &status_emitter_stream);
-                            }
-                        }                        
+                        token => {
+                            conns.on_ready(&poll, token, ev.is_read_closed(), &ctx, &mut conn_slots);
+                        }
                     }
                 }
-                cleanup_closed_streams(&poll, &mut streams);
                 if has_wake{
                     break;
                 }
             }
-            update_last_mess_number(&senders, &db, &status_emitter_stream);       
+            update_last_mess_number(&ctx.senders, &ctx.db, &ctx.status_emitter);
         });
 
         let receive_thread_cvar_ = receive_thread_cvar.clone();
@@ -327,141 +358,164 @@ fn do_receive_cb(message_buffer: &Arc<Mutex<MessList>>,
     }
 }
 
-fn listener_accept(poll: &Poll, 
-                   address: &mut HashMap<SocketAddr, usize>,
-                   streams: &mut ReadStreamList,
-                   senders: &mut Arc<Mutex<SenderList>>,
-                   listener: &TcpListener,
-                   mempools: &mut Arc<Mutex<MempoolList>>,
-                   messages: &mut Arc<Mutex<MessList>>){
-    
-    loop {
-        match listener.accept() {
-            Ok((mut stream, addr)) => {
-                let _ = stream.set_nodelay(true);
-                let mut token = Token(address.len());
-                let mut ix = usize::MAX;
-                if address.contains_key(&addr){
-                    ix = *address.get(&addr).unwrap();
-                    token = Token(ix);
-                }          
-                if let Ok(()) = poll.registry().register(&mut stream, token, Interest::READABLE){
-                    if ix == usize::MAX{
-                        let mempool = Arc::new(Mutex::new(Mempool::new()));
-                        streams.push(ReadStream{
-                            stream: Some(stream),
-                            is_close: false,
-                            frame: FrameReadState::new(),
-                            mempool: mempool.clone(),
-                        });    
-                        if let Ok(mut s) = senders.lock() {
-                            s.push(Sender{sender_topic: topic_cstring(""), connection_key: -1, last_mess_num: 0, last_mess_num_preview: 0, last_mess_num_saved: 0});
-                        } else {
-                            print_error!("listener_accept: senders lock poisoned");
-                        }
-                        if let Ok(mut mp) = mempools.lock() {
-                            mp.push(mempool);
-                        } else {
-                            print_error!("listener_accept: mempools lock poisoned");
-                        }
-                        if let Ok(mut mb) = messages.lock() {
-                            mb.push(None);
-                        } else {
-                            print_error!("listener_accept: messages lock poisoned");
-                        }
-                        address.insert(addr, streams.len() - 1);
-                    }else{
-                        // Same SocketAddr reconnects: keep index + mempool. New TCP is a new
-                        // session — reset message-number cursor so a restarted peer (numbers
-                        // from 1) is not treated as a duplicate replay. Internal events
-                        // (unsubscribe) must still be delivered.
-                        let mempool = streams[ix].mempool.clone();
-                        streams[ix].frame.abort(&mempool);
-                        if let Ok(mut s) = senders.lock() {
-                            if let Some(sender) = s.get_mut(ix) {
-                                sender.connection_key = -1;
-                                sender.last_mess_num = 0;
-                                sender.last_mess_num_preview = 0;
-                            }
-                        }
-                        streams[ix] = ReadStream{
-                            stream: Some(stream),
-                            is_close: false,
-                            frame: FrameReadState::new(),
-                            mempool,
-                        };
-                    }
-                }else{
-                    print_error!(format!("couldn't poll.registry() stream"));
-                }                
+/// First-header peek of an unbound TCP.
+enum Peek {
+    /// Header not complete yet.
+    Wait,
+    Key(i32),
+    /// EOF, error or invalid frame length.
+    Drop,
+}
+
+/// Peek the first frame header for its `connection_key` (nothing is consumed).
+/// `read_closed` comes from the poll event: a peer that closes after a partial header
+/// leaves those bytes peekable forever.
+fn peek_connection_key(tcp: &TcpStream, read_closed: bool) -> Peek {
+    let mut hdr = [0u8; message::WIRE_CONNECTION_KEY_END];
+    match tcp.peek(&mut hdr) {
+        Ok(n) if n == hdr.len() => match message::connection_key_from_wire(&hdr) {
+            Some(connection_key) => Peek::Key(connection_key),
+            None => {
+                print_error!("invalid first frame header");
+                Peek::Drop
             }
-            Err(err) => {
-                if err.kind() != io::ErrorKind::WouldBlock && err.kind() != std::io::ErrorKind::Interrupted {
-                    print_error!(&format!("couldn't listener accept: {}", err));
-                }
-                if err.kind() != std::io::ErrorKind::Interrupted{
-                    break;
-                }
-            } 
+        },
+        Ok(0) => Peek::Drop,
+        Ok(_) if read_closed => Peek::Drop,
+        Ok(_) => Peek::Wait,
+        Err(err) if matches!(err.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => Peek::Wait,
+        Err(err) => {
+            print_error!(&format!("pending stream peek: {}", err));
+            Peek::Drop
         }
     }
 }
 
-fn read_stream(token: Token,
-               stream: &mut ReadStream,
-               senders: &Arc<Mutex<SenderList>>,
-               db: &Arc<Mutex<dyn Store>>,
-               messages: &Arc<Mutex<MessList>>,
-               receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>,
-               internal_topic_key: &AtomicI32,
-               status_emitter: &StatusEmitter){
-    let mempool = stream.mempool.clone();
-    if stream.is_close {
-        return;
-    }
-
-    let mut mess_buff: Vec<Message> = Vec::with_capacity(settings::LISTENER_RECEIVE_FLUSH_BATCH);
-    let mut last_mess_num = 0;
-    if let Ok(senders) = senders.lock(){
-        if let Some(sender) = senders.get(token.0) {
-            last_mess_num = sender.last_mess_num_preview;
-        } else {
-            print_error!(&format!("read_stream: sender index out of bounds for token {}", token.0));
+impl Conns {
+    fn accept(&mut self, poll: &Poll, listener: &TcpListener) {
+        loop {
+            match listener.accept() {
+                Ok((mut tcp, _addr)) => {
+                    let _ = tcp.set_nodelay(true);
+                    let token = Token(self.seq % WAKER.0);
+                    self.seq = self.seq.wrapping_add(1);
+                    if let Ok(()) = poll.registry().register(&mut tcp, token, Interest::READABLE){
+                        self.map.insert(token, Conn{tcp, bound: None});
+                    }else{
+                        print_error!(format!("couldn't poll.registry() stream"));
+                    }
+                }
+                Err(err) => {
+                    if err.kind() != io::ErrorKind::WouldBlock && err.kind() != std::io::ErrorKind::Interrupted {
+                        print_error!(&format!("couldn't listener accept: {}", err));
+                    }
+                    if err.kind() != std::io::ErrorKind::Interrupted{
+                        break;
+                    }
+                }
+            }
         }
     }
 
+    /// Readiness on a TCP: bind it to its sender's slot on the first complete header,
+    /// then read what arrived. A finished TCP is dropped; its slot stays.
+    fn on_ready(&mut self,
+                poll: &Poll,
+                token: Token,
+                read_closed: bool,
+                ctx: &ReadCtx,
+                conn_slots: &mut HashMap<i32, usize>) {
+        let Some(conn) = self.map.get_mut(&token) else {
+            return;
+        };
+        if conn.bound.is_none() {
+            match peek_connection_key(&conn.tcp, read_closed) {
+                Peek::Wait => return,
+                Peek::Drop => {}
+                Peek::Key(connection_key) => {
+                    conn.bound = slot_for_connection_key(connection_key, conn_slots, ctx).map(|(ix, mempool)| Bound {
+                        ix,
+                        mempool,
+                        frame: FrameReadState::new(),
+                        last_mess_num: 0,
+                    });
+                }
+            }
+        }
+        let is_open = match conn.bound.as_mut() {
+            Some(bound) => read_conn(&mut conn.tcp, bound, ctx),
+            None => false,
+        };
+        if !is_open {
+            if let Some(mut conn) = self.map.remove(&token) {
+                if let Some(bound) = conn.bound.as_mut() {
+                    bound.frame.abort(&bound.mempool);
+                }
+                let _ = poll.registry().deregister(&mut conn.tcp);
+            }
+        }
+    }
+}
+
+/// Slot owned by `connection_key`, created on first sight. Returns its index and mempool.
+fn slot_for_connection_key(connection_key: i32,
+                           conn_slots: &mut HashMap<i32, usize>,
+                           ctx: &ReadCtx) -> Option<(usize, Arc<Mutex<Mempool>>)> {
+    let Ok(mut mempools) = ctx.mempools.lock() else {
+        print_error!("slot_for_connection_key: mempools lock poisoned");
+        return None;
+    };
+    if let Some(&ix) = conn_slots.get(&connection_key) {
+        return mempools.get(ix).map(|mp| (ix, mp.clone()));
+    }
+    let mempool = Arc::new(Mutex::new(Mempool::new()));
+    mempools.push(mempool.clone());
+    let ix = mempools.len() - 1;
+    if let Ok(mut s) = ctx.senders.lock() {
+        s.push(Sender{sender_topic: topic_cstring(""), connection_key, last_mess_num: 0, last_mess_num_saved: 0});
+    } else {
+        print_error!("slot_for_connection_key: senders lock poisoned");
+    }
+    if let Ok(mut mb) = ctx.messages.lock() {
+        mb.push(None);
+    } else {
+        print_error!("slot_for_connection_key: messages lock poisoned");
+    }
+    conn_slots.insert(connection_key, ix);
+    Some((ix, mempool))
+}
+
+/// Read everything available on a bound TCP into its slot. Returns `false` once the TCP is done.
+fn read_conn(tcp: &mut TcpStream, bound: &mut Bound, ctx: &ReadCtx) -> bool {
+    let ReadCtx { messages, receive_thread_cvar, internal_topic_key, .. } = ctx;
+    let Bound { ix, mempool, frame, last_mess_num } = bound;
+    let ix = *ix;
+    let mut mess_buff: Vec<Message> = Vec::with_capacity(settings::LISTENER_RECEIVE_FLUSH_BATCH);
     let mut is_shutdown = false;
     let mut scratch = [0u8; settings::BYTESTREAM_READ_BUFFER_SIZE];
     loop {
-        let n = {
-            let Some(tcp) = stream.stream.as_mut() else {
+        let n = match tcp.read(&mut scratch) {
+            Ok(0) => {
+                is_shutdown = true;
                 break;
-            };
-            match tcp.read(&mut scratch) {
-                Ok(0) => {
-                    stream.frame.abort(&mempool);
-                    is_shutdown = true;
+            }
+            Ok(n) => n,
+            Err(err) => {
+                let k = err.kind();
+                if k == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                if k == io::ErrorKind::WouldBlock {
                     break;
                 }
-                Ok(n) => n,
-                Err(err) => {
-                    let k = err.kind();
-                    if k == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    if k == io::ErrorKind::WouldBlock {
-                        break;
-                    }
-                    print_error!(&format!("read_stream: {}", k));
-                    stream.frame.abort(&mempool);
-                    is_shutdown = true;
-                    break;
-                }
+                print_error!(&format!("read_conn: {}", k));
+                is_shutdown = true;
+                break;
             }
         };
         let mut off = 0;
         while off < n {
-            let (used, outcome) = stream.frame.feed(&scratch[off..n], &mempool);
+            let (used, outcome) = frame.feed(&scratch[off..n], mempool);
             if used == 0 {
                 break;
             }
@@ -473,58 +527,28 @@ fn read_stream(token: Token,
                     break;
                 }
                 FeedOutcome::Frame { mem_pos, mem_len } => {
-                    let Some(mess) = Message::from_alloc(&mempool, mem_pos, mem_len) else {
+                    let Some(mess) = Message::from_alloc(mempool, mem_pos, mem_len) else {
                         is_shutdown = true;
                         break;
                     };
                     let ik = internal_topic_key.load(Ordering::Relaxed);
                     let internal = ik >= 0 && mess.listener_topic_key == ik;
-                    if last_mess_num == 0 {
-                        let mut connection_key = None;
-                        let mut sender_topic: Option<Arc<CString>> = None;
-                        if let Ok(mut senders) = senders.lock() {
-                            if let Some(sender) = senders.get_mut(token.0) {
-                                if sender.connection_key == -1 {
-                                    sender.connection_key = mess.connection_key(&mempool);
-                                    sender.sender_topic = topic_cstring(&get_sender_topic(db, sender.connection_key, status_emitter));
-                                }
-                                connection_key = Some(sender.connection_key);
-                                sender_topic = Some(sender.sender_topic.clone());
-                            } else {
-                                print_error!(&format!("read_stream: sender index out of bounds for token {}", token.0));
-                            }
-                        } else {
-                            print_error!("read_stream: senders lock poisoned (init)");
-                        }
-                        if let Some(connection_key) = connection_key {
-                            last_mess_num = get_last_mess_number(
-                                db,
-                                connection_key,
-                                0,
-                                sender_topic.as_ref().and_then(|t| t.to_str().ok()).unwrap_or(""),
-                                status_emitter,
-                            );
-                        }
+                    if *last_mess_num == 0 {
+                        *last_mess_num = session_start_mess_number(ix, ctx);
                     }
                     // Replay filter is for application payloads. Internal subscribe/unsubscribe
                     // events must still run after a peer restarts (message numbers reset to 1)
-                    // or the same SocketAddr is reused for a new TCP session.
-                    if internal || mess.number_mess > last_mess_num {
-                        if mess.number_mess > last_mess_num {
-                            last_mess_num = mess.number_mess;
+                    // or the same peer reconnects with a new TCP session.
+                    if internal || mess.number_mess > *last_mess_num {
+                        if mess.number_mess > *last_mess_num {
+                            *last_mess_num = mess.number_mess;
                         }
                         mess_buff.push(mess);
                         if mess_buff.len() >= settings::LISTENER_RECEIVE_FLUSH_BATCH {
-                            flush_received_messages(
-                                token.0,
-                                &mut mess_buff,
-                                messages,
-                                receive_thread_cvar,
-                                &mempool,
-                            );
+                            flush_received_messages(ix, &mut mess_buff, messages, receive_thread_cvar, mempool);
                         }
                     } else {
-                        mess.free(&mempool);
+                        mess.free(mempool);
                     }
                 }
             }
@@ -533,38 +557,28 @@ fn read_stream(token: Token,
             break;
         }
     }
-    flush_received_messages(
-        token.0,
-        &mut mess_buff,
-        messages,
-        receive_thread_cvar,
-        &mempool,
-    );
-    if let Ok(mut senders) = senders.lock(){
-        if let Some(sender) = senders.get_mut(token.0){
-            sender.last_mess_num_preview = last_mess_num;
-        } else {
-            print_error!(&format!("read_stream: sender index out of bounds for token {}", token.0));
-        }
-    }
-    if is_shutdown {
-        if let Some(tcp) = stream.stream.as_ref() {
-            let _ = tcp.shutdown(std::net::Shutdown::Read);
-        }
-        stream.is_close = true;
-    }
+    flush_received_messages(ix, &mut mess_buff, messages, receive_thread_cvar, mempool);
+    !is_shutdown
 }
 
-fn cleanup_closed_streams(poll: &Poll, streams: &mut ReadStreamList) {
-    // Drop the TCP fd only. Leave `address` → index and mempool/sender slots intact so a later
-    // accept from the same SocketAddr reclaims its own index (see module docs on `Listener`).
-    for s in streams.iter_mut() {
-        if s.is_close {
-            if let Some(mut tcp) = s.stream.take() {
-                let _ = poll.registry().deregister(&mut tcp);
-            }
+/// Replay cursor for a new TCP session: the last number the store has for the sender.
+/// Resolves the sender topic on first use (retried per session until the store has it).
+fn session_start_mess_number(ix: usize, ctx: &ReadCtx) -> u64 {
+    let (connection_key, sender_topic) = {
+        let Ok(mut senders) = ctx.senders.lock() else {
+            print_error!("read_conn: senders lock poisoned (init)");
+            return 0;
+        };
+        let Some(sender) = senders.get_mut(ix) else {
+            print_error!(&format!("read_conn: sender index out of bounds {}", ix));
+            return 0;
+        };
+        if sender.sender_topic.as_bytes().is_empty() {
+            sender.sender_topic = topic_cstring(&get_sender_topic(&ctx.db, sender.connection_key, &ctx.status_emitter));
         }
-    }
+        (sender.connection_key, sender.sender_topic.clone())
+    };
+    get_last_mess_number(&ctx.db, connection_key, 0, sender_topic.to_str().unwrap_or(""), &ctx.status_emitter)
 }
 
 fn timeout_update_last_mess_number(ctime: u64, prev_time: &mut u64)->bool{
@@ -697,7 +711,7 @@ impl Drop for Listener {
 }
 
 fn flush_received_messages(
-    token: usize,
+    ix: usize,
     mess_buff: &mut Vec<Message>,
     messages: &Arc<Mutex<MessList>>,
     receive_thread_cvar: &Arc<(Mutex<bool>, Condvar)>,
@@ -709,14 +723,14 @@ fn flush_received_messages(
     let (lock, cvar) = &**receive_thread_cvar;
     if let Ok(mut started) = lock.lock() {
         if let Ok(mut mess_lock) = messages.lock() {
-            if let Some(slot) = mess_lock.get_mut(token) {
+            if let Some(slot) = mess_lock.get_mut(ix) {
                 if let Some(mess_for_receive) = slot.as_mut() {
                     mess_for_receive.append(mess_buff);
                 } else {
                     *slot = Some(std::mem::take(mess_buff));
                 }
             } else {
-                print_error!(&format!("read_stream: messages index out of bounds for token {}", token));
+                print_error!(&format!("read_conn: messages index out of bounds for slot {}", ix));
                 for m in mess_buff.drain(..) {
                     m.free(mempool);
                 }
@@ -821,7 +835,6 @@ mod tests {
             sender_topic: topic_cstring(topic),
             connection_key: 1,
             last_mess_num: 0,
-            last_mess_num_preview: 0,
             last_mess_num_saved: 0,
         }
     }
@@ -1088,21 +1101,11 @@ mod tests {
         while start.elapsed() < Duration::from_secs(2) {
             match server.read(&mut scratch) {
                 Ok(0) => panic!("peer closed before split header"),
-                Ok(n) => {
-                    let mut off = 0;
-                    while off < n {
-                        let (used, outcome) = frame.feed(&scratch[off..n], &mempool);
-                        off += used;
-                        match outcome {
-                            FeedOutcome::NeedMore => {
-                                got_partial = true;
-                                break;
-                            }
-                            FeedOutcome::Frame { .. } => panic!("complete frame from header fragment"),
-                            FeedOutcome::Shutdown => panic!("shutdown on header fragment"),
-                        }
-                    }
-                }
+                Ok(n) => match frame.feed(&scratch[..n], &mempool).1 {
+                    FeedOutcome::NeedMore => got_partial = true,
+                    FeedOutcome::Frame { .. } => panic!("complete frame from header fragment"),
+                    FeedOutcome::Shutdown => panic!("shutdown on header fragment"),
+                },
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
                     if got_partial {
                         break;
@@ -1137,18 +1140,12 @@ mod tests {
             match server.read(&mut scratch) {
                 Ok(0) => panic!("eof before complete frame"),
                 Ok(n) => {
-                    let mut off = 0;
-                    while off < n {
-                        let (used, outcome) = frame.feed(&scratch[off..n], &mempool);
-                        off += used;
-                        match outcome {
-                            FeedOutcome::Frame { mem_pos, mem_len } => {
-                                decoded = Message::from_alloc(&mempool, mem_pos, mem_len);
-                                break;
-                            }
-                            FeedOutcome::NeedMore => break,
-                            FeedOutcome::Shutdown => panic!("shutdown finishing split frame"),
+                    match frame.feed(&scratch[..n], &mempool).1 {
+                        FeedOutcome::Frame { mem_pos, mem_len } => {
+                            decoded = Message::from_alloc(&mempool, mem_pos, mem_len);
                         }
+                        FeedOutcome::NeedMore => {}
+                        FeedOutcome::Shutdown => panic!("shutdown finishing split frame"),
                     }
                     if decoded.is_some() {
                         break;
@@ -1167,5 +1164,137 @@ mod tests {
         let mut decomp = Vec::new();
         let n = decoded.get_data(&mempool, &mut out, &mut decomp);
         assert_eq!(&out[..n], b"split-tcp");
+    }
+
+    fn test_ctx() -> ReadCtx {
+        let db: Arc<Mutex<dyn Store>> = Arc::new(Mutex::new(
+            crate::store::sqlite::Sqlite::new("listener_conns_test", ":memory:").unwrap()));
+        ReadCtx {
+            senders: Arc::new(Mutex::new(Vec::new())),
+            messages: Arc::new(Mutex::new(Vec::new())),
+            mempools: Arc::new(Mutex::new(Vec::new())),
+            db,
+            receive_thread_cvar: Arc::new((Mutex::new(false), Condvar::new())),
+            internal_topic_key: Arc::new(AtomicI32::new(-1)),
+            status_emitter: StatusEmitter::new(),
+        }
+    }
+
+    fn wire_frame(connection_key: i32, number: u64) -> Vec<u8> {
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let msg = Message::new(mempool.clone(), connection_key, 7, number, b"slot", false).unwrap();
+        let mut wire = Vec::new();
+        assert!(msg.to_stream(&mempool, &mut wire));
+        wire
+    }
+
+    fn connect_and_send(addr: std::net::SocketAddr, connection_key: i32, number: u64) -> std::net::TcpStream {
+        use std::io::Write;
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client.write_all(&wire_frame(connection_key, number)).unwrap();
+        client
+    }
+
+    /// Test harness for the stream thread's poll loop.
+    struct Harness {
+        poll: Poll,
+        listener: TcpListener,
+        conns: Conns,
+        conn_slots: HashMap<i32, usize>,
+        ctx: ReadCtx,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let poll = Poll::new().unwrap();
+            let mut listener = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            poll.registry().register(&mut listener, SERVER, Interest::READABLE).unwrap();
+            Harness { poll, listener, conns: Conns::default(), conn_slots: HashMap::new(), ctx: test_ctx() }
+        }
+
+        fn addr(&self) -> std::net::SocketAddr {
+            self.listener.local_addr().unwrap()
+        }
+
+        /// Run the poll loop until `done` holds (panics after 2 s).
+        fn pump_until(&mut self, done: impl Fn(&Harness) -> bool) {
+            let mut events = Events::with_capacity(16);
+            let start = std::time::Instant::now();
+            while !done(self) {
+                assert!(start.elapsed() < Duration::from_secs(2), "pump_until timed out");
+                self.poll.poll(&mut events, Some(Duration::from_millis(20))).unwrap();
+                for ev in &events {
+                    match ev.token() {
+                        SERVER => self.conns.accept(&self.poll, &self.listener),
+                        token => self.conns.on_ready(&self.poll, token, ev.is_read_closed(),
+                                                     &self.ctx, &mut self.conn_slots),
+                    }
+                }
+            }
+        }
+
+        fn received(&self, ix: usize) -> Vec<u64> {
+            self.ctx.messages.lock().unwrap().get(ix).and_then(|s| s.as_ref())
+                .map(|v| v.iter().map(|m| m.number_mess).collect()).unwrap_or_default()
+        }
+    }
+
+    #[test]
+    fn reconnect_shares_slot_while_old_tcp_drains() {
+        use std::io::Write;
+        let mut h = Harness::new();
+        let addr = h.addr();
+
+        let mut first = connect_and_send(addr, 42, 1);
+        h.pump_until(|h| h.received(0).len() == 1);
+
+        // Reconnect from a new ephemeral port: same slot, both TCPs stay open.
+        let second = connect_and_send(addr, 42, 1);
+        assert_ne!(second.local_addr().unwrap().port(), first.local_addr().unwrap().port());
+        h.pump_until(|h| h.received(0).len() == 2);
+        assert_eq!(h.conns.map.len(), 2);
+
+        // Tail written to the old TCP after the new one is bound is still delivered.
+        first.write_all(&wire_frame(42, 2)).unwrap();
+        h.pump_until(|h| h.received(0).len() == 3);
+        assert_eq!(h.received(0), vec![1, 1, 2]);
+        assert_eq!(h.ctx.mempools.lock().unwrap().len(), 1);
+
+        // Old TCP closes; the slot and the new TCP stay.
+        drop(first);
+        h.pump_until(|h| h.conns.map.len() == 1);
+
+        let _other = connect_and_send(addr, 7, 1);
+        h.pump_until(|h| h.received(1).len() == 1);
+        let s = h.ctx.senders.lock().unwrap();
+        assert_eq!((s[0].connection_key, s[1].connection_key), (42, 7));
+        assert_eq!(h.ctx.mempools.lock().unwrap().len(), 2);
+        assert_eq!(h.conn_slots.len(), 2);
+    }
+
+    #[test]
+    fn replay_filter_is_per_tcp() {
+        use std::io::Write;
+        let mut h = Harness::new();
+        let mut tcp = connect_and_send(h.addr(), 42, 1);
+        // Replay of 1 on the same TCP is dropped; frames arrive in order, so 2 marks the end.
+        tcp.write_all(&wire_frame(42, 1)).unwrap();
+        tcp.write_all(&wire_frame(42, 2)).unwrap();
+        h.pump_until(|h| h.received(0).last() == Some(&2));
+        assert_eq!(h.received(0), vec![1, 2]);
+    }
+
+    #[test]
+    fn connection_closed_mid_header_is_dropped() {
+        use std::io::Write;
+        let mut h = Harness::new();
+        let mut client = std::net::TcpStream::connect(h.addr()).unwrap();
+        client.write_all(&[0, 0, 0]).unwrap();
+        h.pump_until(|h| h.conns.map.len() == 1);
+        assert!(h.conns.map.values().all(|c| c.bound.is_none()), "partial header waits unbound");
+
+        drop(client);
+        h.pump_until(|h| h.conns.map.is_empty());
+        assert!(h.ctx.mempools.lock().unwrap().is_empty(), "no slot for an unidentified peer");
     }
 }

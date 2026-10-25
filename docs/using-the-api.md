@@ -118,11 +118,11 @@ Process-global tunables:
 |---------|---------|-------------------|
 | Max framed TCP message size | 1 GiB | `lnr_set_max_message_size` / `lnr_get_max_message_size` |
 | Min payload size before zstd is attempted | 1 MiB | `lnr_set_compress_threshold` / `lnr_get_compress_threshold` |
-| Max in-memory sender messages **per peer** | unlimited (`0`) | `lnr_set_max_send_queue` / `lnr_get_max_send_queue` |
+| Max in-memory **unsent** sender messages **per peer** | unlimited (`0`) | `lnr_set_max_send_queue` / `lnr_get_max_send_queue` |
 
 - Size setters reject **`0`** (`FALSE`), except **`max_send_queue`** where **`0` means unlimited**.
 - Prefer setting values **before** `run`. Changing later is allowed, but only **new** frames / enqueues see the new values.
-- When `max_send_queue > 0` and a peer’s in-memory worklist is full, `send_to` / `send_all` return **`FALSE`** + **`LNR_ERR_BUSY`** (and may emit **`LNR_SENDER_BUSY`**). Other peers are unaffected.
+- When `max_send_queue > 0` and a peer’s in-memory worklist is full, `send_to` / `send_all` return **`FALSE`** + **`LNR_ERR_BUSY`** (and may emit **`LNR_SENDER_BUSY`**). Other peers are unaffected. At-least-once messages already written to TCP and waiting for the peer ACK (≈ `UPDATE_LAST_MESS_NUMBER_TIMEOUT_MS`, 1 s) are not counted.
 - Stream-check / would-block waits stay at **10 s** (crate constants, not public tunables).
 - Details: [capacity-and-limits.md](capacity-and-limits.md).
 
