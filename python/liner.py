@@ -443,3 +443,4 @@ class Client:
             pfun = lib_.lnr_delete_client
             pfun.argtypes = (ctypes.c_void_p,)
             pfun(self.hClient_)
+            self.hClient_ = None

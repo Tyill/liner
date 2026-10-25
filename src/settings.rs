@@ -16,6 +16,9 @@ pub const CHECK_AVAILABLE_STREAM_TIMEOUT_MS: u64 = 10*1000;  //10sec
 pub const UPDATE_LAST_MESS_NUMBER_TIMEOUT_MS: u64 = 1000;    //1s
 pub const BYTESTREAM_WOULD_BLOCK_TIMEOUT_MS: u64 = 10*1000;  //10sec
 pub const SENDER_THREAD_WAIT_TIMEOUT_MS: u64 = 100;
+/// On sender stop: how long an in-flight write may finish before its socket is cut
+/// (and again after the cut, before giving up on it).
+pub const SENDER_CLOSE_WAIT_MS: u64 = 1000;
 pub const LISTENER_THREAD_WAIT_TIMEOUT_MS: u64 = 100;
 /// Backoff when the sender loop has no writable work (avoids tight lock contention).
 pub const SENDER_THREAD_IDLE_BACKOFF_MS: u64 = 1;

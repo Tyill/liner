@@ -107,7 +107,6 @@ pub struct Postgres {
     topic_addr_cache: HashMap<String, Vec<String>>,
     topic_key_cache: HashMap<String, i32>,
     unique_name_cache: HashMap<String, String>,
-    last_mess_number: HashMap<i32, u64>,
 }
 
 #[cfg(test)]
@@ -140,7 +139,6 @@ impl Postgres {
             topic_addr_cache: HashMap::new(),
             topic_key_cache: HashMap::new(),
             unique_name_cache: HashMap::new(),
-            last_mess_number: HashMap::new(),
         })
     }
 
@@ -349,11 +347,11 @@ impl Store for Postgres {
         Ok(())
     }
 
-    fn remove_sender_listeners_on_topic(&mut self, listener_topic: &str) -> DbResult<()> {
+    fn remove_sender_listener(&mut self, listener_topic: &str, listener_name: &str) -> DbResult<()> {
         let sk = sender_key(&self.unique_name, &self.source_topic);
         map_pg(self.client.execute(
-            "DELETE FROM sender_listener WHERE sender_key = $1 AND listener_topic = $2",
-            &[&sk, &listener_topic],
+            "DELETE FROM sender_listener WHERE sender_key = $1 AND listener_topic = $2 AND client_name = $3",
+            &[&sk, &listener_topic, &listener_name],
         ))?;
         Ok(())
     }
@@ -497,35 +495,28 @@ impl Store for Postgres {
         map_pg(row.try_get(0))
     }
 
-    fn set_last_mess_number_from_listener(&mut self, connection_key: i32, val: u64) -> DbResult<()> {
+    fn set_last_mess_number_from_listener(&mut self, connection_key: i32, prev: u64, val: u64) -> DbResult<bool> {
         let v = i64::try_from(val).map_err(|_| DbError::new("mess_number too large for i64"))?;
-        map_pg(self.client.execute(
-            "INSERT INTO conn_mess_number (connection_key, v) VALUES ($1, $2)
-             ON CONFLICT (connection_key) DO UPDATE SET v = EXCLUDED.v",
-            &[&connection_key, &v],
-        ))?;
-        self.last_mess_number.insert(connection_key, val);
-        Ok(())
+        let p = i64::try_from(prev).map_err(|_| DbError::new("mess_number too large for i64"))?;
+        let update = "UPDATE conn_mess_number SET v = $2 WHERE connection_key = $1 AND v >= $3";
+        let mut n = map_pg(self.client.execute(update, &[&connection_key, &v, &p]))?;
+        // A missing row counts as 0 (bind-time read failed, nothing saved yet).
+        if n == 0 && p == 0 {
+            n = map_pg(self.client.execute(
+                "INSERT INTO conn_mess_number (connection_key, v) VALUES ($1, $2)
+                 ON CONFLICT (connection_key) DO NOTHING",
+                &[&connection_key, &v],
+            ))?;
+            if n == 0 {
+                // The sender created the row meanwhile.
+                n = map_pg(self.client.execute(update, &[&connection_key, &v, &p]))?;
+            }
+        }
+        Ok(n == 1)
     }
 
     fn get_last_mess_number_for_listener(&mut self, connection_key: i32) -> DbResult<u64> {
-        if !self.last_mess_number.contains_key(&connection_key) {
-            let value = match map_pg(self.client.query_opt(
-                "SELECT v FROM conn_mess_number WHERE connection_key = $1",
-                &[&connection_key],
-            ))? {
-                Some(row) => {
-                    let v: i64 = map_pg(row.try_get(0))?;
-                    u64::try_from(v).map_err(|_| DbError::new("invalid mess_number"))?
-                }
-                None => {
-                    self.init_last_mess_number_from_sender(connection_key)?;
-                    0
-                }
-            };
-            self.last_mess_number.insert(connection_key, value);
-        }
-        Ok(self.last_mess_number[&connection_key])
+        self.get_last_mess_number_for_sender(connection_key)
     }
 
     fn get_last_mess_number_for_sender(&mut self, connection_key: i32) -> DbResult<u64> {

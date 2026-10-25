@@ -117,7 +117,7 @@
 | Параметр | По умолчанию | Setters / getters |
 |----------|--------------|-------------------|
 | Максимальный размер кадрированного TCP-сообщения | 1 ГиБ | `lnr_set_max_message_size` / `lnr_get_max_message_size` |
-| Max in-memory send queue **на пира** | unlimited (`0`) | `lnr_set_max_send_queue` |
+| Max in-memory send queue (только **неотправленные**) **на пира** | unlimited (`0`) | `lnr_set_max_send_queue` |
 | Минимальный размер payload, с которого пробуется zstd | 1 МиБ | `lnr_set_compress_threshold` / `lnr_get_compress_threshold` |
 
 - Значение **`0`** отвергается (`FALSE` / `false`), кроме **`max_send_queue`**, где **`0` = без лимита**.

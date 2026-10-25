@@ -1277,12 +1277,13 @@ fn apply_internal_channel_event(client: &mut ClientRepr, data: &[u8]) {
             &mut *client.db.lock().unwrap(),
             topic,
         );
-        if event == "unsubscribed" {
+        // Only the unsubscribing peer's route: other subscribers keep offline delivery.
+        if event == "unsubscribed" && !peer.is_empty() {
             let _ = client
                 .db
                 .lock()
                 .unwrap()
-                .remove_sender_listeners_on_topic(topic);
+                .remove_sender_listener(topic, peer);
         }
     }
     if matches!(event, "client_connected" | "client_disconnected") {

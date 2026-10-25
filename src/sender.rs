@@ -9,10 +9,10 @@ use crate::status::{
 };
 
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::thread;
 use std::io::{BufWriter, Write};
 use std::net::TcpStream;
@@ -28,6 +28,10 @@ struct WriteStream{
     is_active: bool,
     has_close_request: bool,
     is_closed: bool,
+    /// At-least-once messages already written to TCP, waiting for the listener ACK
+    /// (`last_mess_number`). Ascending `number_mess`. Kept out of the send slot so each
+    /// write does not rescan them and `max_send_queue` counts only unsent messages.
+    unacked: VecDeque<Message>,
 }
 impl WriteStream {
     pub fn new() -> WriteStream {          
@@ -42,7 +46,14 @@ impl WriteStream {
             is_active: false,
             has_close_request: true,
             is_closed: true,
+            unacked: VecDeque::new(),
         }
+    }
+    /// Record the listener ACK; returns the unacked messages it covers (caller frees them).
+    fn apply_ack(&mut self, last_mess_number: u64) -> Vec<Message> {
+        self.last_mess_number = last_mess_number;
+        let acked = self.unacked.partition_point(|m| m.number_mess <= last_mess_number);
+        self.unacked.drain(..acked).collect()
     }
 }
 
@@ -626,16 +637,16 @@ fn update_last_mess_number(streams: &mut WriteStreamList,
     for (ix, result) in last_numbers.into_iter().enumerate(){
         match result{
             Ok(last_mess_number)=>{
+                let mut mess_for_free = Vec::new();
                 if let Some(stream_lock) = streams.get_mut(ix) {
                     if let Ok(mut s) = stream_lock.lock() {
-                        s.last_mess_number = last_mess_number;
+                        mess_for_free = s.apply_ack(last_mess_number);
                     }
                 } else {
                     print_error!(&format!("update_last_mess_number: stream index out of bounds {}", ix));
                     continue;
                 }
 
-                let mut mess_for_free = Vec::new();
                 if let Ok(mut mess_lock) = messages.lock(){
                     if let Some(slot) = mess_lock.get_mut(ix) {
                         if let Some(mess) = slot.take() {
@@ -781,7 +792,8 @@ fn append_streams(streams: &mut WriteStreamList,
                                                        stream: Arc::new(Some(stream)), 
                                                        last_send_mess_number: last_ack_mess_number,
                                                        last_mess_number: last_ack_mess_number,
-                                                       is_active: false, has_close_request: false, is_closed: false};
+                                                       is_active: false, has_close_request: false, is_closed: false,
+                                                       unacked: VecDeque::new()};
                 while addr.ix >= streams.len() {
                     streams.push(Arc::new(Mutex::new(WriteStream::new())));
                 }
@@ -931,20 +943,33 @@ fn write_stream(stream: &Arc<Mutex<WriteStream>>,
                 is_shutdown = true;
                 break;
             }
-            let mut last_mess_number = 0;
-            if let Ok(stream) = stream.lock(){
-                last_mess_number = stream.last_mess_number;
-            }
             let mut mess_no_send: Vec<Message> = Vec::new();
             let mut mess_for_free: Vec<Message> = Vec::new();
-            for mess in buff{
-                let num_mess = mess.number_mess;
-                let at_least_once_delivery = mess.at_least_once_delivery();
-                if (is_shutdown || at_least_once_delivery) && last_mess_number < num_mess{
-                    mess_no_send.push(mess);
-                }else{
-                    mess_for_free.push(mess);
+            if let Ok(mut stream) = stream.lock(){
+                let last_mess_number = stream.last_mess_number;
+                for mess in buff{
+                    let num_mess = mess.number_mess;
+                    if last_mess_number >= num_mess {
+                        mess_for_free.push(mess);
+                    }else if is_shutdown {
+                        // Back to the send slot: check_streams_close persists at-least-once ones.
+                        mess_no_send.push(mess);
+                    }else if mess.at_least_once_delivery() {
+                        stream.unacked.push_back(mess);
+                    }else{
+                        mess_for_free.push(mess);
+                    }
                 }
+                if is_shutdown && !stream.unacked.is_empty() {
+                    let mut unacked: Vec<Message> = stream.unacked.drain(..).collect();
+                    unacked.append(&mut mess_no_send);
+                    mess_no_send = unacked;
+                }
+            }else{
+                // Poisoned: ACK state unknown — keep what may still need delivery in the slot.
+                (mess_no_send, mess_for_free) = buff
+                    .into_iter()
+                    .partition(|m| is_shutdown || m.at_least_once_delivery());
             }
             if !mess_for_free.is_empty(){
                 for mess in mess_for_free{
@@ -1004,18 +1029,21 @@ fn check_streams_close(streams: &mut WriteStreamList,
                 let connection_key = stream.connection_key;
                 let address = stream.address.clone();
                 let topic = stream.topic.clone();
-               
+                // Unacked numbers precede everything still queued in the slot.
+                let mut mess: Vec<Message> = stream.unacked.drain(..).collect();
                 if let Ok(mut ml) = messages.lock() {
                     if let Some(slot) = ml.get_mut(ix) {
-                        if let Some(mess) = slot.take() {
-                            drop(ml);
-                            save_mess_to_db(mess, db, ix, connection_key, mempools, status_emitter);
+                        if let Some(mut queued) = slot.take() {
+                            mess.append(&mut queued);
                         }
                     } else {
                         print_error!(&format!("check_streams_close: messages index out of bounds {}", ix));
                     }
                 } else {
                     print_error!("check_streams_close: messages lock poisoned");
+                }
+                if !mess.is_empty() {
+                    save_mess_to_db(mess, db, ix, connection_key, mempools, status_emitter);
                 }
                 status_emitter.emit_msg(
                     LNR_SENDER_ROUTE_LOST,
@@ -1117,31 +1145,72 @@ fn close_streams(streams: &WriteStreamList,
             stream.has_close_request = true;
         }
     }
+    wait_streams_idle(streams);
     let mut pending: Vec<(usize, i32, Vec<Message>)> = Vec::new();
     {
         let mut messages = messages.lock().unwrap();
         for (ix, mess) in messages.iter_mut().enumerate() {
-            if let Some(mess_for_send) = mess.take() {
-                if mess_for_send.is_empty() {
-                    continue;
-                }
-                let connection_key = streams
-                    .get(ix)
-                    .and_then(|s| s.lock().ok().map(|s| s.connection_key))
-                    .or_else(|| {
-                        addrs_new
-                            .lock()
-                            .ok()
-                            .and_then(|addrs| addrs.iter().find(|a| a.ix == ix).map(|a| a.connection_key))
-                    });
-                if let Some(connection_key) = connection_key {
-                    pending.push((ix, connection_key, mess_for_send));
-                }
+            let mut mess_for_send: Vec<Message> = streams
+                .get(ix)
+                .and_then(|s| s.lock().ok().map(|mut s| s.unacked.drain(..).collect()))
+                .unwrap_or_default();
+            if let Some(mut queued) = mess.take() {
+                mess_for_send.append(&mut queued);
+            }
+            if mess_for_send.is_empty() {
+                continue;
+            }
+            let connection_key = streams
+                .get(ix)
+                .and_then(|s| s.lock().ok().map(|s| s.connection_key))
+                .or_else(|| {
+                    addrs_new
+                        .lock()
+                        .ok()
+                        .and_then(|addrs| addrs.iter().find(|a| a.ix == ix).map(|a| a.connection_key))
+                });
+            if let Some(connection_key) = connection_key {
+                pending.push((ix, connection_key, mess_for_send));
             }
         }
     }
     for (ix, connection_key, mess_for_send) in pending {
         save_mess_to_db(mess_for_send, db, ix, connection_key, mempools, status_emitter);
+    }
+}
+
+/// Wait for in-flight `write_stream` tasks (`has_close_request` already blocks new ones).
+/// A running task holds messages taken from the slot and puts them back (slot / `unacked`)
+/// only when it ends; draining before that loses them. A write blocked on a stalled peer
+/// (blocking socket, no write timeout) is cut by `shutdown` after `SENDER_CLOSE_WAIT_MS`.
+fn wait_streams_idle(streams: &WriteStreamList) {
+    let wait = Duration::from_millis(settings::SENDER_CLOSE_WAIT_MS);
+    let mut deadline = Instant::now() + wait;
+    let mut is_cut = false;
+    loop {
+        let active: Vec<&Arc<Mutex<WriteStream>>> = streams
+            .iter()
+            .filter(|s| s.lock().map_or(false, |s| s.is_active))
+            .collect();
+        if active.is_empty() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            if is_cut {
+                print_error!(&format!("close_streams: {} write task(s) still active, their messages are lost", active.len()));
+                return;
+            }
+            for stream in active {
+                if let Ok(stream) = stream.lock() {
+                    if let Some(tcp) = stream.stream.as_ref() {
+                        let _ = tcp.shutdown(std::net::Shutdown::Both);
+                    }
+                }
+            }
+            is_cut = true;
+            deadline = Instant::now() + wait;
+        }
+        thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -1201,6 +1270,7 @@ mod tests {
             is_active: false,
             has_close_request: false,
             is_closed: false,
+            unacked: VecDeque::new(),
         };
         let stream = Arc::new(Mutex::new(ws));
 
@@ -1265,6 +1335,7 @@ mod tests {
             is_active: false,
             has_close_request: false,
             is_closed: false,
+            unacked: VecDeque::new(),
         };
         let stream = Arc::new(Mutex::new(ws));
 
@@ -1286,9 +1357,10 @@ mod tests {
         assert!(!shutdown);
         assert_eq!(received.number_mess, 1);
 
-        // But for at-least-once delivery, message stays queued until confirmed.
-        let queued = messages.lock().unwrap()[0].as_ref().map(|v| v.len()).unwrap_or(0);
-        assert_eq!(queued, 1, "expected message to remain queued for at-least-once");
+        // But for at-least-once delivery, the message is held as unacked until confirmed,
+        // outside the send slot.
+        assert!(messages.lock().unwrap()[0].is_none(), "send slot holds only unsent messages");
+        assert_eq!(stream.lock().unwrap().unacked.len(), 1, "expected message held until ACK");
     }
 
     #[test]
@@ -1320,6 +1392,7 @@ mod tests {
             is_active: false,
             has_close_request: false,
             is_closed: false,
+            unacked: VecDeque::new(),
         };
         let stream = Arc::new(Mutex::new(ws));
 
@@ -1344,21 +1417,124 @@ mod tests {
         assert!(!shutdown);
         assert_eq!(received.number_mess, 1);
 
-        // Simulate confirmation from receiver (Redis update).
-        stream.lock().unwrap().last_mess_number = 1;
-
-        // Second call should free + clear the queued message without re-sending (last_send already 1).
+        // Second message: the write must not rescan the unacked one.
+        let mess = Message::new(mempool.clone(), 999, 7, 2, b"ack-me-2", true).unwrap();
+        messages.lock().unwrap()[0] = Some(vec![mess]);
         let cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
         write_stream(&stream, &messages, &mempools, cvar, StatusEmitter::new());
         assert!(
-            wait_until(Duration::from_secs(1), || !stream.lock().unwrap().is_active),
+            wait_until(Duration::from_secs(1), || {
+                let s = stream.lock().unwrap();
+                s.last_send_mess_number >= 2 && !s.is_active
+            }),
             "second write_stream didn't finish in time"
         );
+        assert!(messages.lock().unwrap()[0].is_none());
+        let unacked: Vec<u64> = stream.lock().unwrap().unacked.iter().map(|m| m.number_mess).collect();
+        assert_eq!(unacked, vec![1, 2]);
 
+        // Simulate confirmation from receiver (store update) covering only the first message.
+        let freed = stream.lock().unwrap().apply_ack(1);
+        assert_eq!(freed.iter().map(|m| m.number_mess).collect::<Vec<_>>(), vec![1]);
+        drop(freed);
+        let s = stream.lock().unwrap();
+        assert_eq!(s.last_mess_number, 1);
+        assert_eq!(s.unacked.iter().map(|m| m.number_mess).collect::<Vec<_>>(), vec![2]);
+    }
+
+    #[test]
+    fn write_failure_returns_unacked_to_send_slot_in_order() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server.shutdown(std::net::Shutdown::Write).unwrap();
+        drop(client);
+
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(vec![None]));
+        let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(vec![mempool.clone()]));
+
+        let mut ws = WriteStream {
+            ix: 0,
+            connection_key: 5,
+            address: addr.to_string(),
+            topic: "test_topic".to_string(),
+            stream: Arc::new(Some(server)),
+            last_send_mess_number: 1,
+            last_mess_number: 0,
+            is_active: false,
+            has_close_request: false,
+            is_closed: false,
+            unacked: VecDeque::new(),
+        };
+        ws.unacked.push_back(Message::new(mempool.clone(), 5, 7, 1, b"sent", true).unwrap());
+        let stream = Arc::new(Mutex::new(ws));
+        messages.lock().unwrap()[0] =
+            Some(vec![Message::new(mempool.clone(), 5, 7, 2, b"queued", true).unwrap()]);
+
+        let cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        write_stream(&stream, &messages, &mempools, cvar, StatusEmitter::new());
         assert!(
-            messages.lock().unwrap()[0].is_none(),
-            "expected queue to be empty after confirmation"
+            wait_until(Duration::from_secs(2), || {
+                let s = stream.lock().unwrap();
+                !s.is_active && s.has_close_request
+            }),
+            "write to a shut-down socket should request close"
         );
+        assert!(stream.lock().unwrap().unacked.is_empty());
+        let slot: Vec<u64> = messages.lock().unwrap()[0]
+            .as_ref()
+            .map(|v| v.iter().map(|m| m.number_mess).collect())
+            .unwrap_or_default();
+        assert_eq!(slot, vec![1, 2], "unacked go back ahead of unsent for check_streams_close");
+    }
+
+    #[test]
+    fn close_streams_waits_for_blocked_write_and_saves_its_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Peer never reads: a big write fills the socket buffers and blocks.
+        let _client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+
+        let mempool = Arc::new(Mutex::new(Mempool::new()));
+        let messages: Arc<Mutex<MessList>> = Arc::new(Mutex::new(vec![None]));
+        let mempools: Arc<Mutex<MempoolList>> = Arc::new(Mutex::new(vec![mempool.clone()]));
+        let db: Arc<Mutex<dyn Store>> = Arc::new(Mutex::new(
+            crate::store::sqlite::Sqlite::new("sender_close_test", ":memory:").unwrap()));
+
+        let mut ws = WriteStream::new();
+        ws.connection_key = 5;
+        ws.address = addr.to_string();
+        ws.stream = Arc::new(Some(server));
+        ws.has_close_request = false;
+        ws.is_closed = false;
+        let stream = Arc::new(Mutex::new(ws));
+        // Below MIN_SIZE_DATA_FOR_COMPRESS_BYTE, so ~20 MB really hit the socket.
+        let payload = vec![7u8; settings::MIN_SIZE_DATA_FOR_COMPRESS_BYTE - 1];
+        messages.lock().unwrap()[0] = Some(
+            (1..=20u64)
+                .map(|n| Message::new(mempool.clone(), 5, 7, n, &payload, true).unwrap())
+                .collect(),
+        );
+
+        let cvar: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        write_stream(&stream, &messages, &mempools, cvar, StatusEmitter::new());
+        assert!(
+            wait_until(Duration::from_secs(2), || messages.lock().unwrap()[0].is_none()),
+            "write task should take the message from the slot"
+        );
+        assert!(stream.lock().unwrap().is_active);
+
+        let streams: WriteStreamList = vec![stream.clone()];
+        let addrs_new: Arc<Mutex<Vec<Address>>> = Arc::new(Mutex::new(Vec::new()));
+        close_streams(&streams, &addrs_new, &db, &messages, &mempools, &StatusEmitter::new());
+
+        assert!(!stream.lock().unwrap().is_active, "close_streams returns after the task ends");
+        let saved = db.lock().unwrap().load_messages_for_sender(&mempool, 5).unwrap();
+        let nums: Vec<u64> = saved.iter().map(|m| m.number_mess).collect();
+        assert_eq!(nums, (1..=20).collect::<Vec<u64>>(), "messages held by the write task reach the store");
     }
 
     #[test]
@@ -1376,6 +1552,7 @@ mod tests {
             is_active: false,
             has_close_request: false,
             is_closed: false,
+            unacked: VecDeque::new(),
         };
         let streams: WriteStreamList = vec![Arc::new(Mutex::new(ws))];
 

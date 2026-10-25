@@ -111,7 +111,7 @@ These affect syscall batching, not the logical max message size.
 
 ### Send queue and timeouts
 
-- **`max_send_queue`** (default **`0` = unlimited**): max in-memory messages **per peer slot**. Full queue → `LNR_ERR_BUSY` / `LNR_SENDER_BUSY`.
+- **`max_send_queue`** (default **`0` = unlimited**): max in-memory **unsent** messages **per peer slot** (at-least-once messages already on the wire and awaiting ACK are not counted). Full queue → `LNR_ERR_BUSY` / `LNR_SENDER_BUSY`.
 - Stream-check / would-block timeouts default to 10 s (crate constants; not runtime-tunable on the public API).
 
 ---

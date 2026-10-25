@@ -46,7 +46,6 @@ pub struct Redis {
     topic_addr_cache: HashMap<String, Vec<String>>, // key: topic, value: addrs
     topic_key_cache: HashMap<String, i32>, // key: topic, value: key
     unique_name_cache: HashMap<String, String>, // key: addr, value: uname
-    last_mess_number: HashMap<i32, u64>, // key: connection_key
 }
 impl Redis {
     pub fn new(unique_name: &str, conn_str: &str)->RedisResult<Redis>{
@@ -61,7 +60,6 @@ impl Redis {
             topic_addr_cache: HashMap::new(), 
             topic_key_cache: HashMap::new(), 
             unique_name_cache: HashMap::new(),
-            last_mess_number: HashMap::new(),
         })
     }    
     pub fn redis_path(&self)->String{
@@ -182,17 +180,16 @@ impl Redis {
         }
         Ok(addr_topic)
     }
-    pub fn remove_sender_listeners_on_topic(&mut self, listener_topic: &str) -> RedisResult<()> {
+    pub fn remove_sender_listener(&mut self, listener_topic: &str, listener_name: &str) -> RedisResult<()> {
         let key = format!("{}:{}", redis_safe(&self.unique_name), redis_safe(&self.source_topic));
         let dbconn = self.get_dbconn()?;
         let hash_key = format!("lnr_sender:{key}:listener");
         let raw: Vec<(String, String)> = dbconn.hgetall(&hash_key)?;
         for (addr, value) in raw {
-            let stored_topic = value
+            let (stored_topic, stored_name) = value
                 .split_once('\x1f')
-                .map(|(t, _)| t)
-                .unwrap_or(value.as_str());
-            if stored_topic == listener_topic {
+                .unwrap_or((value.as_str(), ""));
+            if stored_topic == listener_topic && stored_name == listener_name {
                 let () = dbconn.hdel(&hash_key, addr)?;
             }
         }
@@ -355,28 +352,21 @@ impl Redis {
         dbconn.get(&format!("lnr_connection:{}:sender", connection_key))
     }
     
-    pub fn set_last_mess_number_from_listener(&mut self, connection_key: i32, val: u64)->RedisResult<()>{
+    /// Compare-and-set, see [`Store::set_last_mess_number_from_listener`].
+    pub fn set_last_mess_number_from_listener(&mut self, connection_key: i32, prev: u64, val: u64)->RedisResult<bool>{
         let dbconn = self.get_dbconn()?;
-        let () = dbconn.set(&format!("lnr_connection:{}:mess_number", connection_key), val)?;
-        self.last_mess_number.insert(connection_key, val);
-        Ok(())
-    }  
-    pub fn get_last_mess_number_for_listener(&mut self, connection_key: i32)->RedisResult<u64>{
-        if !self.last_mess_number.contains_key(&connection_key){
-            let dbconn = self.get_dbconn()?; 
-            // The key may be absent for a new connection. Treat missing as 0.
-            let res: Option<String> = dbconn.get(&format!("lnr_connection:{}:mess_number", connection_key))?;
-            let value = match res {
-                Some(res) => parse_u64_res(&res, "invalid mess_number")?,
-                None => {
-                    // Persist the default to avoid repeated nil reads.
-                    self.init_last_mess_number_from_sender(connection_key)?;
-                    0
-                },
-            };
-            self.last_mess_number.insert(connection_key, value);
-        }
-        Ok(self.last_mess_number[&connection_key])              
+        let set: i32 = ::redis::Script::new(
+            "local v = redis.call('GET', KEYS[1]) or '0'
+             if tonumber(v) >= tonumber(ARGV[1]) then
+                 redis.call('SET', KEYS[1], ARGV[2])
+                 return 1
+             end
+             return 0")
+            .key(format!("lnr_connection:{}:mess_number", connection_key))
+            .arg(prev)
+            .arg(val)
+            .invoke(dbconn)?;
+        Ok(set == 1)
     }
      
     pub fn init_last_mess_number_from_sender(&mut self, connection_key: i32)->RedisResult<()>{
@@ -504,8 +494,8 @@ impl Store for Redis {
         map_db(Redis::get_listeners_of_sender(self))
     }
 
-    fn remove_sender_listeners_on_topic(&mut self, listener_topic: &str) -> DbResult<()> {
-        map_db(Redis::remove_sender_listeners_on_topic(self, listener_topic))
+    fn remove_sender_listener(&mut self, listener_topic: &str, listener_name: &str) -> DbResult<()> {
+        map_db(Redis::remove_sender_listener(self, listener_topic, listener_name))
     }
 
     fn get_addresses_of_topic(&mut self, without_cache: bool, topic: &str) -> DbResult<Vec<String>> {
@@ -547,16 +537,17 @@ impl Store for Redis {
         map_db(Redis::get_sender_topic_by_connection_key(self, connection_key))
     }
 
-    fn set_last_mess_number_from_listener(&mut self, connection_key: i32, val: u64) -> DbResult<()> {
+    fn set_last_mess_number_from_listener(&mut self, connection_key: i32, prev: u64, val: u64) -> DbResult<bool> {
         map_db(Redis::set_last_mess_number_from_listener(
             self,
             connection_key,
+            prev,
             val,
         ))
     }
 
     fn get_last_mess_number_for_listener(&mut self, connection_key: i32) -> DbResult<u64> {
-        map_db(Redis::get_last_mess_number_for_listener(self, connection_key))
+        map_db(Redis::get_last_mess_number_for_sender(self, connection_key))
     }
 
     fn get_last_mess_number_for_sender(&mut self, connection_key: i32) -> DbResult<u64> {

@@ -60,7 +60,8 @@ pub trait Store: Send {
         listener_topic: &str,
         listener_name: &str,
     ) -> DbResult<()>;
-    fn remove_sender_listeners_on_topic(&mut self, listener_topic: &str) -> DbResult<()>;
+    /// Drop the route to one listener (`listener_name`) on `listener_topic`; other subscribers keep theirs.
+    fn remove_sender_listener(&mut self, listener_topic: &str, listener_name: &str) -> DbResult<()>;
     fn get_listeners_of_sender(&mut self) -> DbResult<Vec<(String, String)>>;
     fn get_addresses_of_topic(&mut self, without_cache: bool, topic: &str) -> DbResult<Vec<String>>;
     fn get_listener_unique_name(&mut self, topic: &str, address: &str) -> DbResult<String>;
@@ -83,7 +84,12 @@ pub trait Store: Send {
     fn set_sender_topic_by_connection_key_from_sender(&mut self, connection_key: i32) -> DbResult<()>;
     fn get_sender_topic_by_connection_key(&mut self, connection_key: i32) -> DbResult<String>;
 
-    fn set_last_mess_number_from_listener(&mut self, connection_key: i32, val: u64) -> DbResult<()>;
+    /// Raise the listener ack to `val` if the stored one is still `>= prev` (the last value this
+    /// listener saved); a missing row counts as 0. `Ok(false)`, nothing written: the stored one
+    /// is lower (or gone while `prev > 0`), i.e. the sender ran `clear_stored_messages` and its
+    /// numbering restarts.
+    fn set_last_mess_number_from_listener(&mut self, connection_key: i32, prev: u64, val: u64) -> DbResult<bool>;
+    /// Stored listener ack, read from the store every call (a sender may reset it).
     fn get_last_mess_number_for_listener(&mut self, connection_key: i32) -> DbResult<u64>;
     fn get_last_mess_number_for_sender(&mut self, connection_key: i32) -> DbResult<u64>;
 

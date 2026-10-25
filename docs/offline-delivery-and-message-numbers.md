@@ -18,6 +18,8 @@ If **`at_least_once_delivery` is false**, the stack does not treat those message
 
 3. **Stream is torn down** (`check_streams_close`): any remaining queued messages for that connection go through the same **`save_mess_to_db`** filter before being appended to the store’s per-connection queue.
 
+4. **Sender stop** (`close_streams`): first waits for in-flight writes (`write_stream` holds the messages it took from the queue until it ends); a write blocked on a stalled peer gets its socket cut after **`SENDER_CLOSE_WAIT_MS`** (currently **1000 ms**). Then unacked and queued messages go through the same filter into the store.
+
 So for **at-least-once** traffic, data that never received listener acknowledgement can survive **process-level disconnects** in the **backing store**, not only in RAM.
 
 **On reconnect**, a successful `TcpStream::connect` triggers **`load_messages_for_sender`**: the sender loads the persisted queue from the store and **merges** it with anything still in memory for that connection, then continues sending.
@@ -32,25 +34,34 @@ So “try again about every 10 seconds” is accurate for **reconnection attempt
 
 Each logical TCP stream from a sender is associated with a **`connection_key`**. Within that channel, every payload message carries a monotonically increasing **`number_mess`** assigned by the sender when the message is created.
 
-On the **listener**, when reading from the wire (`read_stream`):
+On the **listener**, when reading from the wire (`read_conn`):
 
-- The listener keeps **`last_mess_num`** for that stream (initialized from the store via **`get_last_mess_number_for_listener`** when the connection key is known, so restarts reconnect with the right baseline).
-- An incoming message is **accepted** only if **`mess.number_mess > last_mess_num`**. Otherwise it is **discarded** (freed without invoking the receive callback).
+- The listener keeps a replay cursor per **slot** (one slot per `connection_key`, shared by all its TCPs): the highest number accepted from any of them. When a new TCP is bound to the slot, the cursor is raised to the stored ack (**`get_last_mess_number_for_listener`**, read from the store every time), so a restarted listener starts from the right baseline and a fast reconnect does not redeliver what was accepted but not yet flushed (the ack lags up to ~1 s).
+- An incoming message is **accepted** only if **`mess.number_mess > cursor`**. Otherwise it is **discarded** (freed without invoking the receive callback). Internal subscribe/unsubscribe events bypass the filter.
 
-Therefore **retries or duplicates with the same or an older number cannot be delivered to the application twice**. New work only appears when the sender uses a **strictly larger** `number_mess`.
+Therefore **retries or duplicates with the same or an older number cannot be delivered to the application twice**, including a resend on a new TCP racing the tail of the old one. New work only appears when the sender uses a **strictly larger** `number_mess`. A best-effort (non at-least-once) message left in the old TCP's tail is dropped if the new TCP already delivered a larger number.
+
+### Sender store reset (`clear_stored_messages`)
+
+After **`clear_stored_messages`** the sender numbers from the stored ack again (usually from 1). The listener detects this on a shared store:
+
+- the ack write is compare-and-set: **`set_last_mess_number_from_listener(key, prev, val)`** writes only while the stored value is still `>= prev` (what this listener saved last; a missing row counts as 0), so it never resurrects a cleared ack; a failed write marks the slot;
+- when a new TCP binds and the stored ack is below the saved one (or the slot is marked), the slot restarts from the stored ack: the cursor and counters are lowered, other TCPs of the slot are closed, queued messages are dropped, and batches already taken by the receive thread no longer move the ack (slot epoch).
+
+Not detected: a clear before this listener saved any ack for the slot, and **isolated SQLite files** (the sender clears its own file, the listener's ack is in another one). Clear both sides there.
 
 ## Listener accept slots (index affinity)
 
 On the **listener**, each accepted peer is tracked by a single slot index `ix` shared across parallel vectors in `src/listener.rs`:
 
-- `streams[ix]` — TCP read stream  
-- `senders[ix]` — `connection_key`, `last_mess_num*`  
+- `senders[ix]` — `connection_key`, `last_mess_num*`, epoch  
 - `mempools[ix]` — that peer’s mempool  
 - `messages[ix]` — queued messages for the receive callback  
+- `Slots::cursor[ix]` — replay cursor (stream thread)  
 
-The accept map keeps **`SocketAddr → ix` for the lifetime of that peer identity**. Closing the TCP socket only deregisters the fd; it must **not** free `ix` into a pool for a **different** address. A later accept from the **same** `SocketAddr` reuses that `ix` and keeps mempool / message-number state. Handing a “free” index to another peer would mix mempools and ACK state across connections.
+A new TCP is bound to a slot by the **`connection_key` in its first frame header** (the sender connects from an ephemeral port, so the address says nothing). The map **`connection_key → ix`** lives as long as the listener; closing a TCP only drops that connection. A reconnect reuses the slot while the old TCP drains to EOF next to the new one. Never hand `ix` to a **different** key: that would mix mempools and ACK state.
 
-New addresses always **append** a new slot (`push`); growth under ephemeral-port churn is accepted. Do not “optimize” with a cross-peer free-list.
+New keys always **append** a new slot (`push`). Do not “optimize” with a cross-peer free-list.
 
 ## How sender and listener stay in sync with the store
 
@@ -70,8 +81,9 @@ Together, **`number_mess`** plus the stored **last acknowledged number per `conn
 |-------|-----------|
 | Listener offline / TCP down (at-least-once) | Unacknowledged messages can be **saved in Redis/SQLite**; sender **retries TCP ~every 10 s**; on success, **loads queued messages** from the store and sends them. |
 | Best-effort sends | **No** guarantee of persistence across disconnects. |
-| Duplicate wire deliveries | **Suppressed** on the listener when `number_mess` is not greater than the last accepted value for that connection. |
-| Listener accept index | Sticky **`SocketAddr → ix`**; never recycle `ix` across different addresses (mempool / ACK state). |
+| Duplicate wire deliveries | **Suppressed** on the listener when `number_mess` is not greater than the last accepted value for that `connection_key` (across its TCPs). |
+| Listener accept index | Sticky **`connection_key → ix`** from the first frame header; never recycle `ix` across keys (mempool / ACK state). |
+| Sender `clear_stored_messages` | Detected on a shared store (compare-and-set ack); the slot restarts from the stored ack. Not detected with isolated SQLite files. |
 | Ack timing | Listener flushes acks to the store on a **~1 s** cadence (`UPDATE_LAST_MESS_NUMBER_TIMEOUT_MS`). |
 | Isolated SQLite (different path per process) | Do **not** use **`at_least_once_delivery == true`** for cross-peer sends unless you accept unbounded RAM / wrong ack sync; use **`false`** or a **shared** catalog file. |
 
